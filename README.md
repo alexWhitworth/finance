@@ -48,7 +48,7 @@ uv run mypy src/               # type-check
 | 2 | `data.py`, `returns.py` | ✅ Complete |
 | 3 | `volatility.py` | ✅ Complete |
 | 4 | `metrics.py` | ✅ Complete |
-| 5 | `leverage.py` | Pending |
+| 5 | `leverage.py` | ✅ Complete |
 | 6 | `portfolio.py` | Pending |
 | 7 | Reporting & visualization | Pending |
 | 8 | Integration & coverage | Pending |

@@ -1,20 +1,39 @@
-"""LEAPS option contract types and portfolio enumeration types.
+"""LEAPS contract lifecycle — Black-Scholes pricing, contract creation, roll, and simulation.
 
-This module contains only dataclass and enum definitions. Business logic
-(option pricing, contract creation, roll simulation) will be added in Phase 5.
+All business logic is pure (no I/O). The module also owns the enumeration types
+(AccountType, RebalanceRule, WeightStrategy) shared with portfolio.py.
 """
 
 import enum
+import math
 from dataclasses import dataclass
 
 import pandas as pd
+from scipy import stats
+
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+
+LEAPS_STRIKE_RATIO: float = 0.50
+DEFAULT_IV: float = 0.18
+LTCG_RATE: float = 0.238
+MIN_HOLD_DAYS: int = 366          # hold at least 1 year + 1 day for LTCG treatment
+SIX_MONTHS_DAYS: int = 182        # roll trigger: < 6 months to expiry
+CONTRACT_MULTIPLIER: int = 100    # standard 100-share option multiplier
+TIME_FLOOR: float = 1.0 / 365    # minimum T to prevent BS blow-up near expiry
+
+
+# ---------------------------------------------------------------------------
+# Enumeration types (shared with portfolio.py)
+# ---------------------------------------------------------------------------
 
 
 class AccountType(enum.Enum):
     """Tax treatment applied to LEAPS gains at roll.
 
     Attributes:
-        TAXABLE: Gains are taxable at long-term capital gains rates.
+        TAXABLE: Gains taxed at long-term capital gains rates on each roll.
         TAX_SHELTERED: No tax due on roll (IRA, 401k, etc.).
     """
 
@@ -42,6 +61,11 @@ class WeightStrategy(enum.Enum):
     USER_SPECIFIED = "user_specified"
 
 
+# ---------------------------------------------------------------------------
+# Dataclass types
+# ---------------------------------------------------------------------------
+
+
 @dataclass(frozen=True)
 class LeapsConfig:
     """Configuration for a LEAPS overlay simulation.
@@ -52,24 +76,27 @@ class LeapsConfig:
         account_type: Governs whether tax is applied on roll.
     """
 
-    iv: float = 0.18
-    ltcg_rate: float = 0.238
+    iv: float = DEFAULT_IV
+    ltcg_rate: float = LTCG_RATE
     account_type: AccountType = AccountType.TAXABLE
 
 
 @dataclass(frozen=True)
 class LeapsContract:
-    """A single VTI LEAPS call contract position.
+    """A single DITM VTI LEAPS call contract position.
 
     Attributes:
         purchase_date: Trade date.
-        expiry_date: Option expiry (typically 2 years from purchase).
-        strike: Strike price; set at 50% of spot_at_purchase.
+        expiry_date: Option expiry (approximately 2 years from purchase_date).
+        strike: Strike price; set at LEAPS_STRIKE_RATIO * spot_at_purchase.
         spot_at_purchase: VTI price on purchase_date.
-        premium_paid: Black-Scholes call price per contract at purchase.
-        notional: spot_at_purchase * 100 (standard 100-share multiplier).
-        n_contracts: Number of contracts; float to support fractional allocation.
+        premium_paid: Per-share Black-Scholes call price at purchase.
+        notional: spot_at_purchase * CONTRACT_MULTIPLIER (100-share multiplier).
+        n_contracts: Number of contracts; float to allow fractional allocation.
         account_type: Tax treatment applied at roll.
+
+    Notes:
+        Total cost basis = premium_paid * CONTRACT_MULTIPLIER * n_contracts.
     """
 
     purchase_date: pd.Timestamp
@@ -90,8 +117,8 @@ class LeapsRollEvent:
         roll_date: Date the roll was executed.
         old_contract: Contract being closed.
         new_contract: Replacement contract opened with net proceeds.
-        gain_realized: Mark-to-market value minus original premium paid.
-        tax_paid: LTCG tax on gain; 0.0 for TAX_SHELTERED accounts.
+        gain_realized: Mark-to-market value minus original total cost basis.
+        tax_paid: LTCG tax on positive gain; 0.0 for TAX_SHELTERED accounts.
         net_proceeds: old_value - tax_paid, reinvested into new_contract.
     """
 
@@ -108,7 +135,7 @@ class LeapsLedger:
     """Complete transaction history for one LEAPS simulation.
 
     Attributes:
-        contracts: All contracts ever created (including rolled-out positions).
+        contracts: All contracts ever created (includes both live and rolled-out).
         roll_events: All roll transactions executed during the simulation.
         account_type: Account type governing all contracts in this ledger.
     """
@@ -116,3 +143,333 @@ class LeapsLedger:
     contracts: tuple[LeapsContract, ...]
     roll_events: tuple[LeapsRollEvent, ...]
     account_type: AccountType
+
+
+# ---------------------------------------------------------------------------
+# Black-Scholes pure functions
+# ---------------------------------------------------------------------------
+
+
+def _bs_d1(spot: float, strike: float, t_years: float, iv: float, r: float) -> float:
+    """Compute Black-Scholes d1 term.
+
+    Arguments:
+        spot: Current asset price.
+        strike: Option strike price.
+        t_years: Time to expiry in years (must be > 0).
+        iv: Implied volatility (annualized).
+        r: Continuously compounded risk-free rate.
+
+    Returns:
+        d1 = (log(S/K) + (r + 0.5*sigma^2)*t) / (sigma*sqrt(t)).
+    """
+    return (math.log(spot / strike) + (r + 0.5 * iv**2) * t_years) / (iv * math.sqrt(t_years))
+
+
+def bs_call_price(
+    spot: float,
+    strike: float,
+    time_to_expiry: float,
+    iv: float,
+    risk_free_rate: float = 0.0,
+) -> float:
+    """Compute Black-Scholes European call option price.
+
+    Arguments:
+        spot: Current asset price (S).
+        strike: Strike price (K).
+        time_to_expiry: Time to expiry in years. Floored at TIME_FLOOR.
+        iv: Implied volatility (annualized, e.g. 0.18 for 18%).
+        risk_free_rate: Continuously compounded risk-free rate. Default 0.0.
+
+    Returns:
+        Call option price per share.
+
+    References:
+        @article{black1973pricing,
+            title={The Pricing of Options and Corporate Liabilities},
+            author={Black, Fischer and Scholes, Myron},
+            journal={Journal of Political Economy},
+            volume={81},
+            number={3},
+            pages={637--654},
+            year={1973}
+        }
+    """
+    t_years = max(time_to_expiry, TIME_FLOOR)
+    d1 = _bs_d1(spot, strike, t_years, iv, risk_free_rate)
+    d2 = d1 - iv * math.sqrt(t_years)
+    return float(
+        spot * stats.norm.cdf(d1)
+        - strike * math.exp(-risk_free_rate * t_years) * stats.norm.cdf(d2)
+    )
+
+
+def bs_call_delta(
+    spot: float,
+    strike: float,
+    time_to_expiry: float,
+    iv: float,
+    risk_free_rate: float = 0.0,
+) -> float:
+    """Compute Black-Scholes delta of a European call option.
+
+    Arguments:
+        spot: Current asset price.
+        strike: Strike price.
+        time_to_expiry: Time to expiry in years. Floored at TIME_FLOOR.
+        iv: Implied volatility (annualized).
+        risk_free_rate: Continuously compounded risk-free rate. Default 0.0.
+
+    Returns:
+        Delta in (0, 1); approaches 1.0 for deep in-the-money options.
+    """
+    t_years = max(time_to_expiry, TIME_FLOOR)
+    d1 = _bs_d1(spot, strike, t_years, iv, risk_free_rate)
+    return float(stats.norm.cdf(d1))
+
+
+# ---------------------------------------------------------------------------
+# LEAPS contract lifecycle — pure functions
+# ---------------------------------------------------------------------------
+
+
+def create_leaps_contract(
+    purchase_date: pd.Timestamp,
+    spot: float,
+    capital_to_deploy: float,
+    iv: float = DEFAULT_IV,
+    account_type: AccountType = AccountType.TAXABLE,
+) -> LeapsContract:
+    """Create a LEAPS call contract sized by available capital.
+
+    Strike is set at LEAPS_STRIKE_RATIO * spot (deep in the money).
+    Expiry is purchase_date + 2 years.
+    n_contracts = capital_to_deploy / (premium_per_share * CONTRACT_MULTIPLIER).
+
+    Arguments:
+        purchase_date: Trade date.
+        spot: VTI price at purchase.
+        capital_to_deploy: Dollar amount to invest in the position.
+        iv: Implied volatility used for Black-Scholes pricing. Default 0.18.
+        account_type: Tax treatment applied at future roll. Default TAXABLE.
+
+    Returns:
+        LeapsContract with all fields populated.
+    """
+    strike = LEAPS_STRIKE_RATIO * spot
+    expiry: pd.Timestamp = pd.Timestamp(purchase_date + pd.DateOffset(years=2))
+    t_years = (expiry - purchase_date).days / 365.0
+    premium_per_share = bs_call_price(spot, strike, t_years, iv)
+    n_contracts = capital_to_deploy / (premium_per_share * CONTRACT_MULTIPLIER)
+    return LeapsContract(
+        purchase_date=purchase_date,
+        expiry_date=expiry,
+        strike=strike,
+        spot_at_purchase=spot,
+        premium_paid=premium_per_share,
+        notional=spot * CONTRACT_MULTIPLIER,
+        n_contracts=n_contracts,
+        account_type=account_type,
+    )
+
+
+def price_leaps_contract(
+    contract: LeapsContract,
+    current_spot: float,
+    current_date: pd.Timestamp,
+    iv: float = DEFAULT_IV,
+) -> float:
+    """Mark a LEAPS contract to market using Black-Scholes.
+
+    Arguments:
+        contract: The LeapsContract to price.
+        current_spot: Current VTI spot price.
+        current_date: Valuation date.
+        iv: Implied volatility for pricing. Default 0.18.
+
+    Returns:
+        Total mark-to-market value of the position (all contracts, all shares).
+    """
+    t_years = (contract.expiry_date - current_date).days / 365.0
+    per_share = bs_call_price(current_spot, contract.strike, t_years, iv)
+    return float(per_share * CONTRACT_MULTIPLIER * contract.n_contracts)
+
+
+def should_roll(
+    contract: LeapsContract,
+    current_date: pd.Timestamp,
+    new_expiry_available: pd.Timestamp,
+) -> bool:
+    """Determine whether a LEAPS contract should be rolled.
+
+    Returns True only if all three conditions hold:
+      1. A new 2-year expiry exists beyond the current contract's expiry.
+      2. The current contract expires within SIX_MONTHS_DAYS (< 182 days).
+      3. The contract has been held at least MIN_HOLD_DAYS (>= 366) for LTCG treatment.
+
+    Arguments:
+        contract: The contract being evaluated.
+        current_date: Today's date.
+        new_expiry_available: The new expiry date that would be used for the replacement.
+
+    Returns:
+        True if the contract should be rolled today.
+    """
+    hold_days = (current_date - contract.purchase_date).days
+    days_to_expiry = (contract.expiry_date - current_date).days
+    return (
+        new_expiry_available > contract.expiry_date
+        and days_to_expiry < SIX_MONTHS_DAYS
+        and hold_days >= MIN_HOLD_DAYS
+    )
+
+
+def roll_contract(
+    old_contract: LeapsContract,
+    current_date: pd.Timestamp,
+    current_spot: float,
+    iv: float = DEFAULT_IV,
+    ltcg_rate: float = LTCG_RATE,
+) -> LeapsRollEvent:
+    """Execute a LEAPS roll: close old contract and open a new 2-year contract.
+
+    Steps:
+      1. Mark old contract to market.
+      2. Compute realized gain = current_value - original_cost_basis.
+      3. Apply LTCG tax on positive gains (0 if TAX_SHELTERED or gain <= 0).
+      4. Use net proceeds to buy a new DITM 2-year contract.
+
+    Arguments:
+        old_contract: Contract to close.
+        current_date: Roll execution date.
+        current_spot: VTI price at roll date.
+        iv: Implied volatility for both pricing and new contract. Default 0.18.
+        ltcg_rate: Combined LTCG + NIIT rate for taxable gains. Default 0.238.
+
+    Returns:
+        LeapsRollEvent with the full transaction record.
+    """
+    old_value = price_leaps_contract(old_contract, current_spot, current_date, iv)
+    cost_basis = old_contract.premium_paid * CONTRACT_MULTIPLIER * old_contract.n_contracts
+    gain_realized = old_value - cost_basis
+
+    if old_contract.account_type == AccountType.TAX_SHELTERED:
+        tax_paid = 0.0
+    else:
+        tax_paid = max(0.0, gain_realized) * ltcg_rate
+
+    net_proceeds = old_value - tax_paid
+    new_contract = create_leaps_contract(
+        current_date, current_spot, net_proceeds, iv, old_contract.account_type
+    )
+    return LeapsRollEvent(
+        roll_date=current_date,
+        old_contract=old_contract,
+        new_contract=new_contract,
+        gain_realized=gain_realized,
+        tax_paid=tax_paid,
+        net_proceeds=net_proceeds,
+    )
+
+
+def compute_leaps_nav_contribution(
+    ledger: LeapsLedger,
+    current_date: pd.Timestamp,
+    current_spot: float,
+    iv: float = DEFAULT_IV,
+) -> float:
+    """Compute total net P&L contribution of live LEAPS contracts to portfolio NAV.
+
+    Live contracts are those not yet rolled out and not yet expired.
+    NAV contribution = sum(mark_to_market) - sum(total_cost_basis).
+
+    Arguments:
+        ledger: The LeapsLedger containing all contract and roll history.
+        current_date: Valuation date.
+        current_spot: Current VTI spot price.
+        iv: Implied volatility for mark-to-market pricing. Default 0.18.
+
+    Returns:
+        Net P&L contribution in dollars. Can be negative if contracts are underwater.
+    """
+    if not ledger.contracts:
+        return 0.0
+    rolled_out = {event.old_contract for event in ledger.roll_events}
+    live = [
+        c for c in ledger.contracts
+        if c not in rolled_out and c.expiry_date > current_date
+    ]
+    if not live:
+        return 0.0
+    total_mtm = sum(price_leaps_contract(c, current_spot, current_date, iv) for c in live)
+    total_cost = sum(c.premium_paid * CONTRACT_MULTIPLIER * c.n_contracts for c in live)
+    return float(total_mtm - total_cost)
+
+
+# ---------------------------------------------------------------------------
+# Orchestrator
+# ---------------------------------------------------------------------------
+
+
+def run_leaps_simulation(
+    price_series: pd.Series,
+    monthly_contribution_to_leaps: float,
+    config: LeapsConfig,
+) -> LeapsLedger:
+    """Run the full LEAPS accumulation and roll simulation over a price history.
+
+    On each month-end trading day:
+      1. Check all live contracts for roll conditions; execute rolls if triggered.
+      2. Deploy monthly_contribution_to_leaps into a new DITM 2-year contract.
+
+    Arguments:
+        price_series: Daily VTI price Series (DatetimeIndex, chronological).
+        monthly_contribution_to_leaps: Dollar amount allocated to LEAPS each month.
+        config: LeapsConfig governing IV, LTCG rate, and account type.
+
+    Returns:
+        LeapsLedger with the complete history of all contracts and roll events.
+    """
+    if price_series.empty:
+        return LeapsLedger(contracts=(), roll_events=(), account_type=config.account_type)
+
+    # Last trading day of each calendar month in the price series
+    dt_index = pd.DatetimeIndex(price_series.index)
+    gb = price_series.groupby(dt_index.to_period("M"))
+    month_end_dates = pd.DatetimeIndex([grp.index[-1] for _, grp in gb])
+
+    all_contracts: list[LeapsContract] = []
+    live_contracts: list[LeapsContract] = []
+    roll_events_list: list[LeapsRollEvent] = []
+
+    for date in month_end_dates:
+        spot = float(price_series.loc[date])
+        new_expiry: pd.Timestamp = pd.Timestamp(date + pd.DateOffset(years=2))
+
+        # Check roll conditions on every live contract
+        still_live: list[LeapsContract] = []
+        for contract in live_contracts:
+            if should_roll(contract, date, new_expiry):
+                event = roll_contract(contract, date, spot, config.iv, config.ltcg_rate)
+                roll_events_list.append(event)
+                all_contracts.append(event.new_contract)
+                still_live.append(event.new_contract)
+            else:
+                still_live.append(contract)
+        live_contracts = still_live
+
+        # Monthly purchase
+        if monthly_contribution_to_leaps > 0:
+            new_c = create_leaps_contract(
+                date, spot, monthly_contribution_to_leaps, config.iv, config.account_type
+            )
+            if new_c.n_contracts > 0:
+                all_contracts.append(new_c)
+                live_contracts.append(new_c)
+
+    return LeapsLedger(
+        contracts=tuple(all_contracts),
+        roll_events=tuple(roll_events_list),
+        account_type=config.account_type,
+    )

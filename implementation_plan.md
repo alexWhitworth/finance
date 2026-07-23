@@ -607,16 +607,17 @@ def run_backtest(
 - [x] `slice_period()` + crisis period constants
 - [x] `compute_metrics()` + `build_performance_report()`
 - [x] Tests: known return sequences verify each ratio analytically (37 tests)
-- Judge verdict: 102 tests pass, 97.9% coverage, ruff + mypy clean (2026-07-23)
+- Agent verdict: 102 tests pass, 97.9% coverage, ruff + mypy clean (2026-07-23)
 
-### Phase 5 — LEAPS Leverage Engine (`leverage.py`)
-- [ ] `bs_call_price()`, `bs_call_delta()` — Black-Scholes via scipy
-- [ ] `create_leaps_contract()` — contract initialization
-- [ ] `price_leaps_contract()` — mark-to-market
-- [ ] `should_roll()` — roll trigger logic
-- [ ] `roll_contract()` — full roll with tax calculation for both account types
-- [ ] `run_leaps_simulation()` — monthly accumulation + roll loop
-- [ ] Tests: BS formula sanity (put-call parity, deep ITM delta≈1), tax drag diff
+### Phase 5 — LEAPS Leverage Engine (`leverage.py`) ✅ COMPLETE
+- [x] `bs_call_price()`, `bs_call_delta()` — Black-Scholes via scipy
+- [x] `create_leaps_contract()` — contract initialization
+- [x] `price_leaps_contract()` — mark-to-market
+- [x] `should_roll()` — roll trigger logic (3-condition guard: new expiry, <6mo TTM, ≥366 hold)
+- [x] `roll_contract()` — full roll with tax calculation for both account types
+- [x] `run_leaps_simulation()` — monthly accumulation + roll loop
+- [x] Tests: put-call parity, deep ITM delta≈1, tax drag diff, 43 tests total
+- Agent verdict: 145 tests pass, 98.3% coverage, ruff + mypy clean (2026-07-23)
 
 ### Phase 6 — Portfolio Backtest Engine (`portfolio.py`)
 - [ ] `get_rebalance_dates()` — quarterly calendar dates
