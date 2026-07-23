@@ -592,14 +592,15 @@ def run_backtest(
 - [x] Tests: splice correctness, TEY math, return calculation
 - Judge verdict: CONDITIONAL_PASS → PASS after advisory fixes (2025-07-23)
 
-### Phase 3 — Volatility Engine (`volatility.py`)
-- [ ] `compute_ewma_vol()` — recursive EWMA, σ̂²_{t+1} = λσ̂²_t + (1-λ)r²_t
-- [ ] `compute_rolling_weekly_corr()` — resample to weekly, 156-week rolling corr
-- [ ] `build_covariance_matrix()` — Σ̂ from vols + correlations
-- [ ] `compute_vol_contributions()` — marginal contribution, verify sum=1
-- [ ] `compute_realized_vol()` — 90-day rolling realized
-- [ ] `build_volatility_model()`, `build_vol_contribution_table()`, `forecast_portfolio_vol()`
-- [ ] Tests: EWMA convergence, contributions sum to 1, covariance PD check
+### Phase 3 — Volatility Engine (`volatility.py`) ✅ COMPLETE
+- [x] `compute_ewma_vol()` — recursive EWMA, σ̂²_{t+1} = λσ̂²_t + (1-λ)r²_t
+- [x] `compute_rolling_weekly_corr()` — resample to weekly (W-FRI), 156-week rolling corr
+- [x] `build_covariance_matrix()` — Σ̂ from vols + correlations, 1e-8 ridge for PD
+- [x] `compute_vol_contributions()` — marginal contribution, enforced sum=1
+- [x] `compute_realized_vol()` — 90-day rolling realized
+- [x] `build_volatility_model()`, `build_vol_contribution_table()`, `forecast_portfolio_vol()`
+- [x] Tests: EWMA convergence (rel=0.10), contributions sum to 1, covariance PD check, no-VTI NaN path, short-series NaN path
+- Judge verdict: CONDITIONAL_PASS → PASS after advisory fixes (2025-07-23)
 
 ### Phase 4 — Performance Metrics (`metrics.py`)
 - [ ] All ratio functions (annualized return, std, drawdown, Sharpe, Sortino, Calmar, Omega)
