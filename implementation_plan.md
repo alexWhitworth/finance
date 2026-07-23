@@ -607,7 +607,7 @@ def run_backtest(
 - [x] `slice_period()` + crisis period constants
 - [x] `compute_metrics()` + `build_performance_report()`
 - [x] Tests: known return sequences verify each ratio analytically (37 tests)
-- Agent verdict: 102 tests pass, 97.9% coverage, ruff + mypy clean (2026-07-23)
+- Judge verdict: PASS — 171 tests pass, 98.6% coverage, ruff + mypy clean (2026-07-23)
 
 ### Phase 5 — LEAPS Leverage Engine (`leverage.py`) ✅ COMPLETE
 - [x] `bs_call_price()`, `bs_call_delta()` — Black-Scholes via scipy
@@ -617,14 +617,15 @@ def run_backtest(
 - [x] `roll_contract()` — full roll with tax calculation for both account types
 - [x] `run_leaps_simulation()` — monthly accumulation + roll loop
 - [x] Tests: put-call parity, deep ITM delta≈1, tax drag diff, 43 tests total
-- Agent verdict: 145 tests pass, 98.3% coverage, ruff + mypy clean (2026-07-23)
+- Judge verdict: PASS — 171 tests pass, 98.6% coverage, ruff + mypy clean (2026-07-23)
 
-### Phase 6 — Portfolio Backtest Engine (`portfolio.py`)
-- [ ] `get_rebalance_dates()` — quarterly calendar dates
-- [ ] `compute_target_weights()` — weight strategy dispatch
-- [ ] `apply_contribution()` — monthly allocation
-- [ ] `run_backtest()` — full backtest loop integrating all components
-- [ ] Tests: NAV math, weight drift between rebalances, contribution compounding
+### Phase 6 — Portfolio Backtest Engine (`portfolio.py`) ✅ COMPLETE
+- [x] `get_rebalance_dates()` — quarterly calendar dates (last bday of Mar/Jun/Sep/Dec)
+- [x] `compute_target_weights()` — USER_SPECIFIED weight normalization
+- [x] `apply_contribution()` — proportional monthly allocation
+- [x] `run_backtest()` — full backtest loop: daily returns, month-end contributions, quarterly rebalance, optional LEAPS MTM overlay
+- [x] Tests: NAV math (flat returns, constant return, contribution compounding), weight drift, rebalance snap, LEAPS integration, 26 tests
+- Judge verdict: 171 tests pass, 98.6% coverage, ruff + mypy clean (2026-07-23)
 
 ### Phase 7 — Reporting & Visualization
 - [ ] `plotnine` charts:
