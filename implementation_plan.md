@@ -602,11 +602,12 @@ def run_backtest(
 - [x] Tests: EWMA convergence (rel=0.10), contributions sum to 1, covariance PD check, no-VTI NaN path, short-series NaN path
 - Judge verdict: CONDITIONAL_PASS → PASS after advisory fixes (2025-07-23)
 
-### Phase 4 — Performance Metrics (`metrics.py`)
-- [ ] All ratio functions (annualized return, std, drawdown, Sharpe, Sortino, Calmar, Omega)
-- [ ] `slice_period()` + crisis period constants
-- [ ] `compute_metrics()` + `build_performance_report()`
-- [ ] Tests: known return sequence → verify each ratio by hand
+### Phase 4 — Performance Metrics (`metrics.py`) ✅ COMPLETE
+- [x] All ratio functions (annualized return, std, drawdown, Sharpe, Sortino, Calmar, Omega)
+- [x] `slice_period()` + crisis period constants
+- [x] `compute_metrics()` + `build_performance_report()`
+- [x] Tests: known return sequences verify each ratio analytically (37 tests)
+- Judge verdict: 102 tests pass, 97.9% coverage, ruff + mypy clean (2026-07-23)
 
 ### Phase 5 — LEAPS Leverage Engine (`leverage.py`)
 - [ ] `bs_call_price()`, `bs_call_delta()` — Black-Scholes via scipy
@@ -638,6 +639,14 @@ def run_backtest(
 - [ ] `uv run pytest --cov=src --cov-report=term-missing` → verify ≥ 80%
 - [ ] `uv run ruff check .` → clean
 - [ ] `uv run mypy src/` → clean under strict mode
+
+### Phase 9 — Examples (`examples/`)
+- [ ] `examples/basic_backtest.py` — minimal end-to-end: fetch prices → build returns → run backtest → print `PerformanceMetrics`
+- [ ] `examples/with_leaps.py` — same pipeline with LEAPS overlay, both taxable and tax-sheltered accounts, side-by-side NAV comparison
+- [ ] `examples/volatility_report.py` — build `VolatilityModel`, print vol contribution table, forward vol forecast
+- [ ] `examples/crisis_analysis.py` — slice GFC / COVID / 2022 Rate Hike periods, print per-period `PerformanceMetrics`
+- [ ] Each example is a self-contained `if __name__ == "__main__":` script runnable via `uv run examples/<name>.py`
+- [ ] No new library code; examples only call the public API
 
 ---
 

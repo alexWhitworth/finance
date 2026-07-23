@@ -47,7 +47,7 @@ uv run mypy src/               # type-check
 | 1 | Scaffolding | ✅ Complete |
 | 2 | `data.py`, `returns.py` | ✅ Complete |
 | 3 | `volatility.py` | ✅ Complete |
-| 4 | `metrics.py` | Pending |
+| 4 | `metrics.py` | ✅ Complete |
 | 5 | `leverage.py` | Pending |
 | 6 | `portfolio.py` | Pending |
 | 7 | Reporting & visualization | Pending |
