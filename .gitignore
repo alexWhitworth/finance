@@ -17,3 +17,6 @@ build/
 *.log
 mutants/
 *.bak
+
+.claude/settings.local.json
+.claude/*.log
