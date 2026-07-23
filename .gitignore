@@ -20,3 +20,5 @@ mutants/
 
 .claude/settings.local.json
 .claude/*.log
+
+plans/judge_verdicts

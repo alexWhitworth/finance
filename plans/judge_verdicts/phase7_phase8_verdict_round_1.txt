@@ -1,0 +1,128 @@
+=== JUDGE EVALUATION REPORT ===
+Spec:           implementation_plan.md (no spec.json present — plan used as contract)
+Feature:        Phase 7 (figures.py) + Phase 8 (integration tests)
+Layer:          python
+Evaluated:      2026-07-23T00:00:00Z
+
+━━━ OVERALL VERDICT: CONDITIONAL_PASS ━━━
+
+━━━ ACCEPTANCE CRITERIA SCORECARD ━━━
+  ✅ MET      : 9 criteria
+  ⚠️  BRITTLE  : 2 criteria
+  ❌ UNMET    : 0 criteria
+
+  Criterion : "Drawdown chart — shaded regions for crisis periods"
+  Status    : BRITTLE
+  Evidence  : src/finance/figures.py:136-145, tests/test_figures.py:143-156
+  Finding   : The crisis-shading branch (lines 137, 144-145) is never exercised by any test.
+              Every test either uses empty crisis_periods or crisis dates that fall entirely
+              outside the 2015-2017 synthetic data range, so crisis_frames is always empty.
+              The geom_rect code path is dead from the test suite's point of view.
+  Type      : ADVISORY
+
+  Criterion : "PerformanceReport printed as formatted table"
+  Status    : BRITTLE
+  Evidence  : tests/test_figures.py:231-237
+  Finding   : test_crisis_periods_in_table is tautological. The data range (2015-2017) has
+              zero overlap with any of the three default CRISIS_PERIODS, so crisis_periods
+              tuple is empty and the test collapses to `assert "Full Period" in table` —
+              identical to the assertion in test_contains_full_period. No crisis row label
+              (e.g. "GFC", "COVID") is ever asserted against.
+  Type      : ADVISORY
+
+━━━ TEST QUALITY — PYTHON ━━━
+  Anti-patterns found: 4
+
+  [MAJOR] Tautological test
+  Location : tests/test_figures.py::TestFormatPerformanceTable::test_crisis_periods_in_table
+  Finding  : Assert is `"Full Period" in table` — identical to test_contains_full_period.
+             Intent was to verify a crisis period row appears, but 2015-2017 synthetic data
+             has no overlap with GFC/COVID/2022. The test cannot distinguish a working crisis
+             table from a table with only the full-period row.
+  Type     : ADVISORY
+
+  [MAJOR] Missing crisis-shading branch test
+  Location : tests/test_figures.py::TestPlotDrawdown (all three tests)
+  Finding  : The geom_rect / crisis_frames branch in plot_drawdown (figures.py:137-145) is
+             never reached because all test data predates all three standard crisis periods.
+             A test should use crisis dates that partially or fully overlap the synthetic data
+             range (e.g. "2015-06-01" to "2016-06-01") so the shading code is exercised.
+  Type     : ADVISORY
+
+  [MINOR] Weak assertion — isinstance-only
+  Location : tests/test_figures.py::TestPlotNavGrowth::test_returns_ggplot
+             tests/test_figures.py::TestPlotDrawdown::test_returns_ggplot
+             tests/test_figures.py::TestPlotLeapsTaxDrag::test_returns_ggplot
+             tests/test_figures.py::TestPlotVolContributions::test_returns_ggplot
+  Finding  : These tests only assert `isinstance(plot, p9.ggplot)`. A malformed
+             data pipeline that produces an empty ggplot would still pass. The
+             companion .draw() tests in test_data_contains_both_portfolios and
+             test_all_assets_present partially mitigate this for nav_growth and
+             vol_contributions, but plot_drawdown and plot_leaps_tax_drag have no
+             drawn-output verification.
+  Type     : ADVISORY
+
+  [MINOR] Uncovered save path
+  Location : src/finance/figures.py:93, 171, 221, 276  (all `if output_path is not None: _save(...)`)
+  Finding  : The _save() function and all output_path branches are never exercised. The
+             plan requires "All plots saved to figures/" — this is a core deliverable but
+             the save path has zero test coverage. Recommend one test per module that saves
+             to a tmp_path fixture and asserts the file was created.
+  Type     : ADVISORY
+
+━━━ TEST QUALITY — RUST ━━━
+  N/A — pure Python project, no Rust layer.
+
+━━━ FFI BOUNDARY AUDIT ━━━
+  N/A — no FFI layer in this project.
+
+━━━ MUTATION TESTING — PYTHON ━━━
+  Skipped per caller instruction (no mutmut or hypothesis testing).
+
+━━━ COVERAGE — PYTHON ━━━
+  Line coverage (full suite) : 97.43%  (threshold: 80%) ✅
+  Uncovered in figures.py    : lines 33-34 (_save docstring), 93, 137, 144-145, 171, 221, 259, 276
+  Note: lines 33-34 are docstring-adjacent and instrumentally unreachable.
+        Lines 93/171/221/276 are the save-path branches (never tested).
+        Lines 137/144-145 are the crisis-shading branch (never tested).
+        Line 259 is the empty-common_idx fallback in plot_leaps_tax_drag (defensively unreachable
+        given the way BacktestResult is constructed, but untested).
+
+━━━ PERFORMANCE ━━━
+  Budget           : none specified
+  Benchmark result : not tested
+  Eye-check        : All figures functions are O(n) in the number of NAV points.
+                     pd.concat over labels, cummax, and plotnine layer additions are all linear.
+                     Consistent with the library's design intent.
+
+━━━ ESCALATIONS ━━━
+  None.
+
+━━━ VERDICT RATIONALE ━━━
+All Phase 7 plan requirements are implemented and functionally correct: four plotnine charts,
+a formatted performance table, and save-to-figures/ support. The drawdown formula cross-checks
+against metrics.max_drawdown (verified numerically). The tax-drag title annotation is confirmed
+to render correctly with non-zero values. Phase 8 toolchain gates (pytest ≥80%, ruff, mypy strict)
+all pass. CONDITIONAL_PASS is issued because two behavioral branches — crisis shading in
+plot_drawdown and the output_path/save path across all four charts — are entirely untested,
+leaving the most visible plan deliverable ("All plots saved to figures/") without verification.
+All findings are advisory; none are blocking.
+
+━━━ REQUIRED ACTIONS FOR PASS ━━━
+[ADVISORY — not blocking, but address before Phase 9 starts:]
+
+A1. Add a test for plot_drawdown with a crisis period that overlaps the synthetic data range.
+    Example: use crisis_periods={"Mid-period": ("2015-06-01", "2016-06-01")} and assert the
+    returned plot is a p9.ggplot (or call .draw() on it). This exercises lines 137 and 144-145.
+    File: tests/test_figures.py, new method in TestPlotDrawdown.
+
+A2. Add a save-path smoke test using pytest's tmp_path fixture. Example:
+      def test_nav_growth_saves_file(tmp_path):
+          plot_nav_growth({"Base": result}, output_path=tmp_path / "nav.png")
+          assert (tmp_path / "nav.png").exists()
+    One such test per chart function exercises lines 93/171/221/276 and _save() itself.
+
+A3. Replace test_crisis_periods_in_table with a test that uses synthetic data spanning a
+    known crisis period (e.g. start 2019-01-02, n=756) so that COVID (2020-02) overlaps,
+    then assert a crisis label row name (e.g. "COVID") appears in the formatted table.
+    File: tests/test_figures.py::TestFormatPerformanceTable.

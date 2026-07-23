@@ -1,0 +1,348 @@
+"""Visualization layer for portfolio backtest results.
+
+All functions return a plotnine ``ggplot`` object and optionally save to
+``figures/<filename>.png``.  Each function is pure modulo filesystem I/O —
+pass ``output_path=None`` to suppress saving.
+"""
+
+from __future__ import annotations
+
+import os
+from pathlib import Path
+
+import pandas as pd
+import plotnine as p9
+
+from finance.metrics import CRISIS_PERIODS, PerformanceMetrics, PerformanceReport
+from finance.portfolio import BacktestResult
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+_FIGURES_DIR = Path("figures")
+
+
+def _save(plot: p9.ggplot, path: Path) -> None:
+    """Save *plot* to *path*, creating parent directories as needed.
+
+    Arguments:
+        plot: The plotnine ggplot object to save.
+        path: Destination file path (PNG).
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    plot.save(str(path), verbose=False)
+
+
+def _compute_drawdown_series(nav: pd.Series) -> pd.Series:
+    """Return the drawdown series for *nav* (negative fractions).
+
+    Arguments:
+        nav: NAV time series.
+
+    Returns:
+        Series of drawdown fractions ≤ 0.
+    """
+    peak = nav.cummax()
+    return (nav - peak) / peak
+
+
+# ---------------------------------------------------------------------------
+# 1. NAV growth comparison
+# ---------------------------------------------------------------------------
+
+
+def plot_nav_growth(
+    results: dict[str, BacktestResult],
+    output_path: Path | None = _FIGURES_DIR / "nav_growth.png",
+) -> p9.ggplot:
+    """Line chart comparing NAV growth across multiple portfolio configurations.
+
+    Arguments:
+        results: Mapping of label → BacktestResult.
+        output_path: Destination PNG path, or None to skip saving.
+
+    Returns:
+        A plotnine ggplot object.
+    """
+    frames: list[pd.DataFrame] = []
+    for label, result in results.items():
+        df = result.nav_series.rename("nav").to_frame()
+        df["portfolio"] = label
+        df.index.name = "date"
+        frames.append(df.reset_index())
+
+    data = pd.concat(frames, ignore_index=True)
+    data["nav_millions"] = data["nav"] / 1_000_000
+
+    plot = (
+        p9.ggplot(data, p9.aes(x="date", y="nav_millions", color="portfolio"))
+        + p9.geom_line(size=0.8)
+        + p9.scale_x_datetime(date_labels="%Y")
+        + p9.labs(
+            title="Portfolio NAV Growth",
+            x="Date",
+            y="NAV ($ millions)",
+            color="Portfolio",
+        )
+        + p9.theme_light()
+        + p9.theme(figure_size=(10, 5))
+    )
+
+    if output_path is not None:
+        _save(plot, output_path)
+    return plot
+
+
+# ---------------------------------------------------------------------------
+# 2. Drawdown chart with crisis period shading
+# ---------------------------------------------------------------------------
+
+
+def plot_drawdown(
+    results: dict[str, BacktestResult],
+    crisis_periods: dict[str, tuple[str, str]] = CRISIS_PERIODS,
+    output_path: Path | None = _FIGURES_DIR / "drawdown.png",
+) -> p9.ggplot:
+    """Drawdown chart with shaded crisis period bands.
+
+    Arguments:
+        results: Mapping of label → BacktestResult.
+        crisis_periods: Dict of crisis label → (start_date, end_date) strings.
+        output_path: Destination PNG path, or None to skip saving.
+
+    Returns:
+        A plotnine ggplot object.
+    """
+    frames: list[pd.DataFrame] = []
+    for label, result in results.items():
+        dd = _compute_drawdown_series(result.nav_series)
+        df = dd.rename("drawdown").to_frame()
+        df["portfolio"] = label
+        df.index.name = "date"
+        frames.append(df.reset_index())
+
+    data = pd.concat(frames, ignore_index=True)
+    data["drawdown_pct"] = data["drawdown"] * 100
+
+    # Build crisis period rectangles clipped to the data range
+    date_min = data["date"].min()
+    date_max = data["date"].max()
+
+    crisis_frames: list[pd.DataFrame] = []
+    for crisis_label, (start, end) in crisis_periods.items():
+        xmin = max(pd.Timestamp(start), date_min)
+        xmax = min(pd.Timestamp(end), date_max)
+        if xmin < xmax:
+            crisis_frames.append(
+                pd.DataFrame({"xmin": [xmin], "xmax": [xmax], "crisis": [crisis_label]})
+            )
+
+    base = p9.ggplot(data, p9.aes(x="date", y="drawdown_pct"))
+
+    if crisis_frames:
+        crisis_data = pd.concat(crisis_frames, ignore_index=True)
+        base = base + p9.geom_rect(
+            data=crisis_data,
+            mapping=p9.aes(xmin="xmin", xmax="xmax", fill="crisis"),
+            ymin=-float("inf"),
+            ymax=0,
+            alpha=0.15,
+            inherit_aes=False,
+        )
+
+    plot = (
+        base
+        + p9.geom_line(p9.aes(color="portfolio"), size=0.8)
+        + p9.geom_hline(yintercept=0, linetype="dashed", color="grey", size=0.4)
+        + p9.scale_x_datetime(date_labels="%Y")
+        + p9.labs(
+            title="Portfolio Drawdown",
+            x="Date",
+            y="Drawdown (%)",
+            color="Portfolio",
+            fill="Crisis Period",
+        )
+        + p9.theme_light()
+        + p9.theme(figure_size=(10, 5))
+    )
+
+    if output_path is not None:
+        _save(plot, output_path)
+    return plot
+
+
+# ---------------------------------------------------------------------------
+# 3. Volatility contribution bar chart
+# ---------------------------------------------------------------------------
+
+
+def plot_vol_contributions(
+    report: PerformanceReport,
+    output_path: Path | None = _FIGURES_DIR / "vol_contributions.png",
+) -> p9.ggplot:
+    """Horizontal stacked bar chart of per-asset volatility contributions.
+
+    Arguments:
+        report: PerformanceReport containing vol_contribution_table.
+        output_path: Destination PNG path, or None to skip saving.
+
+    Returns:
+        A plotnine ggplot object.
+    """
+    tbl = report.vol_contribution_table.copy()
+    tbl.index.name = "asset"
+    tbl = tbl.reset_index()
+    tbl = tbl.sort_values("contrib", ascending=False)
+    tbl["contrib_pct"] = tbl["contrib"] * 100
+    tbl["asset"] = pd.Categorical(tbl["asset"], categories=tbl["asset"].tolist())
+
+    plot = (
+        p9.ggplot(tbl, p9.aes(x="asset", y="contrib_pct", fill="asset"))
+        + p9.geom_col(show_legend=False)
+        + p9.geom_text(
+            p9.aes(label="contrib_pct"),
+            format_string="{:.1f}%",
+            ha="left",
+            size=9,
+            nudge_y=0.5,
+        )
+        + p9.coord_flip()
+        + p9.labs(
+            title="Volatility Contribution by Asset",
+            x="Asset",
+            y="Contribution (%)",
+        )
+        + p9.theme_light()
+        + p9.theme(figure_size=(8, 5))
+    )
+
+    if output_path is not None:
+        _save(plot, output_path)
+    return plot
+
+
+# ---------------------------------------------------------------------------
+# 4. LEAPS tax drag comparison
+# ---------------------------------------------------------------------------
+
+
+def plot_leaps_tax_drag(
+    taxable_result: BacktestResult,
+    sheltered_result: BacktestResult,
+    output_path: Path | None = _FIGURES_DIR / "leaps_tax_drag.png",
+) -> p9.ggplot:
+    """Compare taxable vs. tax-sheltered LEAPS NAV trajectories.
+
+    Arguments:
+        taxable_result: BacktestResult from a TAXABLE account simulation.
+        sheltered_result: BacktestResult from a TAX_SHELTERED account simulation.
+        output_path: Destination PNG path, or None to skip saving.
+
+    Returns:
+        A plotnine ggplot object.
+    """
+    frames = [
+        _result_to_df(taxable_result, "Taxable"),
+        _result_to_df(sheltered_result, "Tax-Sheltered"),
+    ]
+    data = pd.concat(frames, ignore_index=True)
+    data["nav_millions"] = data["nav"] / 1_000_000
+
+    t_nav = taxable_result.nav_series
+    s_nav = sheltered_result.nav_series
+    common_idx = t_nav.index.intersection(s_nav.index)
+    if len(common_idx):
+        final_drag = float(s_nav.loc[common_idx[-1]] - t_nav.loc[common_idx[-1]])
+        drag_label = f"Tax drag: ${final_drag:,.0f}"
+    else:
+        drag_label = ""
+
+    plot = (
+        p9.ggplot(data, p9.aes(x="date", y="nav_millions", color="account"))
+        + p9.geom_line(size=0.8)
+        + p9.scale_x_datetime(date_labels="%Y")
+        + p9.labs(
+            title=f"LEAPS Tax Drag: Taxable vs. Tax-Sheltered\n{drag_label}",
+            x="Date",
+            y="NAV ($ millions)",
+            color="Account Type",
+        )
+        + p9.theme_light()
+        + p9.theme(figure_size=(10, 5))
+    )
+
+    if output_path is not None:
+        _save(plot, output_path)
+    return plot
+
+
+def _result_to_df(result: BacktestResult, label: str) -> pd.DataFrame:
+    """Convert a BacktestResult NAV series to a tidy DataFrame with an account label.
+
+    Arguments:
+        result: BacktestResult to convert.
+        label: Account label string.
+
+    Returns:
+        DataFrame with columns [date, nav, account].
+    """
+    df = result.nav_series.rename("nav").to_frame()
+    df["account"] = label
+    df.index.name = "date"
+    return df.reset_index()
+
+
+# ---------------------------------------------------------------------------
+# 5. Performance report table (console)
+# ---------------------------------------------------------------------------
+
+
+def format_performance_table(report: PerformanceReport) -> str:
+    """Format a PerformanceReport as a human-readable table string.
+
+    Arguments:
+        report: PerformanceReport to display.
+
+    Returns:
+        A formatted string suitable for printing to stdout.
+    """
+    rows: list[dict[str, object]] = []
+    for m in (report.full_period, *report.crisis_periods):
+        rows.append(_metrics_to_row(m))
+
+    df = pd.DataFrame(rows).set_index("Period")
+    col_labels = ["Ann. Return", "Ann. Std", "Max DD", "Sharpe", "Sortino", "Calmar", "Omega"]
+    df.columns = pd.Index(col_labels)
+
+    lines = [
+        "=" * 76,
+        "  Performance Report",
+        "=" * 76,
+        df.to_string(float_format=lambda x: f"{x:.4f}"),
+        "-" * 76,
+        f"  Forward Vol Forecast : {report.forward_vol_forecast:.4f}",
+        "=" * 76,
+    ]
+    return os.linesep.join(lines)
+
+
+def _metrics_to_row(m: PerformanceMetrics) -> dict[str, object]:
+    """Convert a PerformanceMetrics dataclass to a dict row for a DataFrame.
+
+    Arguments:
+        m: PerformanceMetrics instance.
+
+    Returns:
+        Dict suitable for use as a DataFrame row.
+    """
+    return {
+        "Period": m.period_label,
+        "ann_return": m.annualized_return,
+        "ann_std": m.annualized_std,
+        "max_drawdown": m.max_drawdown,
+        "sharpe": m.sharpe,
+        "sortino": m.sortino,
+        "calmar": m.calmar,
+        "omega": m.omega,
+    }

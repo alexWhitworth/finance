@@ -627,26 +627,29 @@ def run_backtest(
 - [x] Tests: NAV math (flat returns, constant return, contribution compounding), weight drift, rebalance snap, LEAPS integration, 26 tests
 - Judge verdict: 171 tests pass, 98.6% coverage, ruff + mypy clean (2026-07-23)
 
-### Phase 7 — Reporting & Visualization
-- [ ] `plotnine` charts:
+### Phase 7 — Reporting & Visualization ✅ COMPLETE
+- [x] `plotnine` charts:
   - NAV growth comparison (multiple allocations on one plot)
   - Drawdown chart (shaded regions for crisis periods)
   - Vol contribution bar chart (stacked, unit-normed)
   - LEAPS tax drag comparison (taxable vs. tax-sheltered NAV)
-- [ ] All plots saved to `figures/`
-- [ ] `PerformanceReport` printed as formatted table (pandas `.to_string()` or `tabulate`)
+- [x] All plots saved to `figures/`
+- [x] `PerformanceReport` printed as formatted table (`format_performance_table()`)
+- [x] Tests: save-path smoke tests (tmp_path), crisis-shading branch, known-value table rendering, 24 tests
+- Judge verdict: CONDITIONAL_PASS → PASS after advisory fixes (2026-07-23)
 
-### Phase 8 — Integration & Coverage
-- [ ] End-to-end integration test: full backtest → report generation
-- [ ] `uv run pytest --cov=src --cov-report=term-missing` → verify ≥ 80%
-- [ ] `uv run ruff check .` → clean
-- [ ] `uv run mypy src/` → clean under strict mode
+### Phase 8 — Integration & Coverage ✅ COMPLETE
+- [x] End-to-end integration test: full backtest → report generation (`test_integration.py`, 16 tests)
+- [x] `uv run pytest --cov=src --cov-report=term-missing` → 98.97% coverage (211 tests pass)
+- [x] `uv run ruff check .` → clean
+- [x] `uv run mypy src/` → clean under strict mode
 
 ### Phase 9 — Examples (`examples/`)
-- [ ] `examples/basic_backtest.py` — minimal end-to-end: fetch prices → build returns → run backtest → print `PerformanceMetrics`
+- [ ] `examples/basic_backtest.py` — minimal end-to-end: fetch prices → build returns → run backtest → print `PerformanceMetrics`. 
 - [ ] `examples/with_leaps.py` — same pipeline with LEAPS overlay, both taxable and tax-sheltered accounts, side-by-side NAV comparison
 - [ ] `examples/volatility_report.py` — build `VolatilityModel`, print vol contribution table, forward vol forecast
 - [ ] `examples/crisis_analysis.py` — slice GFC / COVID / 2022 Rate Hike periods, print per-period `PerformanceMetrics`
+- [ ] Update `README.md` "Usage" section and add pointer to examples for full details.
 - [ ] Each example is a self-contained `if __name__ == "__main__":` script runnable via `uv run examples/<name>.py`
 - [ ] No new library code; examples only call the public API
 
