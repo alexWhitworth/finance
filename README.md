@@ -49,7 +49,7 @@ uv run mypy src/               # type-check
 | 3 | `volatility.py` | ✅ Complete |
 | 4 | `metrics.py` | ✅ Complete |
 | 5 | `leverage.py` | ✅ Complete |
-| 6 | `portfolio.py` | Pending |
+| 6 | `portfolio.py` | ✅ Complete |
 | 7 | Reporting & visualization | Pending |
 | 8 | Integration & coverage | Pending |
 
