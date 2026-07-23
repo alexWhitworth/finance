@@ -46,7 +46,7 @@ uv run mypy src/               # type-check
 |---|---|---|
 | 1 | Scaffolding | ✅ Complete |
 | 2 | `data.py`, `returns.py` | ✅ Complete |
-| 3 | `volatility.py` | Pending |
+| 3 | `volatility.py` | ✅ Complete |
 | 4 | `metrics.py` | Pending |
 | 5 | `leverage.py` | Pending |
 | 6 | `portfolio.py` | Pending |
