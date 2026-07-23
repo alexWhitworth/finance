@@ -644,14 +644,15 @@ def run_backtest(
 - [x] `uv run ruff check .` → clean
 - [x] `uv run mypy src/` → clean under strict mode
 
-### Phase 9 — Examples (`examples/`)
-- [ ] `examples/basic_backtest.py` — minimal end-to-end: fetch prices → build returns → run backtest → print `PerformanceMetrics`. 
-- [ ] `examples/with_leaps.py` — same pipeline with LEAPS overlay, both taxable and tax-sheltered accounts, side-by-side NAV comparison
-- [ ] `examples/volatility_report.py` — build `VolatilityModel`, print vol contribution table, forward vol forecast
-- [ ] `examples/crisis_analysis.py` — slice GFC / COVID / 2022 Rate Hike periods, print per-period `PerformanceMetrics`
-- [ ] Update `README.md` "Usage" section and add pointer to examples for full details.
-- [ ] Each example is a self-contained `if __name__ == "__main__":` script runnable via `uv run examples/<name>.py`
-- [ ] No new library code; examples only call the public API
+### Phase 9 — Examples (`examples/`) ✅ COMPLETE
+- [x] `examples/basic_backtest.py` — minimal end-to-end: fetch prices → run backtest → print `PerformanceReport` → save NAV chart
+- [x] `examples/with_leaps.py` — LEAPS overlay pipeline, taxable vs. tax-sheltered side-by-side NAV comparison + tax drag
+- [x] `examples/volatility_report.py` — build `VolatilityModel`, print formatted vol contribution table, forward vol forecast
+- [x] `examples/crisis_analysis.py` — full GFC/COVID/2022 Rate Hike per-period `PerformanceMetrics` + drawdown chart
+- [x] `README.md` Usage section updated with full end-to-end code example
+- [x] Each example is a self-contained `if __name__ == "__main__":` script runnable via `uv run examples/<name>.py`
+- [x] No new library code; examples only call the public API
+- [x] ruff clean, mypy strict clean across all four files
 
 ---
 

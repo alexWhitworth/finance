@@ -1,0 +1,89 @@
+"""Volatility contribution report for a 6-asset diversified portfolio.
+
+Fetches prices from 2015-01-01 to 2024-12-31 with an AQMIX splice for
+pre-KMLM history, builds a VolatilityModel, prints the full vol contribution
+table (90-day realized vol, EWMA vol, correlation with VTI, and contribution
+fraction), prints the forward portfolio vol forecast, and saves a vol
+contributions bar chart to figures/vol_contributions.png.
+"""
+
+from pathlib import Path
+
+import pandas as pd
+
+from finance.data import build_price_data
+from finance.figures import plot_vol_contributions
+from finance.leverage import RebalanceRule, WeightStrategy
+from finance.metrics import build_performance_report
+from finance.portfolio import PortfolioConfig, run_backtest
+from finance.returns import build_return_data
+from finance.volatility import (
+    build_vol_contribution_table,
+    build_volatility_model,
+    forecast_portfolio_vol,
+)
+
+WEIGHTS = pd.Series(
+    {
+        "VTI": 0.40,
+        "VXUS": 0.20,
+        "GLD": 0.10,
+        "VTEB": 0.10,
+        "KMLM": 0.10,
+        "VGIT": 0.10,
+    }
+)
+
+
+def _format_vol_table(tbl: pd.DataFrame) -> pd.DataFrame:
+    """Format the raw vol contribution table for human-readable display.
+
+    Arguments:
+        tbl: DataFrame with columns [sigma_tilde, sigma_hat, rho_VTI, contrib]
+            indexed by asset name.
+
+    Returns:
+        Formatted DataFrame with renamed columns and percentage/decimal strings.
+    """
+    display = pd.DataFrame(index=tbl.index)
+    display.index.name = "Asset"
+    display["σ̃_k (90d realized)"] = tbl["sigma_tilde"].map(lambda x: f"{x:.1%}")  # noqa: RUF001
+    display["σ̂_k (EWMA)"] = tbl["sigma_hat"].map(lambda x: f"{x:.1%}")  # noqa: RUF001
+    display["ρ̂_VTI"] = tbl["rho_VTI"].map(lambda x: f"{x:.3f}" if pd.notna(x) else "N/A")  # noqa: RUF001
+    display["Contrib"] = tbl["contrib"].map(lambda x: f"{x:.1%}")
+    return display
+
+
+if __name__ == "__main__":
+    print("=== Fetching Price Data ===")
+    price_data = build_price_data("2015-01-01", "2024-12-31", use_aqmix_splice=True)
+
+    print("=== Building Returns ===")
+    return_data = build_return_data(price_data)
+
+    print("=== Building Volatility Model ===")
+    vol_model = build_volatility_model(return_data)
+
+    print("=== Vol Contribution Table ===")
+    vol_table = build_vol_contribution_table(WEIGHTS, return_data, vol_model)
+    with pd.option_context("display.max_colwidth", 20):
+        print(_format_vol_table(vol_table).to_string())
+
+    fwd_vol = forecast_portfolio_vol(WEIGHTS, vol_model)
+    print(f"\nForward portfolio vol forecast: {fwd_vol:.2%}")
+
+    print("\n=== Running Backtest (for performance report) ===")
+    config = PortfolioConfig(
+        target_weights={str(k): v for k, v in WEIGHTS.items()},
+        initial_nav=1_000_000.0,
+        monthly_contribution=0.0,
+        rebalance_rule=RebalanceRule.QUARTERLY,
+        weight_strategy=WeightStrategy.USER_SPECIFIED,
+        leaps_config=None,
+    )
+    result = run_backtest(return_data, config)
+    report = build_performance_report(result, return_data, vol_model)
+
+    print("=== Saving Vol Contributions Chart ===")
+    plot_vol_contributions(report, output_path=Path("figures/vol_contributions.png"))
+    print("Chart saved to figures/vol_contributions.png")

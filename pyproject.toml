@@ -1,6 +1,6 @@
 [project]
 name = "finance"
-version = "0.1.0"
+version = "1.0.0"
 requires-python = ">=3.13"
 dependencies = [
     "yfinance",
@@ -54,6 +54,7 @@ ignore_errors = true
 [[tool.mypy.overrides]]
 module = "finance.figures"
 ignore_errors = true
+
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -2,10 +2,6 @@
 
 A Python library for backtesting multi-asset portfolios with optional synthetic leverage via DITM VTI LEAPS, tax-aware roll modeling, and EWMA volatility forecasting.
 
-## Asset Universe
-
-VTI, VXUS, GLD, VTEB, KMLM, VGIT — with AQMIX as a KMLM proxy prior to Jan 2021.
-
 ## Features
 
 - **Performance metrics** — annualized return, max drawdown, Sharpe, Sortino, Calmar, Omega ratios over full period and pre-defined crisis windows (GFC, COVID, 2022 rate hike)
@@ -82,6 +78,15 @@ uv run mypy src/               # type-check
 | 6 | `portfolio.py` | ✅ Complete | 26 | 100% |
 | 7 | `figures.py` | ✅ Complete | 24 | 99% |
 | 8 | Integration & coverage | ✅ Complete | 16 | 99% overall |
-| 9 | `examples/` | Pending | — | — |
+| 9 | `examples/` | ✅ Complete | — | — |
 
 **211 tests · 98.97% line coverage · ruff clean · mypy strict clean**
+
+## Examples
+
+```bash
+uv run examples/basic_backtest.py      # full backtest + performance table + NAV chart
+uv run examples/with_leaps.py          # LEAPS overlay, taxable vs. tax-sheltered
+uv run examples/volatility_report.py   # vol contribution table + forward vol forecast
+uv run examples/crisis_analysis.py     # GFC / COVID / 2022 per-period metrics
+```
