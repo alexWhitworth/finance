@@ -211,6 +211,11 @@ def run_backtest(
 
     iv = config.leaps_config.iv if config.leaps_config is not None else DEFAULT_IV
 
+    # Pre-align risk-free rate series to the returns index for fast per-day lookup
+    rfr_series: pd.Series | None = None
+    if leaps_ledger is not None and return_data.risk_free_rate is not None:
+        rfr_series = return_data.risk_free_rate.reindex(idx, method="ffill").fillna(0.0)
+
     # Initialize holdings: dollar value per asset
     holdings: dict[str, float] = {
         a: config.initial_nav * float(target_w[a]) for a in assets
@@ -233,8 +238,9 @@ def run_backtest(
         leaps_contrib = 0.0
         if leaps_ledger is not None and vti_prices is not None:
             spot = float(vti_prices.loc[date_ts])
+            rfr = float(rfr_series.loc[date_ts]) if rfr_series is not None else 0.0
             leaps_contrib = compute_leaps_nav_contribution(
-                leaps_ledger, date_ts, spot, iv
+                leaps_ledger, date_ts, spot, iv, rfr
             )
 
         nav_before_contrib = sum(holdings.values()) + leaps_contrib

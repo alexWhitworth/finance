@@ -1,6 +1,6 @@
 """End-to-end backtest example for a 6-asset diversified portfolio.
 
-Fetches prices from 2015-01-01 to 2024-12-31 with an AQMIX splice for
+Fetches prices from 2010-02-01 to 2026-06-30 with an AQMIX splice for
 pre-KMLM history, runs a quarterly-rebalanced backtest, computes performance
 metrics and a volatility model, then prints a formatted performance table and
 saves a NAV growth chart to figures/basic_backtest_nav.png.
@@ -8,7 +8,7 @@ saves a NAV growth chart to figures/basic_backtest_nav.png.
 
 from pathlib import Path
 
-from finance.data import build_price_data
+from finance.data import build_price_data, fetch_risk_free_rate
 from finance.figures import format_performance_table, plot_nav_growth
 from finance.leverage import RebalanceRule, WeightStrategy
 from finance.metrics import build_performance_report
@@ -18,19 +18,24 @@ from finance.volatility import build_volatility_model
 
 WEIGHTS = {
     "VTI": 0.40,
-    "VXUS": 0.20,
+    "VXUS": 0.15,
     "GLD": 0.10,
-    "MUB": 0.10,
+    "MUB": 0.15,
     "KMLM": 0.10,
     "VGIT": 0.10,
 }
 
 if __name__ == "__main__":
+    START, END = "2010-02-01", "2026-06-30"
+
     print("=== Fetching Price Data ===")
-    price_data = build_price_data("2007-09-10", "2026-06-30", use_aqmix_splice=True)
+    price_data = build_price_data(START, END, use_aqmix_splice=True)
+
+    print("=== Fetching Risk-Free Rate ===")
+    rfr_series = fetch_risk_free_rate(START, END)
 
     print("=== Building Returns ===")
-    return_data = build_return_data(price_data)
+    return_data = build_return_data(price_data, risk_free_series=rfr_series)
 
     config = PortfolioConfig(
         target_weights=WEIGHTS,
@@ -55,7 +60,7 @@ if __name__ == "__main__":
 
     print("=== Saving NAV Growth Chart ===")
     plot_nav_growth(
-        {"60/20/20 Portfolio": result},
+        {"Portfolio": result},
         output_path=Path("figures/basic_backtest_nav.png"),
     )
     print("Chart saved to figures/basic_backtest_nav.png")

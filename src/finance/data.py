@@ -129,9 +129,9 @@ def splice_kmlm(
 ) -> pd.Series:
     """Concatenate AQMIX (proxy) and KMLM price series at the splice date.
 
-    Uses raw AQMIX returns without vol-scaling. The resulting series has AQMIX
-    prices before splice_date and KMLM prices from splice_date onward, with no
-    level adjustment at the join.
+    Uses raw AQMIX returns without vol-scaling. AQMIX prices are level-adjusted
+    so that the last pre-splice price equals the first KMLM price, preventing a
+    spurious return discontinuity at the join.  KMLM prices are unchanged.
 
     Arguments:
         kmlm_prices: KMLM price series (DatetimeIndex).
@@ -152,6 +152,10 @@ def splice_kmlm(
         raise ValueError(f"KMLM has no data on or after {splice_date}")
     if pre.empty:
         raise ValueError(f"AQMIX has no data before {splice_date}")
+
+    # Scale AQMIX prices so the last pre-splice value equals the first KMLM value.
+    # This makes pct_change() at the seam exactly 0%, preserving all daily returns.
+    pre = pre * (post.iloc[0] / pre.iloc[-1])
 
     spliced: pd.Series = pd.concat([pre, post])
     spliced.name = "KMLM"

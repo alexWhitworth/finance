@@ -1,6 +1,6 @@
 """Crisis-period performance analysis for a 6-asset diversified portfolio.
 
-Fetches prices from 2007-01-01 to 2024-12-31 (AQMIX splice used as KMLM proxy
+Fetches prices from 2010-02-01 to 2026-06-30 (AQMIX splice used as KMLM proxy
 before 2021), runs a quarterly-rebalanced backtest, then slices the return
 series into three pre-defined crisis windows (GFC, COVID, 2022 Rate Hike) and
 prints PerformanceMetrics for each.  Also saves a drawdown chart with shaded
@@ -9,7 +9,7 @@ crisis bands to figures/crisis_drawdown.png.
 
 from pathlib import Path
 
-from finance.data import build_price_data
+from finance.data import build_price_data, fetch_risk_free_rate
 from finance.figures import format_performance_table, plot_drawdown
 from finance.leverage import RebalanceRule, WeightStrategy
 from finance.metrics import CRISIS_PERIODS, PerformanceReport, build_performance_report
@@ -27,11 +27,16 @@ WEIGHTS = {
 }
 
 if __name__ == "__main__":
-    print("=== Fetching Price Data (2007-2026) ===")
-    price_data = build_price_data("2007-09-10", "2026-06-30", use_aqmix_splice=True)
+    START, END = "2010-02-01", "2026-06-30"
+
+    print("=== Fetching Price Data ===")
+    price_data = build_price_data(START, END, use_aqmix_splice=True)
+
+    print("=== Fetching Risk-Free Rate ===")
+    rfr_series = fetch_risk_free_rate(START, END)
 
     print("=== Building Returns ===")
-    return_data = build_return_data(price_data)
+    return_data = build_return_data(price_data, risk_free_series=rfr_series)
 
     config = PortfolioConfig(
         target_weights=WEIGHTS,

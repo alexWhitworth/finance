@@ -45,20 +45,36 @@ def test_splice_kmlm_no_overlap() -> None:
 
 
 def test_splice_kmlm_values_match_sources() -> None:
-    """Values in spliced series match the source series on either side."""
+    """KMLM values are unchanged post-splice; AQMIX returns are preserved pre-splice."""
     aqmix = _make_series("2018-01-02", "2021-06-30", "AQMIX", seed=1)
     kmlm = _make_series("2021-01-04", "2022-12-31", "KMLM", seed=2)
     spliced = splice_kmlm(kmlm, aqmix, KMLM_START)
 
-    # Use guaranteed index positions rather than calendar dates to avoid
-    # silent skips if market holidays shift the expected dates.
-    pre_date = spliced.index[10]   # well before splice
-    assert pre_date in aqmix.index
-    assert spliced[pre_date] == pytest.approx(aqmix[pre_date])
-
-    post_date = spliced.index[-10]  # well after splice
+    # Post-splice values are unchanged from KMLM
+    post_date = spliced.index[-10]
     assert post_date in kmlm.index
     assert spliced[post_date] == pytest.approx(kmlm[post_date])
+
+    # Pre-splice daily returns match AQMIX (level-scaling preserves return ratios)
+    pre_idx = spliced.index[spliced.index < KMLM_START]
+    spliced_pre_rets = spliced.loc[pre_idx].pct_change().dropna()
+    aqmix_pre_rets = aqmix.loc[pre_idx].pct_change().dropna()
+    common = spliced_pre_rets.index.intersection(aqmix_pre_rets.index)
+    assert (spliced_pre_rets.loc[common].values == pytest.approx(
+        aqmix_pre_rets.loc[common].values, rel=1e-9
+    ))
+
+
+def test_splice_kmlm_no_seam_jump() -> None:
+    """pct_change() at the splice boundary is exactly 0% (no level discontinuity)."""
+    aqmix = _make_series("2018-01-02", "2021-06-30", "AQMIX", seed=3)
+    kmlm = _make_series("2021-01-04", "2022-12-31", "KMLM", seed=4)
+    spliced = splice_kmlm(kmlm, aqmix, KMLM_START)
+
+    returns = spliced.pct_change()
+    # The first KMLM date (splice boundary) should have a ~0 return
+    seam_date = kmlm.index[0]
+    assert returns.loc[seam_date] == pytest.approx(0.0, abs=1e-9)
 
 
 def test_splice_kmlm_raises_empty_post() -> None:

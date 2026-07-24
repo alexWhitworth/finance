@@ -183,24 +183,24 @@ def calmar_ratio(returns: pd.Series, nav_series: pd.Series) -> float:
     return float(ann / mdd)
 
 
-def omega_ratio(returns: pd.Series, risk_free_rate: float = RISK_FREE_RATE) -> float:
+def omega_ratio(returns: pd.Series, threshold: float = RISK_FREE_RATE) -> float:
     """Compute Omega ratio.
 
-    Omega = sum(max(r - threshold, 0)) / (sum(max(threshold - r, 0)) + epsilon),
-    where threshold is the daily risk-free rate derived from the annual rate.
+    Omega = sum(max(r - threshold, 0)) / (sum(max(threshold - r, 0)) + epsilon).
 
     Arguments:
         returns: Daily simple return Series.
-        risk_free_rate: Annual risk-free rate used as the return threshold. Default RISK_FREE_RATE.
+        threshold: Annual return threshold (used as daily_threshold = threshold / 252).
+            Typically the risk-free rate. Default RISK_FREE_RATE.
 
     Returns:
         Omega ratio. Returns inf if there are no returns below threshold.
     """
     if len(returns) == 0:
         return 0.0
-    daily_rf = risk_free_rate / TRADING_DAYS_PER_YEAR
-    gains = (returns - daily_rf).clip(lower=0.0).sum()
-    losses = (daily_rf - returns).clip(lower=0.0).sum()
+    daily_threshold = threshold / TRADING_DAYS_PER_YEAR
+    gains = (returns - daily_threshold).clip(lower=0.0).sum()
+    losses = (daily_threshold - returns).clip(lower=0.0).sum()
     eps = 1e-12
     return float(gains / (losses + eps))
 

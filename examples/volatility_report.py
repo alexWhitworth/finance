@@ -1,6 +1,6 @@
 """Volatility contribution report for a 6-asset diversified portfolio.
 
-Fetches prices from 2015-01-01 to 2024-12-31 with an AQMIX splice for
+Fetches prices from 2010-02-01 to 2026-06-30 with an AQMIX splice for
 pre-KMLM history, builds a VolatilityModel, prints the full vol contribution
 table (90-day realized vol, EWMA vol, correlation with VTI, and contribution
 fraction), prints the forward portfolio vol forecast, and saves a vol
@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from finance.data import build_price_data
+from finance.data import build_price_data, fetch_risk_free_rate
 from finance.figures import plot_vol_contributions
 from finance.leverage import RebalanceRule, WeightStrategy
 from finance.metrics import build_performance_report
@@ -55,11 +55,16 @@ def _format_vol_table(tbl: pd.DataFrame) -> pd.DataFrame:
 
 
 if __name__ == "__main__":
+    START, END = "2010-02-01", "2026-06-30"
+
     print("=== Fetching Price Data ===")
-    price_data = build_price_data("2007-09-10", "2026-06-30", use_aqmix_splice=True)
+    price_data = build_price_data(START, END, use_aqmix_splice=True)
+
+    print("=== Fetching Risk-Free Rate ===")
+    rfr_series = fetch_risk_free_rate(START, END)
 
     print("=== Building Returns ===")
-    return_data = build_return_data(price_data)
+    return_data = build_return_data(price_data, risk_free_series=rfr_series)
 
     print("=== Building Volatility Model ===")
     vol_model = build_volatility_model(return_data)

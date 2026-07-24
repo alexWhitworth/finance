@@ -19,6 +19,7 @@ from finance.leverage import (
     LeapsRollEvent,
     bs_call_delta,
     bs_call_price,
+    bs_call_vanna,
     compute_leaps_nav_contribution,
     create_leaps_contract,
     price_leaps_contract,
@@ -155,6 +156,46 @@ def test_bs_delta_increases_with_spot() -> None:
     spots = [60.0, 80.0, 100.0, 130.0, 160.0]
     deltas = [bs_call_delta(s, strike, t_years, iv) for s in spots]
     assert all(deltas[i] < deltas[i + 1] for i in range(len(deltas) - 1))
+
+
+def test_bs_delta_dividend_yield_reduces_delta() -> None:
+    """Positive dividend yield reduces delta via exp(-qT) multiplier."""
+    args = dict(spot=100.0, strike=100.0, time_to_expiry=1.0, iv=0.20)
+    delta_no_div = bs_call_delta(**args, dividend_yield=0.0)
+    delta_with_div = bs_call_delta(**args, dividend_yield=0.05)
+    assert delta_with_div < delta_no_div
+
+
+# ---------------------------------------------------------------------------
+# bs_call_vanna
+# ---------------------------------------------------------------------------
+
+
+def test_bs_vanna_atm_negative() -> None:
+    """ATM vanna is negative (d2 > 0 for ITM-biased, but for exact ATM with r=q=0 d2 < 0)."""
+    # For ATM with r=q=0: d1 = 0.5*sigma*sqrt(T), d2 = -0.5*sigma*sqrt(T) < 0
+    # => vanna = -N'(d1) * (d2/sigma) > 0 (minus of negative)
+    vanna = bs_call_vanna(spot=100.0, strike=100.0, time_to_expiry=1.0, iv=0.20)
+    assert vanna > 0.0
+
+
+def test_bs_vanna_deep_itm_near_zero() -> None:
+    """Deep ITM vanna approaches 0 (N'(d1) → 0 as d1 → ∞)."""
+    vanna = bs_call_vanna(spot=200.0, strike=50.0, time_to_expiry=1.0, iv=0.18)
+    assert abs(vanna) < 0.01
+
+
+def test_bs_vanna_deep_otm_near_zero() -> None:
+    """Deep OTM vanna approaches 0 (N'(d1) → 0 as d1 → -∞)."""
+    vanna = bs_call_vanna(spot=50.0, strike=200.0, time_to_expiry=0.5, iv=0.20)
+    assert abs(vanna) < 0.01
+
+
+def test_bs_vanna_symmetric_with_dividend_yield() -> None:
+    """Vanna changes when dividend yield is non-zero (exp(-qT) multiplier)."""
+    base = bs_call_vanna(spot=100.0, strike=100.0, time_to_expiry=1.0, iv=0.20)
+    with_div = bs_call_vanna(spot=100.0, strike=100.0, time_to_expiry=1.0, iv=0.20, dividend_yield=0.03)
+    assert base != pytest.approx(with_div, rel=1e-3)
 
 
 # ---------------------------------------------------------------------------

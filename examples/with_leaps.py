@@ -1,6 +1,6 @@
 """LEAPS overlay backtest: taxable vs. tax-sheltered account comparison.
 
-Runs two identical backtests from 2015-01-01 to 2024-12-31 — one with a LEAPS
+Runs two identical backtests from 2010-02-01 to 2026-06-30 — one with a LEAPS
 overlay in a TAXABLE account, one in a TAX_SHELTERED account — then prints a
 side-by-side NAV summary and saves a tax-drag comparison chart to
 figures/leaps_tax_drag.png.
@@ -13,7 +13,7 @@ overlay on top of the base holdings.
 
 from pathlib import Path
 
-from finance.data import PriceData, build_price_data
+from finance.data import PriceData, build_price_data, fetch_risk_free_rate
 from finance.figures import plot_leaps_tax_drag
 from finance.leverage import (
     AccountType,
@@ -62,6 +62,7 @@ def _run_scenario(
         price_series=price_data.prices["VTI"],
         monthly_contribution_to_leaps=MONTHLY_LEAPS_CONTRIBUTION,
         config=leaps_config,
+        risk_free_series=return_data.risk_free_rate,
     )
 
     config = PortfolioConfig(
@@ -77,11 +78,16 @@ def _run_scenario(
 
 
 if __name__ == "__main__":
+    START, END = "2010-02-01", "2026-06-30"
+
     print("=== Fetching Price Data ===")
-    price_data = build_price_data("2007-09-10", "2026-06-30", use_aqmix_splice=True)
+    price_data = build_price_data(START, END, use_aqmix_splice=True)
+
+    print("=== Fetching Risk-Free Rate ===")
+    rfr_series = fetch_risk_free_rate(START, END)
 
     print("=== Building Returns ===")
-    return_data = build_return_data(price_data)
+    return_data = build_return_data(price_data, risk_free_series=rfr_series)
 
     print("=== Running Taxable LEAPS Backtest ===")
     taxable_result = _run_scenario(price_data, return_data, AccountType.TAXABLE)
@@ -96,7 +102,7 @@ if __name__ == "__main__":
 
     print()
     print("=" * 52)
-    print("  LEAPS Backtest Summary (2007-09-10 → 2026-06-30)")
+    print("  LEAPS Backtest Summary (2010-02-01 → 2026-06-30)")
     print("=" * 52)
     print(f"  Taxable final NAV      : ${taxable_final:>15,.0f}")
     print(f"  Tax-Sheltered final NAV: ${sheltered_final:>15,.0f}")

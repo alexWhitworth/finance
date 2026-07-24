@@ -78,15 +78,15 @@ def plot_nav_growth(
     plot = (
         p9.ggplot(data, p9.aes(x="date", y="nav_millions", color="portfolio"))
         + p9.geom_line(size=0.8)
-        + p9.scale_x_datetime(date_labels="%Y")
+        + p9.scale_x_datetime(date_labels="%Y", date_minor_breaks="1 year")
         + p9.labs(
             title="Portfolio NAV Growth",
             x="Date",
             y="NAV ($ millions)",
             color="Portfolio",
         )
-        + p9.theme_light()
-        + p9.theme(figure_size=(10, 5))
+        + p9.theme_grey()
+        + p9.theme(figure_size=(10, 5), legend_position="bottom")
     )
 
     if output_path is not None:
@@ -155,7 +155,7 @@ def plot_drawdown(
         base
         + p9.geom_line(p9.aes(color="portfolio"), size=0.8)
         + p9.geom_hline(yintercept=0, linetype="dashed", color="grey", size=0.4)
-        + p9.scale_x_datetime(date_labels="%Y")
+        + p9.scale_x_datetime(date_labels="%Y", date_minor_breaks="1 year")
         + p9.labs(
             title="Portfolio Drawdown",
             x="Date",
@@ -163,8 +163,8 @@ def plot_drawdown(
             color="Portfolio",
             fill="Crisis Period",
         )
-        + p9.theme_light()
-        + p9.theme(figure_size=(10, 5))
+        + p9.theme_grey()
+        + p9.theme(figure_size=(10, 5), legend_position="bottom")
     )
 
     if output_path is not None:
@@ -213,7 +213,7 @@ def plot_vol_contributions(
             x="Asset",
             y="Contribution (%)",
         )
-        + p9.theme_light()
+        + p9.theme_grey()
         + p9.theme(figure_size=(8, 5))
     )
 
@@ -261,15 +261,15 @@ def plot_leaps_tax_drag(
     plot = (
         p9.ggplot(data, p9.aes(x="date", y="nav_millions", color="account"))
         + p9.geom_line(size=0.8)
-        + p9.scale_x_datetime(date_labels="%Y")
+        + p9.scale_x_datetime(date_labels="%Y", date_minor_breaks="1 year")
         + p9.labs(
             title=f"LEAPS Tax Drag: Taxable vs. Tax-Sheltered\n{drag_label}",
             x="Date",
             y="NAV ($ millions)",
             color="Account Type",
         )
-        + p9.theme_light()
-        + p9.theme(figure_size=(10, 5))
+        + p9.theme_grey()
+        + p9.theme(figure_size=(10, 5), legend_position="bottom")
     )
 
     if output_path is not None:
