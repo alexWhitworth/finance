@@ -66,20 +66,6 @@ uv run ruff check src/ tests/  # lint
 uv run mypy src/               # type-check
 ```
 
-## Implementation Status
-
-| Phase | Module(s) | Status | Tests | Coverage |
-|---|---|---|---|---|
-| 1 | Scaffolding | ✅ Complete | — | — |
-| 2 | `data.py`, `returns.py` | ✅ Complete | 37 | 98% |
-| 3 | `volatility.py` | ✅ Complete | 34 | 98% |
-| 4 | `metrics.py` | ✅ Complete | 37 | 99% |
-| 5 | `leverage.py` | ✅ Complete | 43 | 100% |
-| 6 | `portfolio.py` | ✅ Complete | 26 | 100% |
-| 7 | `figures.py` | ✅ Complete | 24 | 99% |
-| 8 | Integration & coverage | ✅ Complete | 16 | 99% overall |
-| 9 | `examples/` | ✅ Complete | — | — |
-
 **211 tests · 98.97% line coverage · ruff clean · mypy strict clean**
 
 ## Examples
