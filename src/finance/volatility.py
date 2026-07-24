@@ -9,12 +9,8 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
+from finance.consts import COV_RIDGE, EWMA_LAMBDA, ROLLING_CORR_WINDOW_WEEKS, TRADING_DAYS_PER_YEAR
 from finance.returns import ReturnData
-
-EWMA_LAMBDA: float = 0.95
-ROLLING_CORR_WINDOW_WEEKS: int = 156  # 36 months ≈ 156 weeks
-TRADING_DAYS_PER_YEAR: int = 252
-COV_RIDGE: float = 1e-8  # added to diagonal to guarantee positive definiteness
 
 
 @dataclass(frozen=True)

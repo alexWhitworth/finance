@@ -6,17 +6,19 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from finance.consts import SPLICE_MAP, TICKERS
 from finance.data import (
-    KMLM_START,
-    TICKERS,
     PriceData,
     _forward_fill_prices,
     build_price_data,
-    splice_kmlm,
+    splice,
 )
 
+# KMLM splice date from SPLICE_MAP for convenience
+_KMLM_START: str = SPLICE_MAP["KMLM"][1]
+
 # ---------------------------------------------------------------------------
-# splice_kmlm
+# splice
 # ---------------------------------------------------------------------------
 
 
@@ -27,28 +29,28 @@ def _make_series(start: str, end: str, name: str, seed: int = 0) -> pd.Series:
     return pd.Series(prices, index=idx, name=name)
 
 
-def test_splice_kmlm_no_overlap() -> None:
+def test_splice_no_overlap() -> None:
     """Pre-splice segment ends the day before splice_date; post starts on it."""
     aqmix = _make_series("2015-01-02", "2021-06-30", "AQMIX")
     kmlm = _make_series("2021-01-04", "2023-12-31", "KMLM")
-    spliced = splice_kmlm(kmlm, aqmix, KMLM_START)
+    spliced = splice(kmlm, aqmix, _KMLM_START)
 
     assert spliced.name == "KMLM"
-    # All dates before KMLM_START come from AQMIX
-    pre_dates = spliced.index[spliced.index < KMLM_START]
+    # All dates before _KMLM_START come from AQMIX
+    pre_dates = spliced.index[spliced.index < _KMLM_START]
     assert not pre_dates.empty
-    # All dates from KMLM_START onward come from KMLM
-    post_dates = spliced.index[spliced.index >= KMLM_START]
+    # All dates from _KMLM_START onward come from KMLM
+    post_dates = spliced.index[spliced.index >= _KMLM_START]
     assert not post_dates.empty
     # No duplicate dates at the boundary
     assert spliced.index.is_unique
 
 
-def test_splice_kmlm_values_match_sources() -> None:
-    """KMLM values are unchanged post-splice; AQMIX returns are preserved pre-splice."""
+def test_splice_values_match_sources() -> None:
+    """KMLM values are unchanged post-splice; proxy returns are preserved pre-splice."""
     aqmix = _make_series("2018-01-02", "2021-06-30", "AQMIX", seed=1)
     kmlm = _make_series("2021-01-04", "2022-12-31", "KMLM", seed=2)
-    spliced = splice_kmlm(kmlm, aqmix, KMLM_START)
+    spliced = splice(kmlm, aqmix, _KMLM_START)
 
     # Post-splice values are unchanged from KMLM
     post_date = spliced.index[-10]
@@ -56,7 +58,7 @@ def test_splice_kmlm_values_match_sources() -> None:
     assert spliced[post_date] == pytest.approx(kmlm[post_date])
 
     # Pre-splice daily returns match AQMIX (level-scaling preserves return ratios)
-    pre_idx = spliced.index[spliced.index < KMLM_START]
+    pre_idx = spliced.index[spliced.index < _KMLM_START]
     spliced_pre_rets = spliced.loc[pre_idx].pct_change().dropna()
     aqmix_pre_rets = aqmix.loc[pre_idx].pct_change().dropna()
     common = spliced_pre_rets.index.intersection(aqmix_pre_rets.index)
@@ -65,11 +67,11 @@ def test_splice_kmlm_values_match_sources() -> None:
     ))
 
 
-def test_splice_kmlm_no_seam_jump() -> None:
+def test_splice_no_seam_jump() -> None:
     """pct_change() at the splice boundary is exactly 0% (no level discontinuity)."""
     aqmix = _make_series("2018-01-02", "2021-06-30", "AQMIX", seed=3)
     kmlm = _make_series("2021-01-04", "2022-12-31", "KMLM", seed=4)
-    spliced = splice_kmlm(kmlm, aqmix, KMLM_START)
+    spliced = splice(kmlm, aqmix, _KMLM_START)
 
     returns = spliced.pct_change()
     # The first KMLM date (splice boundary) should have a ~0 return
@@ -77,20 +79,20 @@ def test_splice_kmlm_no_seam_jump() -> None:
     assert returns.loc[seam_date] == pytest.approx(0.0, abs=1e-9)
 
 
-def test_splice_kmlm_raises_empty_post() -> None:
-    """Raises if KMLM has no data on or after splice_date."""
+def test_splice_raises_empty_post() -> None:
+    """Raises if primary has no data on or after splice_date."""
     aqmix = _make_series("2018-01-02", "2020-12-31", "AQMIX")
     kmlm = _make_series("2018-01-02", "2020-06-30", "KMLM")  # ends before splice
     with pytest.raises(ValueError, match="KMLM has no data"):
-        splice_kmlm(kmlm, aqmix, KMLM_START)
+        splice(kmlm, aqmix, _KMLM_START)
 
 
-def test_splice_kmlm_raises_empty_pre() -> None:
-    """Raises if AQMIX has no data before splice_date."""
+def test_splice_raises_empty_pre() -> None:
+    """Raises if proxy has no data before splice_date."""
     aqmix = _make_series("2021-06-01", "2023-12-31", "AQMIX")  # starts after splice
     kmlm = _make_series("2021-01-04", "2023-12-31", "KMLM")
     with pytest.raises(ValueError, match="AQMIX has no data before"):
-        splice_kmlm(kmlm, aqmix, KMLM_START)
+        splice(kmlm, aqmix, _KMLM_START)
 
 
 # ---------------------------------------------------------------------------
@@ -153,7 +155,7 @@ def test_build_price_data_no_splice() -> None:
         patch("finance.data.fetch_prices", side_effect=fake_fetch),
         patch("finance.data.fetch_dividends", return_value=pd.Series(dtype=float)),
     ):
-        pd_obj = build_price_data(start, end, use_aqmix_splice=False)
+        pd_obj = build_price_data(start, end, use_splice=False)
 
     assert pd_obj.spliced is False
     assert set(pd_obj.prices.columns) == set(TICKERS)
@@ -171,12 +173,12 @@ def test_build_price_data_with_splice() -> None:
         patch("finance.data.fetch_prices", side_effect=fake_fetch),
         patch("finance.data.fetch_dividends", return_value=pd.Series(dtype=float)),
     ):
-        pd_obj = build_price_data(start, end, use_aqmix_splice=True)
+        pd_obj = build_price_data(start, end, use_splice=True)
 
     assert pd_obj.spliced is True
     assert set(pd_obj.prices.columns) == set(TICKERS)
-    # KMLM column should have data before KMLM_START
-    pre_kmlm = pd_obj.prices["KMLM"].loc[:KMLM_START]
+    # KMLM column should have data before _KMLM_START
+    pre_kmlm = pd_obj.prices["KMLM"].loc[:_KMLM_START]
     assert not pre_kmlm.empty
 
 
@@ -194,7 +196,7 @@ def test_build_price_data_missing_aqmix_raises() -> None:
         patch("finance.data.fetch_dividends", return_value=pd.Series(dtype=float)),
     ):
         with pytest.raises(ValueError, match="AQMIX"):
-            build_price_data(start, end, use_aqmix_splice=True)
+            build_price_data(start, end, use_splice=True)
 
 
 def test_price_data_immutable() -> None:
@@ -205,6 +207,7 @@ def test_price_data_immutable() -> None:
     pd_obj = PriceData(
         prices=prices,
         dividends=dividends,
+        vol_prices=pd.DataFrame(),
         tickers=("VTI",),
         start_date="2022-01-03",
         end_date="2022-01-07",
@@ -212,3 +215,31 @@ def test_price_data_immutable() -> None:
     )
     with pytest.raises((AttributeError, TypeError)):
         pd_obj.spliced = True  # type: ignore[misc]
+
+
+def test_build_price_data_vol_prices_empty_when_not_requested() -> None:
+    """vol_prices is an empty DataFrame when fetch_vol_indices=False."""
+    start, end = "2021-06-01", "2022-12-31"
+
+    with (
+        patch("finance.data.fetch_prices", side_effect=lambda t, s, e: _fake_prices(t, s, e)),
+        patch("finance.data.fetch_dividends", return_value=pd.Series(dtype=float)),
+    ):
+        pd_obj = build_price_data(start, end, use_splice=False, fetch_vol_indices=False)
+
+    assert pd_obj.vol_prices.empty
+
+
+def test_build_price_data_custom_tickers() -> None:
+    """Custom ticker list is respected."""
+    start, end = "2021-06-01", "2022-12-31"
+    custom = ["VTI", "GLD"]
+
+    with (
+        patch("finance.data.fetch_prices", side_effect=lambda t, s, e: _fake_prices(t, s, e)),
+        patch("finance.data.fetch_dividends", return_value=pd.Series(dtype=float)),
+    ):
+        pd_obj = build_price_data(start, end, tickers=custom, use_splice=False)
+
+    assert set(pd_obj.prices.columns) == {"VTI", "GLD"}
+    assert pd_obj.tickers == ("VTI", "GLD")

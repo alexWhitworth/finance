@@ -13,7 +13,8 @@ from pathlib import Path
 import pandas as pd
 import plotnine as p9
 
-from finance.metrics import CRISIS_PERIODS, PerformanceMetrics, PerformanceReport
+from finance.consts import CRISIS_PERIODS
+from finance.metrics import PerformanceMetrics, PerformanceReport
 from finance.portfolio import BacktestResult
 
 # ---------------------------------------------------------------------------

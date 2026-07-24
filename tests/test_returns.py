@@ -174,6 +174,7 @@ def _make_price_data(n: int = 20) -> PriceData:
     return PriceData(
         prices=prices,
         dividends=dividends,
+        vol_prices=pd.DataFrame(),
         tickers=tickers,
         start_date=str(idx[0].date()),
         end_date=str(idx[-1].date()),

@@ -56,6 +56,7 @@ def _make_return_data(n: int = 400) -> ReturnData:
     pd_obj = PriceData(
         prices=prices,
         dividends=dividends,
+        vol_prices=pd.DataFrame(),
         tickers=tickers,
         start_date=str(idx[0].date()),
         end_date=str(idx[-1].date()),
@@ -464,6 +465,7 @@ def test_vol_contribution_table_no_vti_rho_is_nan() -> None:
     pd_obj = PriceData(
         prices=prices,
         dividends=dividends,
+        vol_prices=pd.DataFrame(),
         tickers=tickers_no_vti,
         start_date=str(idx[0].date()),
         end_date=str(idx[-1].date()),

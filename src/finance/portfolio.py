@@ -8,8 +8,8 @@ from dataclasses import dataclass
 
 import pandas as pd
 
+from finance.consts import DEFAULT_IV
 from finance.leverage import (
-    DEFAULT_IV,
     LeapsConfig,
     LeapsLedger,
     RebalanceRule,

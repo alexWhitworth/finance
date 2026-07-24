@@ -9,9 +9,8 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
+from finance.consts import NIIT_RATE
 from finance.data import PriceData
-
-NIIT_RATE: float = 0.408  # Federal NIIT + no state tax
 
 
 @dataclass(frozen=True)

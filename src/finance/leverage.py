@@ -11,19 +11,17 @@ from dataclasses import dataclass
 import pandas as pd
 from scipy import stats
 
-# ---------------------------------------------------------------------------
-# Constants
-# ---------------------------------------------------------------------------
-
-LEAPS_STRIKE_RATIO: float = 0.50
-DEFAULT_IV: float = 0.18
-LTCG_RATE: float = 0.238
-MIN_HOLD_DAYS: int = 366          # hold at least 1 year + 1 day for LTCG treatment
-SIX_MONTHS_DAYS: int = 182        # roll trigger: < 6 months to expiry
-CONTRACT_MULTIPLIER: int = 100    # standard 100-share option multiplier
-TIME_FLOOR: float = 1.0 / 365    # minimum T to prevent BS blow-up near expiry
-DEFAULT_RISK_FREE_RATE: float = 0.0
-DEFAULT_DIVIDEND_YIELD: float = 0.013
+from finance.consts import (
+    CONTRACT_MULTIPLIER,
+    DEFAULT_DIVIDEND_YIELD,
+    DEFAULT_IV,
+    DEFAULT_RISK_FREE_RATE,
+    LEAPS_STRIKE_RATIO,
+    LTCG_RATE,
+    MIN_HOLD_DAYS,
+    SIX_MONTHS_DAYS,
+    TIME_FLOOR,
+)
 
 # ---------------------------------------------------------------------------
 # Enumeration types (shared with portfolio.py)

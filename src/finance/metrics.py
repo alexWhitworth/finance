@@ -9,21 +9,17 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
+from finance.consts import (
+    CRISIS_PERIODS,
+    MIN_CRISIS_OBSERVATIONS,
+    RISK_FREE_RATE_DEFAULT,
+    TRADING_DAYS_PER_YEAR,
+)
 from finance.portfolio import BacktestResult
 from finance.returns import ReturnData
 from finance.volatility import VolatilityModel, build_vol_contribution_table, forecast_portfolio_vol
 
-TRADING_DAYS_PER_YEAR: int = 252
-RISK_FREE_RATE: float = 0.0
-
-CRISIS_PERIODS: dict[str, tuple[str, str]] = {
-    "GFC": ("2007-10-01", "2009-03-31"),
-    "COVID": ("2020-02-01", "2020-04-30"),
-    "2022 Rate Hike": ("2022-01-01", "2022-10-31"),
-}
-
-# Minimum observations required to compute crisis-period metrics.
-MIN_CRISIS_OBSERVATIONS: int = 20
+RISK_FREE_RATE = RISK_FREE_RATE_DEFAULT
 
 
 @dataclass(frozen=True)

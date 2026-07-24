@@ -160,7 +160,7 @@ def test_bs_delta_increases_with_spot() -> None:
 
 def test_bs_delta_dividend_yield_reduces_delta() -> None:
     """Positive dividend yield reduces delta via exp(-qT) multiplier."""
-    args = dict(spot=100.0, strike=100.0, time_to_expiry=1.0, iv=0.20)
+    args = {"spot": 100.0, "strike": 100.0, "time_to_expiry": 1.0, "iv": 0.20}
     delta_no_div = bs_call_delta(**args, dividend_yield=0.0)
     delta_with_div = bs_call_delta(**args, dividend_yield=0.05)
     assert delta_with_div < delta_no_div
@@ -194,7 +194,9 @@ def test_bs_vanna_deep_otm_near_zero() -> None:
 def test_bs_vanna_symmetric_with_dividend_yield() -> None:
     """Vanna changes when dividend yield is non-zero (exp(-qT) multiplier)."""
     base = bs_call_vanna(spot=100.0, strike=100.0, time_to_expiry=1.0, iv=0.20)
-    with_div = bs_call_vanna(spot=100.0, strike=100.0, time_to_expiry=1.0, iv=0.20, dividend_yield=0.03)
+    with_div = bs_call_vanna(
+        spot=100.0, strike=100.0, time_to_expiry=1.0, iv=0.20, dividend_yield=0.03
+    )
     assert base != pytest.approx(with_div, rel=1e-3)
 
 

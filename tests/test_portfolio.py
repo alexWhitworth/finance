@@ -65,6 +65,7 @@ def _make_return_data(
     pd_obj = PriceData(
         prices=prices,
         dividends=dividends,
+        vol_prices=pd.DataFrame(),
         tickers=_TICKERS,
         start_date=str(idx[0].date()),
         end_date=str(idx[-1].date()),
