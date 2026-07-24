@@ -22,7 +22,8 @@ MIN_HOLD_DAYS: int = 366          # hold at least 1 year + 1 day for LTCG treatm
 SIX_MONTHS_DAYS: int = 182        # roll trigger: < 6 months to expiry
 CONTRACT_MULTIPLIER: int = 100    # standard 100-share option multiplier
 TIME_FLOOR: float = 1.0 / 365    # minimum T to prevent BS blow-up near expiry
-
+DEFAULT_RISK_FREE_RATE: float = 0.0
+DEFAULT_DIVIDEND_YIELD: float = 0.013
 
 # ---------------------------------------------------------------------------
 # Enumeration types (shared with portfolio.py)
@@ -64,10 +65,6 @@ class WeightStrategy(enum.Enum):
 # ---------------------------------------------------------------------------
 # Dataclass types
 # ---------------------------------------------------------------------------
-
-
-DEFAULT_RISK_FREE_RATE: float = 0.0
-DEFAULT_DIVIDEND_YIELD: float = 0.0
 
 
 @dataclass(frozen=True)

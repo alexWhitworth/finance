@@ -654,6 +654,53 @@ def run_backtest(
 - [x] No new library code; examples only call the public API
 - [x] ruff clean, mypy strict clean across all four files
 
+### Phase 10 — Bug Fixes & Realism Improvements 🔴 IN PROGRESS
+
+#### 10.1 — Risk-free rate as `pd.Series` in metrics functions
+
+**Problem:** `sharpe_ratio`, `sortino_ratio`, and `omega_ratio` (via `compute_metrics` and `build_performance_report`) accept `risk_free_rate: float`. This means a single scalar is subtracted from every daily return as the excess return hurdle. For a 15-year backtest spanning near-zero ZIRP (2010–2015) and 5%+ rates (2022–2024), a fixed scalar is systematically wrong and distorts Sharpe/Sortino materially.
+
+**Root cause:** The `^IRX` data is already fetched and stored on `ReturnData.risk_free_rate` as a `pd.Series`, but `compute_metrics` and friends don't consume it — they still take a `float`.
+
+**Required changes:**
+- `sharpe_ratio`, `sortino_ratio`: accept `risk_free_rate: pd.Series | float`. When a Series is supplied, align it to `returns.index` and subtract element-wise before computing excess returns. When a float is supplied (default 0.0), preserve current behavior for test backward-compatibility.
+- `omega_ratio`: same treatment for `threshold` parameter.
+- `compute_metrics`: accept `risk_free_rate: pd.Series | float`; thread it through to each ratio function.
+- `build_performance_report`: already extracts a per-period mean scalar from `return_data.risk_free_rate` and passes it down — audit whether it should pass the full Series instead (likely yes for the full period; mean scalar is adequate for crisis sub-slices where the rate is roughly constant).
+- Update tests in `test_metrics.py` to cover the Series path (pass a constant Series and verify it produces the same result as the scalar equivalent).
+
+**Acceptance criteria:** Sharpe/Sortino/Omega computed over 2010–2026 use the actual prevailing T-bill rate on each day. Unit tests pass with both `float` and `pd.Series` inputs. ruff + mypy clean.
+
+---
+
+#### 10.2 — `with_leaps.py` produces large negative NAV — deep investigation required
+
+**Symptom:** `examples/with_leaps.py` reports negative NAV (e.g. −$2.5M at simulation start despite $1M initial NAV). This is not a tax-drag issue — it affects both taxable and tax-sheltered runs identically and occurs from the very first months of the simulation.
+
+**Suspected root causes (to be investigated in order):**
+
+1. **`compute_leaps_nav_contribution` sign / accounting error.** The function returns `MTM − cost_basis`. At purchase, MTM ≈ cost_basis so contribution ≈ 0 — correct. But if `price_leaps_contract` is called with an incorrect spot, strike, or time-to-expiry, the MTM could be drastically wrong. In `portfolio.py`, the VTI spot is reconstructed from returns — verify the anchor scaling logic produces plausible absolute prices.
+
+2. **VTI spot reconstruction in `run_backtest`.** The backtest reconstructs absolute VTI prices from the first contract's `spot_at_purchase` and the cumulative return series. If the anchor date lookup (`get_indexer(..., method="nearest")`) is off by even one position, the reconstructed price series can be scaled incorrectly by a factor of 2–10×, causing enormous MTM swings.
+
+3. **`n_contracts` float overflow.** `create_leaps_contract` computes `n_contracts = capital / (premium * 100)`. If `premium` is near-zero (e.g. due to incorrect IV, zero time-to-expiry, or extreme moneyness), `n_contracts` can explode to millions, producing astronomical MTM values. Add a guard: if `premium_per_share < 0.01` (less than 1 cent), log a warning and skip the purchase.
+
+4. **IV fixed at 0.18 while actual VTI realized vol varies 10%–80%.** A flat 18% IV will misprice LEAPS dramatically during high-vol regimes (COVID: VIX > 80, 2022: VIX ~35). Under high-vol, the fixed IV produces artificially cheap option prices → too many `n_contracts` → position size 3–5× what it should be → NAV contribution is hugely amplified (positive or negative).
+   - **Fix:** fetch `^VIX` from yfinance (preferred) or compute a 30-day rolling realized vol from VTI returns, and use that as the per-date IV in `run_leaps_simulation` and `portfolio.py`.
+   - `LeapsConfig.iv` becomes a fallback/floor, not the primary source.
+   - `run_leaps_simulation` already accepts `risk_free_series`; add `iv_series: pd.Series | None = None` with the same pattern.
+
+5. **LEAPS overlay double-counts cost basis on rolls.** When a contract is rolled, `compute_leaps_nav_contribution` must exclude the old (rolled-out) contract. Verify the `rolled_out` set in `compute_leaps_nav_contribution` correctly excludes all `event.old_contract` entries, and that the new contract's cost basis is correctly `net_proceeds` (not `premium_paid * 100 * n_contracts` of the new contract, which is the same value but needs to be double-checked).
+
+6. **Monthly contribution to LEAPS vs. portfolio contribution are not coordinated.** `run_leaps_simulation` deploys `monthly_contribution_to_leaps` every month from the price series, but `run_backtest` adds `config.monthly_contribution` to the base holdings separately. Confirm these two cash flows are additive and that the LEAPS capital is not also being subtracted from the base portfolio NAV (which would cause a double-deduction).
+
+**Investigation approach:**
+- Add a minimal reproducible test: single contract, known spot/IV/time, verify MTM and contribution at T=0 and T=1month manually.
+- Print intermediate values (spot series, n_contracts, premium, MTM) for the first 3 months of simulation to spot the anomaly.
+- Isolate: run `with_leaps.py` with `monthly_contribution_to_leaps=0` (no LEAPS) and confirm NAV matches `basic_backtest.py` exactly.
+
+**Acceptance criteria:** `with_leaps.py` produces positive NAV throughout; LEAPS overlay adds modest leverage upside (not orders-of-magnitude swings); both taxable and tax-sheltered runs produce sensible results; the tax-sheltered run has strictly higher terminal NAV than taxable.
+
 ---
 
 ## 6. Potential Edge Cases & Risks
