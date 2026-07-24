@@ -403,6 +403,27 @@ def test_build_volatility_model_raises_bad_date() -> None:
         build_volatility_model(rd, as_of_date=bad_date)
 
 
+def test_build_volatility_model_excludes_vol_index_tickers() -> None:
+    """Vol index tickers (e.g. ^VIX) present in return_data are silently excluded."""
+    rd = _make_return_data(400)
+    # Inject a fake ^VIX column into the returns DataFrame
+    returns_with_vix = rd.returns.copy()
+    returns_with_vix["^VIX"] = 0.20
+    log_with_vix = rd.log_returns.copy()
+    log_with_vix["^VIX"] = 0.20
+    from finance.returns import ReturnData
+    rd_with_vix = ReturnData(
+        returns=returns_with_vix,
+        log_returns=log_with_vix,
+        tey_adjusted=rd.tey_adjusted,
+        marginal_rate=rd.marginal_rate,
+        risk_free_rate=rd.risk_free_rate,
+    )
+    vm = build_volatility_model(rd_with_vix)
+    assert "^VIX" not in vm.ewma_vols.index
+    assert "^VIX" not in vm.cov_matrix.columns
+
+
 # ---------------------------------------------------------------------------
 # build_vol_contribution_table
 # ---------------------------------------------------------------------------

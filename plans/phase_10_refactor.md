@@ -849,54 +849,54 @@ def compare_performance_table(
 
 ## 5. Implementation Roadmap
 
-### Sub-phase A — `consts.py` + imports (Quick, no logic changes)
+### Sub-phase A — `consts.py` + imports (Quick, no logic changes) ✅ DONE
 
-- [ ] Create `src/finance/consts.py` with all constants
-- [ ] Update all modules to import from `consts.py` (remove duplicate definitions)
-- [ ] `uv run ruff check .` and `uv run mypy src/` clean
-- [ ] All 211 existing tests still pass (no logic changes)
+- [x] Create `src/finance/consts.py` with all constants
+- [x] Update all modules to import from `consts.py` (remove duplicate definitions)
+- [x] `uv run ruff check .` and `uv run mypy src/` clean
+- [x] All tests still pass (219 total, 98% coverage)
 
-### Sub-phase B — `data.py` refactor
+### Sub-phase B — `data.py` refactor ✅ DONE
 
-- [ ] Rename `splice_kmlm` → `splice`; generalize parameter names
-- [ ] Update `build_price_data` signature: `tickers`, `use_splice`, `fetch_vol_indices`
-- [ ] Implement generalized splice loop via `SPLICE_MAP`
-- [ ] Add `PriceData.vol_prices` field (empty DataFrame default)
-- [ ] Implement `fetch_volatility_index` with VXUS composite blend logic
-- [ ] Update tests: new `PriceData` construction requires `vol_prices=pd.DataFrame()`
-- [ ] Verify parquet fixture at `data/price_data.parquet` loads cleanly with new schema
+- [x] Rename `splice_kmlm` → `splice`; generalize parameter names
+- [x] Update `build_price_data` signature: `tickers`, `use_splice`, `fetch_vol_indices`
+- [x] Implement generalized splice loop via `SPLICE_MAP`
+- [x] Add `PriceData.vol_prices` field (empty DataFrame default)
+- [x] Implement `fetch_volatility_index` with VXUS composite blend logic
+- [x] Update tests: new `PriceData` construction requires `vol_prices=pd.DataFrame()`
+- [x] 8 new tests added to `test_data.py` (custom tickers, vol_prices empty, etc.)
 
-### Sub-phase C — `returns.py` refactor
+### Sub-phase C — `returns.py` refactor ✅ DONE
 
-- [ ] Rename `_decompose_mub_return` → `_decompose_tax_exempt_return`
-- [ ] Update `adjust_tey` parameter names to generic (`prices`, `dividends`)
-- [ ] Add `tey_tickers: list[str]` parameter to `build_return_data`
-- [ ] Update `build_return_data` loop
-- [ ] Update tests: replace `"MUB"` references where MUB-specific to generic
+- [x] Rename `_decompose_mub_return` → `_decompose_tax_exempt_return`; alias preserved for backward compat
+- [x] Update `adjust_tey` parameter names to generic (`prices`, `dividends`); result named after `prices.name`
+- [x] Add `tey_tickers: list[str]` parameter to `build_return_data` (defaults to `["MUB"]`)
+- [x] Update `build_return_data` loop to iterate `tey_tickers`
+- [x] 4 new tests: alias match, custom tey_tickers, absent ticker skipped, result name matches input
 
-### Sub-phase D — `volatility.py` — vol exclusion
+### Sub-phase D — `volatility.py` — vol exclusion ✅ DONE
 
-- [ ] Add VOL_INDEX_TICKERS filter at entry of `build_volatility_model`
-- [ ] Update tests: no interface changes, but add a test that confirms VIX
-      in `return_data.returns` is silently excluded
+- [x] Add `VOL_INDEX_TICKERS` filter at entry of `build_volatility_model`
+- [x] Test: `^VIX` column in `return_data.returns` is excluded from `ewma_vols` and `cov_matrix`
 
-### Sub-phase E — `metrics.py` — dynamic RFR + distribution shape
+### Sub-phase E — `metrics.py` — dynamic RFR + distribution shape ✅ DONE
 
-- [ ] Remove `RISK_FREE_RATE: float` constant; import from `consts.py` as fallback only
-- [ ] Update `sharpe_ratio`, `sortino_ratio`, `omega_ratio` to `pd.Series` only
-- [ ] Add `return_skewness()` and `return_excess_kurtosis()` pure functions
-- [ ] Add `skewness` and `excess_kurtosis` fields to `PerformanceMetrics`
-- [ ] Update `compute_metrics`: compute excess returns once, pass to all ratio functions and shape functions
-- [ ] Add `price_data: PriceData` parameter to `build_performance_report`
-- [ ] Add `tax_summary: LeapsTaxSummary | None` field to `PerformanceReport`
-- [ ] Update `build_performance_report` to call `compute_leaps_tax_summary` when ledger present
-- [ ] Update `build_performance_report` to slice and pass RFR Series, not scalar mean
-- [ ] Full test audit of `test_metrics.py`:
-  - Replace all `sharpe_ratio(r, float)` calls with `sharpe_ratio(r, pd.Series(...))`
-  - Add tests verifying dynamic RFR produces correct excess return math
-  - `return_skewness`: known-value test (all-positive returns → positive skew)
-  - `return_excess_kurtosis`: known-value test (normal sample → ≈ 0)
-  - `compute_metrics` populates `skewness` and `excess_kurtosis` fields
+- [x] Remove `RISK_FREE_RATE: float` constant; import from `consts.py` as fallback only
+- [x] Update `sharpe_ratio`, `sortino_ratio`, `omega_ratio` to `pd.Series` only
+- [x] Add `return_skewness()` and `return_excess_kurtosis()` pure functions (via `scipy.stats`)
+- [x] Add `skewness` and `excess_kurtosis` fields to `PerformanceMetrics`
+- [x] Update `compute_metrics`: compute excess returns once, pass to all ratio functions and shape functions
+- [x] Add `price_data: PriceData` parameter to `build_performance_report`
+- [x] Add `terminal_nav: None` and `tax_summary: None` placeholder fields to `PerformanceReport`
+- [x] Update `build_performance_report` to slice and pass RFR Series, not scalar mean
+- [x] Full test audit of `test_metrics.py`:
+  - [x] Replace all `sharpe_ratio(r, float)` calls with `sharpe_ratio(r, pd.Series(...))`
+  - [x] Added `test_sharpe_ratio_nonzero_rfr_reduces_value` — dynamic RFR effect verified
+  - [x] `return_skewness`: 3 tests (short obs, symmetric→0, right-skewed→positive)
+  - [x] `return_excess_kurtosis`: 3 tests (short obs, normal→≈0, fat-tails→positive)
+  - [x] `compute_metrics` populates `skewness` and `excess_kurtosis` fields with consistency check
+  - [x] `build_performance_report` tests updated: add `price_data` arg; `terminal_nav`/`tax_summary` are None
+- [x] 235 tests pass, 98.33% coverage, ruff clean, mypy clean
 
 ### Sub-phase F — `leverage.py` — partial close + terminal nav + tax summary + iv_series
 
@@ -944,7 +944,7 @@ This is the largest change. Do it last after all dependencies are stable.
 
 ### Sub-phase H — `figures.py` + integration + coverage
 
-- [ ] Fix `figures.py` import: `CRISIS_PERIODS` from `finance.consts` not `finance.metrics`
+- [x] Fix `figures.py` import: `CRISIS_PERIODS` from `finance.consts` not `finance.metrics` (done in Sub-phase A)
 - [ ] Implement `compare_performance_table(reports)` in `figures.py`
 - [ ] Update `format_performance_table` to include `skewness`, `excess_kurtosis` rows
 - [ ] Update `format_performance_table` to include LEAPS tax rows when `terminal_nav` present

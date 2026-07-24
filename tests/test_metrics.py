@@ -17,6 +17,8 @@ from finance.metrics import (
     compute_metrics,
     max_drawdown,
     omega_ratio,
+    return_excess_kurtosis,
+    return_skewness,
     sharpe_ratio,
     slice_period,
     sortino_ratio,
@@ -47,6 +49,11 @@ def _nav_from_returns(returns: pd.Series, initial: float = 1000.0) -> pd.Series:
     return initial * (1.0 + returns).cumprod()
 
 
+def _zero_rfr(returns: pd.Series) -> pd.Series:
+    """Zero risk-free rate Series aligned to returns index."""
+    return pd.Series(0.0, index=returns.index)
+
+
 def _make_backtest_result(n: int = 504) -> BacktestResult:
     """Synthetic BacktestResult with 6 equal-weight assets over n trading days."""
     rng = np.random.default_rng(42)
@@ -73,6 +80,26 @@ def _make_backtest_result(n: int = 504) -> BacktestResult:
         return_series=port_returns,
         leaps_ledger=None,
         config=config,
+    )
+
+
+def _make_price_data(n: int = 505) -> PriceData:
+    idx = pd.bdate_range("2010-01-04", periods=n)
+    rng = np.random.default_rng(99)
+    starts = {"VTI": 200.0, "VXUS": 60.0, "GLD": 170.0, "MUB": 55.0, "KMLM": 25.0, "VGIT": 65.0}
+    prices = pd.DataFrame(
+        {t: starts[t] * np.cumprod(1 + rng.normal(0.0003, 0.01, n)) for t in _TICKERS},
+        index=idx,
+    )
+    dividends = pd.DataFrame(0.0, index=idx, columns=list(_TICKERS))
+    return PriceData(
+        prices=prices,
+        dividends=dividends,
+        vol_prices=pd.DataFrame(),
+        tickers=_TICKERS,
+        start_date=str(idx[0].date()),
+        end_date=str(idx[-1].date()),
+        spliced=False,
     )
 
 
@@ -121,7 +148,6 @@ def test_annualized_return_half_year() -> None:
     n = TRADING_DAYS_PER_YEAR // 2
     daily = 0.001
     r = _flat_returns(n, daily)
-    # Just verify sign and rough magnitude (positive returns → positive ann return)
     assert annualized_return(r) > 0.0
 
 
@@ -201,23 +227,23 @@ def test_sharpe_ratio_positive_mean() -> None:
     """Positive mean excess return with variance → positive Sharpe."""
     rng = np.random.default_rng(99)
     r = pd.Series(rng.normal(0.001, 0.01, 252))
-    assert sharpe_ratio(r) > 0.0
+    assert sharpe_ratio(r, _zero_rfr(r)) > 0.0
 
 
 def test_sharpe_ratio_zero_std_returns_zero() -> None:
-    """When std is zero, returns 0.0 to avoid division by zero."""
+    """When excess return std is zero, returns 0.0."""
     r = pd.Series([0.001] * 252)
-    # std(ddof=1) of constant series is 0 → short-circuit to 0.0
-    assert sharpe_ratio(r) == 0.0
+    rfr = pd.Series(0.001 * TRADING_DAYS_PER_YEAR, index=r.index)
+    assert sharpe_ratio(r, rfr) == 0.0
 
 
 def test_sharpe_ratio_iid_known() -> None:
-    """i.i.d. returns with mean mu, std sigma -> Sharpe approx mu/sigma * sqrt(252)."""
+    """i.i.d. returns with mean mu, std sigma → Sharpe ≈ mu/sigma * sqrt(252)."""
     mu = 0.001
     sigma = 0.01
     rng = np.random.default_rng(3)
     r = pd.Series(rng.normal(mu, sigma, 5000))
-    result = sharpe_ratio(r)
+    result = sharpe_ratio(r, _zero_rfr(r))
     expected = (mu / sigma) * np.sqrt(TRADING_DAYS_PER_YEAR)
     assert result == pytest.approx(expected, rel=0.10)
 
@@ -226,11 +252,22 @@ def test_sharpe_ratio_negative_mean() -> None:
     """Negative mean returns produce negative Sharpe."""
     rng = np.random.default_rng(4)
     r = pd.Series(rng.normal(-0.001, 0.01, 500))
-    assert sharpe_ratio(r) < 0.0
+    assert sharpe_ratio(r, _zero_rfr(r)) < 0.0
 
 
 def test_sharpe_ratio_single_obs_returns_zero() -> None:
-    assert sharpe_ratio(pd.Series([0.01])) == 0.0
+    r = pd.Series([0.01])
+    assert sharpe_ratio(r, _zero_rfr(r)) == 0.0
+
+
+def test_sharpe_ratio_nonzero_rfr_reduces_value() -> None:
+    """A positive RFR lowers Sharpe vs. zero RFR for positive-return series."""
+    rng = np.random.default_rng(11)
+    r = pd.Series(rng.normal(0.001, 0.01, 500))
+    rfr_high = pd.Series(0.05, index=r.index)
+    s_zero = sharpe_ratio(r, _zero_rfr(r))
+    s_high = sharpe_ratio(r, rfr_high)
+    assert s_zero > s_high
 
 
 # ---------------------------------------------------------------------------
@@ -239,23 +276,24 @@ def test_sharpe_ratio_single_obs_returns_zero() -> None:
 
 
 def test_sortino_ratio_no_downside() -> None:
-    """All-positive returns → infinite Sortino."""
+    """All-positive excess returns → infinite Sortino."""
     r = pd.Series([0.01, 0.02, 0.005, 0.03])
-    assert sortino_ratio(r) == float("inf")
+    assert sortino_ratio(r, _zero_rfr(r)) == float("inf")
 
 
 def test_sortino_ratio_greater_than_sharpe_for_positive_skew() -> None:
     """With only upside volatility, Sortino > Sharpe for same mean."""
     rng = np.random.default_rng(5)
-    # Positively skewed by clipping downside
     r = pd.Series(np.clip(rng.normal(0.001, 0.01, 1000), -0.005, None))
-    s = sharpe_ratio(r)
-    so = sortino_ratio(r)
+    rfr = _zero_rfr(r)
+    s = sharpe_ratio(r, rfr)
+    so = sortino_ratio(r, rfr)
     assert so > s
 
 
 def test_sortino_ratio_single_obs_returns_zero() -> None:
-    assert sortino_ratio(pd.Series([0.01])) == 0.0
+    r = pd.Series([0.01])
+    assert sortino_ratio(r, _zero_rfr(r)) == 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -285,29 +323,81 @@ def test_calmar_ratio_known_value() -> None:
 
 
 def test_omega_ratio_all_positive() -> None:
-    """All returns above threshold → huge Omega (numerically inf-ish)."""
+    """All excess returns above zero → huge Omega."""
     r = pd.Series([0.01, 0.02, 0.03])
-    result = omega_ratio(r, threshold=0.0)
+    result = omega_ratio(r, _zero_rfr(r))
     assert result > 1e10
 
 
 def test_omega_ratio_all_negative() -> None:
-    """All returns below threshold → Omega < 1."""
+    """All excess returns below zero → Omega < 1."""
     r = pd.Series([-0.01, -0.02, -0.03])
-    result = omega_ratio(r, threshold=0.0)
+    result = omega_ratio(r, _zero_rfr(r))
     assert result < 1.0
 
 
 def test_omega_ratio_equal_gains_losses() -> None:
     """Equal gains and losses → Omega ≈ 1.0."""
     r = pd.Series([0.01, -0.01, 0.01, -0.01])
-    result = omega_ratio(r, threshold=0.0)
+    result = omega_ratio(r, _zero_rfr(r))
     assert result == pytest.approx(1.0, abs=1e-6)
 
 
 def test_omega_ratio_empty() -> None:
     """Empty series returns 0.0."""
-    assert omega_ratio(pd.Series(dtype=float)) == 0.0
+    empty: pd.Series = pd.Series(dtype=float)
+    assert omega_ratio(empty, empty) == 0.0
+
+
+# ---------------------------------------------------------------------------
+# return_skewness
+# ---------------------------------------------------------------------------
+
+
+def test_return_skewness_few_obs_returns_zero() -> None:
+    """Fewer than 4 observations → 0.0."""
+    assert return_skewness(pd.Series([0.01, -0.01, 0.02])) == 0.0
+
+
+def test_return_skewness_symmetric_near_zero() -> None:
+    """Symmetric i.i.d. series has near-zero skewness."""
+    rng = np.random.default_rng(20)
+    r = pd.Series(rng.normal(0, 0.01, 2000))
+    assert abs(return_skewness(r)) < 0.15
+
+
+def test_return_skewness_right_skewed_positive() -> None:
+    """Right-skewed series has positive skewness."""
+    rng = np.random.default_rng(21)
+    base = rng.normal(0.001, 0.01, 2000)
+    spikes = rng.choice(len(base), size=30, replace=False)
+    base[spikes] += 0.10
+    r = pd.Series(base)
+    assert return_skewness(r) > 0.0
+
+
+# ---------------------------------------------------------------------------
+# return_excess_kurtosis
+# ---------------------------------------------------------------------------
+
+
+def test_return_excess_kurtosis_few_obs_returns_zero() -> None:
+    """Fewer than 4 observations → 0.0."""
+    assert return_excess_kurtosis(pd.Series([0.01, -0.01, 0.02])) == 0.0
+
+
+def test_return_excess_kurtosis_normal_near_zero() -> None:
+    """Normal distribution has excess kurtosis ≈ 0."""
+    rng = np.random.default_rng(22)
+    r = pd.Series(rng.normal(0, 0.01, 5000))
+    assert abs(return_excess_kurtosis(r)) < 0.3
+
+
+def test_return_excess_kurtosis_fat_tails_positive() -> None:
+    """Fat-tailed distribution has positive excess kurtosis."""
+    rng = np.random.default_rng(23)
+    r = pd.Series(rng.standard_t(df=4, size=5000) * 0.01)
+    assert return_excess_kurtosis(r) > 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -341,7 +431,7 @@ def test_compute_metrics_returns_dataclass() -> None:
     """compute_metrics returns a frozen PerformanceMetrics."""
     r = _flat_returns(252, 0.0005)
     nav = _nav_from_returns(r)
-    m = compute_metrics(r, nav, "Test")
+    m = compute_metrics(r, nav, "Test", _zero_rfr(r))
     assert isinstance(m, PerformanceMetrics)
     with pytest.raises((AttributeError, TypeError)):
         m.sharpe = 0.0  # type: ignore[misc]
@@ -351,7 +441,7 @@ def test_compute_metrics_period_label() -> None:
     """period_label is stored correctly."""
     r = _flat_returns(252, 0.0005)
     nav = _nav_from_returns(r)
-    m = compute_metrics(r, nav, "Full Period")
+    m = compute_metrics(r, nav, "Full Period", _zero_rfr(r))
     assert m.period_label == "Full Period"
 
 
@@ -360,13 +450,38 @@ def test_compute_metrics_internal_consistency() -> None:
     rng = np.random.default_rng(10)
     r = pd.Series(rng.normal(0.0005, 0.01, 504))
     nav = _nav_from_returns(r)
-    m = compute_metrics(r, nav, "Check")
+    rfr = _zero_rfr(r)
+    m = compute_metrics(r, nav, "Check", rfr)
     assert m.annualized_return == pytest.approx(annualized_return(r), rel=1e-9)
     assert m.annualized_std == pytest.approx(annualized_std(r), rel=1e-9)
     assert m.max_drawdown == pytest.approx(max_drawdown(nav), rel=1e-9)
-    assert m.sharpe == pytest.approx(sharpe_ratio(r), rel=1e-9)
-    assert m.sortino == pytest.approx(sortino_ratio(r), rel=1e-9)
-    assert m.omega == pytest.approx(omega_ratio(r), rel=1e-9)
+    assert m.sharpe == pytest.approx(sharpe_ratio(r, rfr), rel=1e-9)
+    assert m.sortino == pytest.approx(sortino_ratio(r, rfr), rel=1e-9)
+    assert m.omega == pytest.approx(omega_ratio(r, rfr), rel=1e-9)
+
+
+def test_compute_metrics_has_skewness_and_kurtosis() -> None:
+    """skewness and excess_kurtosis fields are present and finite."""
+    rng = np.random.default_rng(12)
+    r = pd.Series(rng.normal(0.0005, 0.01, 504))
+    nav = _nav_from_returns(r)
+    m = compute_metrics(r, nav, "Test", _zero_rfr(r))
+    assert isinstance(m.skewness, float)
+    assert isinstance(m.excess_kurtosis, float)
+    assert np.isfinite(m.skewness)
+    assert np.isfinite(m.excess_kurtosis)
+
+
+def test_compute_metrics_skewness_consistent_with_function() -> None:
+    """skewness in metrics matches return_skewness(excess) directly."""
+    rng = np.random.default_rng(13)
+    r = pd.Series(rng.normal(0.0005, 0.01, 504))
+    nav = _nav_from_returns(r)
+    rfr = pd.Series(0.03, index=r.index)
+    m = compute_metrics(r, nav, "Test", rfr)
+    excess = r - rfr.reindex(r.index, method="ffill").fillna(0.0) / TRADING_DAYS_PER_YEAR
+    assert m.skewness == pytest.approx(return_skewness(excess), rel=1e-9)
+    assert m.excess_kurtosis == pytest.approx(return_excess_kurtosis(excess), rel=1e-9)
 
 
 # ---------------------------------------------------------------------------
@@ -377,9 +492,10 @@ def test_compute_metrics_internal_consistency() -> None:
 def test_build_performance_report_structure() -> None:
     """build_performance_report returns a frozen PerformanceReport."""
     br = _make_backtest_result(504)
+    pd_obj = _make_price_data(505)
     rd = _make_return_data(504)
     vm = build_volatility_model(rd)
-    report = build_performance_report(br, rd, vm)
+    report = build_performance_report(br, pd_obj, rd, vm)
     assert isinstance(report, PerformanceReport)
     assert isinstance(report.full_period, PerformanceMetrics)
     assert isinstance(report.crisis_periods, tuple)
@@ -390,18 +506,20 @@ def test_build_performance_report_structure() -> None:
 def test_build_performance_report_full_period_label() -> None:
     """Full period metrics are labelled 'Full Period'."""
     br = _make_backtest_result(504)
+    pd_obj = _make_price_data(505)
     rd = _make_return_data(504)
     vm = build_volatility_model(rd)
-    report = build_performance_report(br, rd, vm)
+    report = build_performance_report(br, pd_obj, rd, vm)
     assert report.full_period.period_label == "Full Period"
 
 
 def test_build_performance_report_vol_table_columns() -> None:
     """Vol contribution table has expected columns."""
     br = _make_backtest_result(504)
+    pd_obj = _make_price_data(505)
     rd = _make_return_data(504)
     vm = build_volatility_model(rd)
-    report = build_performance_report(br, rd, vm)
+    report = build_performance_report(br, pd_obj, rd, vm)
     assert set(report.vol_contribution_table.columns) == {
         "sigma_tilde", "sigma_hat", "rho_VTI", "contrib"
     }
@@ -410,19 +528,20 @@ def test_build_performance_report_vol_table_columns() -> None:
 def test_build_performance_report_forward_vol_positive() -> None:
     """Forward vol forecast is strictly positive."""
     br = _make_backtest_result(504)
+    pd_obj = _make_price_data(505)
     rd = _make_return_data(504)
     vm = build_volatility_model(rd)
-    report = build_performance_report(br, rd, vm)
+    report = build_performance_report(br, pd_obj, rd, vm)
     assert report.forward_vol_forecast > 0.0
 
 
 def test_build_performance_report_crisis_excluded_when_no_overlap() -> None:
     """Crisis periods that don't overlap the backtest window are excluded."""
-    # Backtest starts 2010-01-04, so GFC (ending 2009-03-31) won't appear.
     br = _make_backtest_result(504)
+    pd_obj = _make_price_data(505)
     rd = _make_return_data(504)
     vm = build_volatility_model(rd)
-    report = build_performance_report(br, rd, vm)
+    report = build_performance_report(br, pd_obj, rd, vm)
     labels = {m.period_label for m in report.crisis_periods}
     assert "GFC" not in labels
 
@@ -430,8 +549,29 @@ def test_build_performance_report_crisis_excluded_when_no_overlap() -> None:
 def test_build_performance_report_immutable() -> None:
     """PerformanceReport is frozen."""
     br = _make_backtest_result(504)
+    pd_obj = _make_price_data(505)
     rd = _make_return_data(504)
     vm = build_volatility_model(rd)
-    report = build_performance_report(br, rd, vm)
+    report = build_performance_report(br, pd_obj, rd, vm)
     with pytest.raises((AttributeError, TypeError)):
         report.forward_vol_forecast = 0.0  # type: ignore[misc]
+
+
+def test_build_performance_report_terminal_nav_none() -> None:
+    """terminal_nav is None (Phase F placeholder)."""
+    br = _make_backtest_result(504)
+    pd_obj = _make_price_data(505)
+    rd = _make_return_data(504)
+    vm = build_volatility_model(rd)
+    report = build_performance_report(br, pd_obj, rd, vm)
+    assert report.terminal_nav is None
+
+
+def test_build_performance_report_tax_summary_none() -> None:
+    """tax_summary is None (Phase F placeholder)."""
+    br = _make_backtest_result(504)
+    pd_obj = _make_price_data(505)
+    rd = _make_return_data(504)
+    vm = build_volatility_model(rd)
+    report = build_performance_report(br, pd_obj, rd, vm)
+    assert report.tax_summary is None

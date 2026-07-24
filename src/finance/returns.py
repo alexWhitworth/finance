@@ -62,47 +62,49 @@ def compute_log_returns(prices: pd.DataFrame) -> pd.DataFrame:
     return log_df.dropna()
 
 
-def _decompose_mub_return(
-    mub_prices: pd.Series,
-    mub_dividends: pd.Series,
+def _decompose_tax_exempt_return(
+    prices: pd.Series,
+    dividends: pd.Series,
 ) -> tuple[pd.Series, pd.Series]:
-    """Split MUB total return into price-appreciation and income components.
+    """Split a tax-exempt bond fund's total return into price and income components.
 
     Arguments:
-        mub_prices: Adjusted close price series for MUB.
-        mub_dividends: Per-share dividend series aligned to price index.
+        prices: Adjusted close price series for the fund.
+        dividends: Per-share dividend series aligned to price index.
 
     Returns:
         Tuple of (price_return, income_return) as daily simple return Series.
         income_return is non-zero only on ex-dividend dates.
     """
-    price_return = mub_prices.pct_change().fillna(0.0)
-
-    # Income return: dividend / prior price
-    prior_prices = mub_prices.shift(1)
-    income_return = (mub_dividends / prior_prices).fillna(0.0)
-
+    price_return = prices.pct_change().fillna(0.0)
+    prior_prices = prices.shift(1)
+    income_return = (dividends / prior_prices).fillna(0.0)
     return price_return, income_return
 
 
+# Backward-compatible alias used by existing tests
+_decompose_mub_return = _decompose_tax_exempt_return
+
+
 def adjust_tey(
-    mub_prices: pd.Series,
-    mub_dividends: pd.Series,
+    prices: pd.Series,
+    dividends: pd.Series,
     marginal_rate: float = NIIT_RATE,
 ) -> pd.Series:
-    """Adjust MUB return series for tax-equivalent yield.
+    """Adjust a tax-exempt bond fund's return series for tax-equivalent yield.
 
     The price-appreciation component is unchanged. The income (yield) component
     is scaled by 1 / (1 - marginal_rate) to reflect the pre-tax equivalent
     yield a taxable investor would require.
 
     Arguments:
-        mub_prices: Adjusted close price series for MUB.
-        mub_dividends: Per-share dividends aligned to the price index.
+        prices: Adjusted close price series for the fund.
+        dividends: Per-share dividends aligned to the price index.
         marginal_rate: Combined marginal tax rate (default 0.408 for NIIT).
 
     Returns:
-        Daily simple return Series for MUB with TEY-adjusted income component.
+        Daily simple return Series with TEY-adjusted income component.
+        Series name matches prices.name.
 
     Raises:
         ValueError: If marginal_rate is not in (0, 1).
@@ -110,10 +112,10 @@ def adjust_tey(
     if not (0.0 < marginal_rate < 1.0):
         raise ValueError(f"marginal_rate must be in (0, 1), got {marginal_rate}")
 
-    price_ret, income_ret = _decompose_mub_return(mub_prices, mub_dividends)
+    price_ret, income_ret = _decompose_tax_exempt_return(prices, dividends)
     tey_factor = 1.0 / (1.0 - marginal_rate)
     adjusted = price_ret + income_ret * tey_factor
-    adjusted.name = "MUB"
+    adjusted.name = prices.name
     return adjusted.iloc[1:]  # drop first row to match pct_change behaviour
 
 
@@ -121,17 +123,20 @@ def build_return_data(
     price_data: PriceData,
     marginal_rate: float = NIIT_RATE,
     apply_tey: bool = True,
+    tey_tickers: list[str] | None = None,
     risk_free_series: pd.Series | None = None,
 ) -> ReturnData:
     """Compute full return dataset from PriceData.
 
-    Applies TEY adjustment to MUB if apply_tey is True.  All other assets
-    use raw adjusted-close simple returns.
+    Applies TEY adjustment to each ticker in tey_tickers if apply_tey is True.
+    All other assets use raw adjusted-close simple returns.
 
     Arguments:
         price_data: PriceData from data.build_price_data().
-        marginal_rate: Marginal tax rate for MUB TEY adjustment.
-        apply_tey: Whether to apply the TEY adjustment to MUB.
+        marginal_rate: Marginal tax rate for TEY adjustment.
+        apply_tey: Whether to apply the TEY adjustment.
+        tey_tickers: Tickers to apply TEY to. Each must have a dividends column
+            in price_data.dividends. Defaults to ["MUB"].
         risk_free_series: Optional daily annualized risk-free rate Series
             (decimal, e.g. 0.05 for 5%) from data.fetch_risk_free_rate().
             If None, defaults to a zero Series aligned to the returns index.
@@ -140,16 +145,22 @@ def build_return_data(
         ReturnData with aligned simple and log return DataFrames and
         risk_free_rate Series.
     """
+    if tey_tickers is None:
+        tey_tickers = ["MUB"]
+
     simple = compute_simple_returns(price_data.prices)
     log_ret = compute_log_returns(price_data.prices)
 
-    if apply_tey and "MUB" in price_data.prices.columns:
-        mub_divs = price_data.dividends["MUB"].reindex(
-            price_data.prices.index, fill_value=0.0
-        )
-        tey_mub = adjust_tey(price_data.prices["MUB"], mub_divs, marginal_rate)
+    if apply_tey:
         simple = simple.copy()
-        simple["MUB"] = tey_mub.reindex(simple.index, fill_value=0.0)
+        for ticker in tey_tickers:
+            if ticker not in price_data.prices.columns:
+                continue
+            divs = price_data.dividends[ticker].reindex(
+                price_data.prices.index, fill_value=0.0
+            )
+            tey_col = adjust_tey(price_data.prices[ticker], divs, marginal_rate)
+            simple[ticker] = tey_col.reindex(simple.index, fill_value=0.0)
 
     if risk_free_series is not None:
         rfr = risk_free_series.reindex(simple.index, method="ffill").fillna(0.0)

@@ -8,6 +8,7 @@ from finance.data import PriceData
 from finance.returns import (
     NIIT_RATE,
     _decompose_mub_return,
+    _decompose_tax_exempt_return,
     adjust_tey,
     build_return_data,
     compute_log_returns,
@@ -87,7 +88,7 @@ def test_log_returns_approx_simple_for_small() -> None:
 
 
 # ---------------------------------------------------------------------------
-# _decompose_mub_return
+# _decompose_tax_exempt_return (+ backward-compat alias _decompose_mub_return)
 # ---------------------------------------------------------------------------
 
 
@@ -96,11 +97,21 @@ def test_decompose_income_only_on_ex_date() -> None:
     prices = _price_series([55.0, 55.0, 55.0, 55.0, 55.0], name="MUB")
     divs = pd.Series(0.0, index=prices.index)
     divs.iloc[2] = 0.10  # dividend on day 3
-    _price_ret, income_ret = _decompose_mub_return(prices, divs)
+    _price_ret, income_ret = _decompose_tax_exempt_return(prices, divs)
     assert income_ret.iloc[0] == pytest.approx(0.0)
     assert income_ret.iloc[1] == pytest.approx(0.0)
     assert income_ret.iloc[2] == pytest.approx(0.10 / 55.0)
     assert income_ret.iloc[3] == pytest.approx(0.0)
+
+
+def test_decompose_mub_alias_matches_generic() -> None:
+    """_decompose_mub_return is the same function as _decompose_tax_exempt_return."""
+    prices = _price_series([55.0, 56.0, 57.0], name="MUB")
+    divs = pd.Series([0.0, 0.05, 0.0], index=prices.index)
+    r1 = _decompose_mub_return(prices, divs)
+    r2 = _decompose_tax_exempt_return(prices, divs)
+    np.testing.assert_array_equal(r1[0].values, r2[0].values)
+    np.testing.assert_array_equal(r1[1].values, r2[1].values)
 
 
 # ---------------------------------------------------------------------------
@@ -215,3 +226,36 @@ def test_return_data_immutable() -> None:
     rd = build_return_data(pd_obj)
     with pytest.raises((AttributeError, TypeError)):
         rd.tey_adjusted = False  # type: ignore[misc]
+
+
+def test_build_return_data_tey_tickers_custom() -> None:
+    """tey_tickers controls which columns receive TEY; others are unaffected."""
+    pd_obj = _make_price_data(30)
+    # Apply TEY only to MUB (explicit)
+    rd_mub = build_return_data(pd_obj, apply_tey=True, tey_tickers=["MUB"])
+    # Apply TEY to no tickers
+    rd_none = build_return_data(pd_obj, apply_tey=True, tey_tickers=[])
+
+    # MUB differs between the two
+    assert not rd_mub.returns["MUB"].equals(rd_none.returns["MUB"])
+    # VTI is identical in both
+    np.testing.assert_array_equal(
+        rd_mub.returns["VTI"].values, rd_none.returns["VTI"].values
+    )
+
+
+def test_build_return_data_tey_ticker_not_in_prices_is_skipped() -> None:
+    """Requesting TEY for a ticker absent from prices silently skips it."""
+    pd_obj = _make_price_data(20)
+    # "NONEXISTENT" is not in prices — should not raise
+    rd = build_return_data(pd_obj, apply_tey=True, tey_tickers=["MUB", "NONEXISTENT"])
+    assert rd.tey_adjusted is True
+
+
+def test_adjust_tey_result_named_after_input() -> None:
+    """adjust_tey result Series name matches prices.name (generic, not 'MUB')."""
+    prices = _price_series([100.0, 100.0, 100.0], name="VWITX")
+    divs = pd.Series(0.0, index=prices.index)
+    divs.iloc[1] = 0.10
+    result = adjust_tey(prices, divs, marginal_rate=0.30)
+    assert result.name == "VWITX"

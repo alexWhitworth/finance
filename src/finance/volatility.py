@@ -9,7 +9,13 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
-from finance.consts import COV_RIDGE, EWMA_LAMBDA, ROLLING_CORR_WINDOW_WEEKS, TRADING_DAYS_PER_YEAR
+from finance.consts import (
+    COV_RIDGE,
+    EWMA_LAMBDA,
+    ROLLING_CORR_WINDOW_WEEKS,
+    TRADING_DAYS_PER_YEAR,
+    VOL_INDEX_TICKERS,
+)
 from finance.returns import ReturnData
 
 
@@ -218,7 +224,9 @@ def build_volatility_model(
     Raises:
         ValueError: If as_of_date is before the first available return date.
     """
-    returns = return_data.returns
+    returns = return_data.returns[
+        [c for c in return_data.returns.columns if c not in VOL_INDEX_TICKERS]
+    ]
     if as_of_date is not None:
         if as_of_date < returns.index[0]:
             raise ValueError(

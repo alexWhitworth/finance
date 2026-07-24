@@ -14,6 +14,7 @@ import pandas as pd
 import plotnine as p9  # type: ignore[import-untyped]
 import pytest
 
+from finance.data import PriceData
 from finance.figures import (
     _compute_drawdown_series,
     format_performance_table,
@@ -69,11 +70,34 @@ def _make_backtest(rd: ReturnData, seed: int = 0) -> BacktestResult:
     return run_backtest(rd, cfg)
 
 
+def _make_price_data(returns_index: pd.DatetimeIndex) -> PriceData:
+    """Minimal PriceData whose price index covers the returns index."""
+    rng = np.random.default_rng(0)
+    starts = {"VTI": 200.0, "VXUS": 60.0, "GLD": 170.0, "MUB": 55.0, "KMLM": 25.0, "VGIT": 65.0}
+    n = len(returns_index) + 1
+    idx = pd.bdate_range(returns_index[0], periods=n)
+    prices = pd.DataFrame(
+        {t: starts[t] * np.cumprod(1 + rng.normal(0.0003, 0.01, n)) for t in _TICKERS},
+        index=idx,
+    )
+    dividends = pd.DataFrame(0.0, index=idx, columns=list(_TICKERS))
+    return PriceData(
+        prices=prices,
+        dividends=dividends,
+        vol_prices=pd.DataFrame(),
+        tickers=_TICKERS,
+        start_date=str(idx[0].date()),
+        end_date=str(idx[-1].date()),
+        spliced=False,
+    )
+
+
 def _make_report(rd: ReturnData) -> PerformanceReport:
     """Build a PerformanceReport from synthetic data."""
     result = _make_backtest(rd)
+    pd_obj = _make_price_data(rd.returns.index)
     vol_model = build_volatility_model(rd)
-    return build_performance_report(result, rd, vol_model)
+    return build_performance_report(result, pd_obj, rd, vol_model)
 
 
 # ---------------------------------------------------------------------------

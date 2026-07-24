@@ -11,6 +11,7 @@ import pandas as pd
 import plotnine as p9  # type: ignore[import-untyped]
 import pytest
 
+from finance.data import PriceData
 from finance.figures import format_performance_table, plot_nav_growth
 from finance.leverage import RebalanceRule, WeightStrategy
 from finance.metrics import PerformanceReport, build_performance_report
@@ -62,14 +63,37 @@ def _base_config(contribution: float = 10_000.0) -> PortfolioConfig:
 # ---------------------------------------------------------------------------
 
 
+def _synthetic_price_data(returns_index: pd.DatetimeIndex) -> PriceData:
+    """Minimal PriceData whose price index covers the returns index."""
+    rng = np.random.default_rng(0)
+    starts = {"VTI": 200.0, "VXUS": 60.0, "GLD": 170.0, "MUB": 55.0, "KMLM": 25.0, "VGIT": 65.0}
+    n = len(returns_index) + 1
+    idx = pd.bdate_range(returns_index[0], periods=n)
+    prices = pd.DataFrame(
+        {t: starts[t] * np.cumprod(1 + rng.normal(0.0003, 0.01, n)) for t in _TICKERS},
+        index=idx,
+    )
+    dividends = pd.DataFrame(0.0, index=idx, columns=list(_TICKERS))
+    return PriceData(
+        prices=prices,
+        dividends=dividends,
+        vol_prices=pd.DataFrame(),
+        tickers=_TICKERS,
+        start_date=str(idx[0].date()),
+        end_date=str(idx[-1].date()),
+        spliced=False,
+    )
+
+
 @pytest.fixture(scope="module")
 def pipeline() -> dict[str, object]:
     """Full pipeline result: return data → backtest → vol model → report."""
     rd = _synthetic_return_data()
     cfg = _base_config()
     result = run_backtest(rd, cfg)
+    pd_obj = _synthetic_price_data(rd.returns.index)
     vol_model = build_volatility_model(rd)
-    report = build_performance_report(result, rd, vol_model)
+    report = build_performance_report(result, pd_obj, rd, vol_model)
     return {"rd": rd, "cfg": cfg, "result": result, "vol_model": vol_model, "report": report}
 
 
@@ -199,8 +223,9 @@ class TestMultiPortfolioReport:
         rd = _synthetic_return_data()
         cfg = _base_config()
         result = run_backtest(rd, cfg)
+        pd_obj = _synthetic_price_data(rd.returns.index)
         vol_model = build_volatility_model(rd)
         crisis = {"GFC": ("2007-10-01", "2009-03-31")}
-        report = build_performance_report(result, rd, vol_model, crisis_periods=crisis)
+        report = build_performance_report(result, pd_obj, rd, vol_model, crisis_periods=crisis)
         # GFC has no data overlap — crisis_periods tuple should be empty
         assert len(report.crisis_periods) == 0
