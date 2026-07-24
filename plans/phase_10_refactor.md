@@ -17,6 +17,9 @@ audited and updated; coverage must remain ≥ 80%.
 6. Add drift-based rebalancing with LTCG tax awareness.
 7. Add pro-rata partial LEAPS close for rebalancing overshoot.
 8. Consolidate all shared constants into `consts.py`.
+9. Add return distribution shape metrics (skewness, excess kurtosis) to support levered vs. unlevered comparison.
+10. Add LEAPS tax drag summary to quantify the taxable vs. tax-sheltered cost.
+11. Add multi-strategy side-by-side comparison table for allocation decisions.
 
 ---
 
@@ -133,7 +136,61 @@ class PriceData:
 unavailable). The field is annualized decimal (e.g. `0.05` for 5%); callers
 divide by 252 internally where daily conversion is needed.
 
-### 3.3 `LeapsLedger` — add `partial_close_events`
+### 3.3 New: `LeapsTaxSummary`
+
+```python
+@dataclass(frozen=True)
+class LeapsTaxSummary:
+    """Aggregate LEAPS tax drag over the full backtest period.
+
+    Attributes:
+        total_roll_tax: Sum of tax_paid across all LeapsRollEvents.
+        n_rolls: Number of roll events executed.
+        terminal_tax: Terminal liquidation tax (from TerminalNav.terminal_tax).
+            0 for TAX_SHELTERED accounts.
+        total_tax: total_roll_tax + terminal_tax.
+        tax_drag_pct: total_tax as a fraction of final pre-tax NAV.
+        annualized_tax_drag: tax_drag_pct annualized over the backtest years.
+        account_type: AccountType governing tax treatment.
+    """
+
+    total_roll_tax: float
+    n_rolls: int
+    terminal_tax: float
+    total_tax: float
+    tax_drag_pct: float
+    annualized_tax_drag: float
+    account_type: AccountType
+```
+
+### 3.5 New: `TerminalNav`
+
+```python
+@dataclass(frozen=True)
+class TerminalNav:
+    """Pre- and post-tax terminal portfolio value for a LEAPS backtest.
+
+    Attributes:
+        pre_tax_nav: Final portfolio NAV including open LEAPS MTM gains, before
+            any terminal liquidation tax.
+        post_tax_nav: pre_tax_nav minus terminal LTCG + NIIT on all open LEAPS
+            gains. Equals pre_tax_nav when account_type is TAX_SHELTERED.
+        terminal_tax: Dollar tax applied. Always 0 for TAX_SHELTERED accounts.
+        open_gain: Total unrealized gain across all live contracts at end date
+            (MTM - cost_basis). Can be negative.
+        ltcg_rate: Rate used for terminal tax calculation.
+        account_type: AccountType governing whether tax was applied.
+    """
+
+    pre_tax_nav: float
+    post_tax_nav: float
+    terminal_tax: float
+    open_gain: float
+    ltcg_rate: float
+    account_type: AccountType
+```
+
+### 3.6 `LeapsLedger` — add `partial_close_events`
 
 ```python
 @dataclass(frozen=True)
@@ -144,7 +201,7 @@ class LeapsLedger:
     account_type: AccountType
 ```
 
-### 3.4 New: `LeapsPartialCloseEvent`
+### 3.7 New: `LeapsPartialCloseEvent`
 
 ```python
 @dataclass(frozen=True)
@@ -153,9 +210,8 @@ class LeapsPartialCloseEvent:
     original_contract: LeapsContract      # contract before reduction
     continuation_contract: LeapsContract  # same contract, reduced n_contracts
     n_contracts_closed: float
-    gain_realized: float                  # MTM of closed portion - cost basis
-    tax_paid: float                       # gain * ltcg_rate if TAXABLE and gain > 0
-    net_proceeds: float                   # returned to base portfolio holdings
+    net_proceeds: float                   # MTM of closed portion, returned to base holdings
+                                          # No tax applied: rebalancing is tax-free for all assets
 ```
 
 When a partial close occurs:
@@ -163,7 +219,7 @@ When a partial close occurs:
 - `continuation_contract` (identical except `n_contracts`) is added
 - `net_proceeds` are added back to the base holdings dict in `run_backtest`
 
-### 3.5 `PortfolioConfig` — add `account_type` for LEAPS tax
+### 3.8 `PortfolioConfig`
 
 ```python
 @dataclass(frozen=True)
@@ -395,6 +451,41 @@ def omega_ratio(returns: pd.Series, risk_free_rate: pd.Series) -> float:
     """
 ```
 
+#### Changed: `PerformanceMetrics` — add distribution shape fields
+
+```python
+@dataclass(frozen=True)
+class PerformanceMetrics:
+    annualized_return: float
+    annualized_std: float
+    max_drawdown: float
+    sharpe: float
+    sortino: float
+    calmar: float
+    omega: float
+    skewness: float         # third standardized moment of daily excess returns
+    excess_kurtosis: float  # fourth standardized moment minus 3 (0 = normal)
+    period_label: str
+```
+
+`skewness` and `excess_kurtosis` are computed on the **excess return series**
+`r_e(t)` (same series used for Sharpe/Sortino/Omega), not raw returns, so all
+distribution metrics are on a consistent basis. A positive `skewness` confirms
+right-tail benefit from the levered portfolio; a negative `excess_kurtosis`
+relative to the unlevered run indicates lighter left tail.
+
+#### New: `skewness` and `excess_kurtosis` functions
+
+```python
+def return_skewness(excess_returns: pd.Series) -> float:
+    """Pure. Third standardized moment of the excess return series."""
+
+def return_excess_kurtosis(excess_returns: pd.Series) -> float:
+    """Pure. Fourth standardized moment minus 3. Zero implies normal tails."""
+```
+
+Both return `0.0` for series with fewer than 4 observations.
+
 #### Changed: `compute_metrics`
 
 ```python
@@ -407,7 +498,22 @@ def compute_metrics(
     """
     risk_free_rate must be a pd.Series aligned (or alignable) to returns.index.
     It is reindexed with forward-fill before being passed to ratio functions.
+    Excess returns r_e(t) are computed once and reused for all ratio functions
+    and for skewness / excess_kurtosis.
     """
+```
+
+#### Changed: `PerformanceReport` — add `terminal_nav` and `tax_summary`
+
+```python
+@dataclass(frozen=True)
+class PerformanceReport:
+    full_period: PerformanceMetrics
+    crisis_periods: tuple[PerformanceMetrics, ...]
+    vol_contribution_table: pd.DataFrame
+    forward_vol_forecast: float
+    terminal_nav: TerminalNav | None        # None when no LEAPS overlay present
+    tax_summary: LeapsTaxSummary | None     # None when no LEAPS overlay present
 ```
 
 #### Changed: `build_performance_report`
@@ -415,6 +521,7 @@ def compute_metrics(
 ```python
 def build_performance_report(
     backtest_result: BacktestResult,
+    price_data: PriceData,
     return_data: ReturnData,
     vol_model: VolatilityModel,
     crisis_periods: dict[str, tuple[str, str]] = CRISIS_PERIODS,
@@ -424,6 +531,16 @@ def build_performance_report(
     Crisis slices: slices return_data.risk_free_rate to the crisis window and
         passes the sliced Series to compute_metrics.
     No scalar mean is used anywhere.
+
+    price_data: Required to obtain the final-date VTI spot for compute_terminal_nav.
+        Uses price_data.prices["VTI"].iloc[-1] aligned to the backtest end date.
+
+    terminal_nav: populated via compute_terminal_nav when backtest_result has a
+        non-None leaps_ledger. Uses config.leaps_config.iv as the IV floor.
+        Set to None when leaps_ledger is None.
+
+    tax_summary: populated via compute_leaps_tax_summary when leaps_ledger present.
+        Set to None when leaps_ledger is None.
     """
 ```
 
@@ -465,39 +582,36 @@ def partial_close_leaps(
     current_spot: float,
     target_value: float,
     iv: float = DEFAULT_IV,
-    ltcg_rate: float = LTCG_RATE,
     risk_free_rate: float = DEFAULT_RISK_FREE_RATE,
 ) -> LeapsPartialCloseEvent:
     """
     Reduce a LEAPS position pro-rata to hit target_value in MTM.
 
-    Only callable on LTCG-qualified contracts (hold_days >= MIN_HOLD_DAYS).
-    Callers are responsible for checking LTCG eligibility before calling.
+    No tax is applied on the close. Rebalancing is tax-free for all assets
+    (simplifying assumption: equalize treatment across asset classes).
 
     Steps:
       1. Mark full position to market.
       2. scale = target_value / current_mtm  (must be in (0, 1))
       3. n_contracts_closed = contract.n_contracts * (1 - scale)
-      4. Compute gain on closed portion; apply tax if TAXABLE.
+      4. net_proceeds = MTM of closed portion (no tax deduction).
       5. Return LeapsPartialCloseEvent with continuation_contract
          (n_contracts = contract.n_contracts * scale).
 
     Arguments:
         contract: The contract to partially close.
-        current_date: Execution date (must be >= contract.purchase_date + MIN_HOLD_DAYS).
+        current_date: Execution date.
         current_spot: VTI spot price.
         target_value: Desired total MTM value after the close (in dollars).
         iv: Implied volatility for pricing.
-        ltcg_rate: LTCG + NIIT rate applied on taxable gains.
         risk_free_rate: Risk-free rate for Black-Scholes.
 
     Returns:
-        LeapsPartialCloseEvent with original, continuation, gain, tax, and
+        LeapsPartialCloseEvent with original, continuation, and
         net_proceeds (the dollars returned to the base portfolio).
 
     Raises:
         ValueError: If target_value >= current_mtm (no reduction needed).
-        ValueError: If contract has not been held MIN_HOLD_DAYS.
     """
 ```
 
@@ -523,6 +637,83 @@ def compute_leaps_nav_contribution(
     continuation contracts are used in their place.
     """
 ```
+
+#### New: `compute_leaps_tax_summary`
+
+```python
+def compute_leaps_tax_summary(
+    ledger: LeapsLedger,
+    terminal_nav: TerminalNav,
+    final_nav: float,
+    years: float,
+) -> LeapsTaxSummary:
+    """
+    Aggregate LEAPS tax drag over the full backtest period.
+
+    Arguments:
+        ledger: Complete LeapsLedger with all roll events.
+        terminal_nav: TerminalNav from compute_terminal_nav (provides terminal_tax).
+        final_nav: Pre-tax terminal portfolio NAV.
+        years: Backtest duration in years (used to annualize drag).
+
+    Returns:
+        LeapsTaxSummary with total_roll_tax, n_rolls, terminal_tax, total_tax,
+        tax_drag_pct, annualized_tax_drag, and account_type.
+
+    Notes:
+        tax_drag_pct = total_tax / final_nav.
+        annualized_tax_drag = (1 - (1 - tax_drag_pct) ^ (1 / years)) expressed
+        as a positive fraction. Returns 0.0 for TAX_SHELTERED accounts.
+    """
+```
+
+#### New: `compute_terminal_nav`
+
+```python
+def compute_terminal_nav(
+    ledger: LeapsLedger,
+    final_nav: float,
+    final_date: pd.Timestamp,
+    final_spot: float,
+    iv: float = DEFAULT_IV,
+    risk_free_rate: float = DEFAULT_RISK_FREE_RATE,
+    ltcg_rate: float = LTCG_RATE,
+) -> TerminalNav:
+    """
+    Compute pre- and post-tax terminal NAV assuming full liquidation of all
+    live LEAPS contracts at final_date.
+
+    Terminal tax applies LTCG + NIIT to all open gains regardless of individual
+    contract hold durations — a simplifying assumption that is conservative
+    (understates, not overstates, LEAPS benefit in taxable accounts).
+    TAX_SHELTERED accounts always produce terminal_tax = 0.
+
+    Live contracts are identified using the same logic as
+    compute_leaps_nav_contribution (excludes rolled-out and partially-closed
+    originals; uses continuation contracts in their place).
+
+    Arguments:
+        ledger: Complete LeapsLedger from run_backtest or run_leaps_simulation.
+        final_nav: Portfolio NAV at the final backtest date (pre-tax).
+        final_date: Last date of the backtest.
+        final_spot: VTI spot price at final_date.
+        iv: Implied volatility for terminal MTM pricing.
+        risk_free_rate: Risk-free rate for Black-Scholes terminal pricing.
+        ltcg_rate: Combined LTCG + NIIT rate. Applied to positive open_gain only.
+
+    Returns:
+        TerminalNav with pre_tax_nav, post_tax_nav, terminal_tax, open_gain,
+        ltcg_rate, and account_type.
+    """
+```
+
+**Algorithm:**
+1. Identify live contracts (same rolled-out + partial-close exclusion logic as `compute_leaps_nav_contribution`)
+2. `total_mtm = sum(price_leaps_contract(c, final_spot, final_date, iv, risk_free_rate) for c in live)`
+3. `total_cost_basis = sum(c.premium_paid * CONTRACT_MULTIPLIER * c.n_contracts for c in live)`
+4. `open_gain = total_mtm - total_cost_basis`
+5. `terminal_tax = max(0.0, open_gain) * ltcg_rate` if `TAXABLE`, else `0.0`
+6. `post_tax_nav = final_nav - terminal_tax`
 
 #### Changed: `run_leaps_simulation` — add `iv_series`
 
@@ -611,15 +802,48 @@ def run_backtest(
 **Drift rebalancing:**
 - For `DRIFT` rule: check monthly (at `month_end_dates`) whether any weight
   is outside its relative band using `should_rebalance()`
-- For LEAPS positions: only trigger a partial close if the contract is LTCG-eligible
-  (`hold_days >= MIN_HOLD_DAYS`). If not eligible, skip the LEAPS rebalance and
-  allow drift for that month.
-- Tax on partial close (`net_proceeds`) is added back to base holdings
+- All assets, including LEAPS positions, are rebalanced without tax — no
+  LTCG eligibility check needed, no MIN_HOLD_DAYS guard
+- `net_proceeds` from any LEAPS partial close are added back to base holdings
 - For `QUARTERLY` rule: `get_rebalance_dates()` behavior unchanged
 
 **VTI spot price — no reconstruction:**
 - `price_data.prices["VTI"]` provides absolute prices directly.
 - The spot reconstruction hack in the old `run_backtest` is deleted.
+
+---
+
+### 4.8 `figures.py`
+
+#### Changed: import source for `CRISIS_PERIODS`
+
+`figures.py` currently imports `CRISIS_PERIODS` from `finance.metrics`. After
+Sub-phase A this must move to `from finance.consts import CRISIS_PERIODS`.
+
+#### New: `compare_performance_table`
+
+```python
+def compare_performance_table(
+    reports: list[tuple[str, PerformanceReport]],
+) -> str:
+    """
+    Format multiple PerformanceReports into a single aligned side-by-side table.
+
+    Each column is one strategy (label from the tuple). Rows are metrics:
+    Ann. Return, Ann. Std, Max DD, Sharpe, Sortino, Calmar, Omega,
+    Skewness, Excess Kurtosis.
+    A separator row divides full-period metrics from any LEAPS-specific rows.
+    LEAPS rows (Terminal NAV pre/post-tax, Total Tax Drag, Ann. Tax Drag) are
+    included only when at least one report has a non-None terminal_nav.
+
+    Arguments:
+        reports: List of (label, PerformanceReport) tuples. Labels become
+            column headers. Order is preserved.
+
+    Returns:
+        Formatted string suitable for console output.
+    """
+```
 
 ---
 
@@ -656,27 +880,46 @@ def run_backtest(
 - [ ] Update tests: no interface changes, but add a test that confirms VIX
       in `return_data.returns` is silently excluded
 
-### Sub-phase E — `metrics.py` — dynamic RFR
+### Sub-phase E — `metrics.py` — dynamic RFR + distribution shape
 
 - [ ] Remove `RISK_FREE_RATE: float` constant; import from `consts.py` as fallback only
 - [ ] Update `sharpe_ratio`, `sortino_ratio`, `omega_ratio` to `pd.Series` only
-- [ ] Update `compute_metrics` signature
-- [ ] Update `build_performance_report` to slice and pass Series, not scalar mean
+- [ ] Add `return_skewness()` and `return_excess_kurtosis()` pure functions
+- [ ] Add `skewness` and `excess_kurtosis` fields to `PerformanceMetrics`
+- [ ] Update `compute_metrics`: compute excess returns once, pass to all ratio functions and shape functions
+- [ ] Add `price_data: PriceData` parameter to `build_performance_report`
+- [ ] Add `tax_summary: LeapsTaxSummary | None` field to `PerformanceReport`
+- [ ] Update `build_performance_report` to call `compute_leaps_tax_summary` when ledger present
+- [ ] Update `build_performance_report` to slice and pass RFR Series, not scalar mean
 - [ ] Full test audit of `test_metrics.py`:
   - Replace all `sharpe_ratio(r, float)` calls with `sharpe_ratio(r, pd.Series(...))`
   - Add tests verifying dynamic RFR produces correct excess return math
-  - Verify constant-Series gives same result as the old scalar path would have
+  - `return_skewness`: known-value test (all-positive returns → positive skew)
+  - `return_excess_kurtosis`: known-value test (normal sample → ≈ 0)
+  - `compute_metrics` populates `skewness` and `excess_kurtosis` fields
 
-### Sub-phase F — `leverage.py` — partial close + iv_series
+### Sub-phase F — `leverage.py` — partial close + terminal nav + tax summary + iv_series
 
+- [ ] Add `LeapsTaxSummary` dataclass
+- [ ] Add `TerminalNav` dataclass
 - [ ] Add `LeapsPartialCloseEvent` dataclass
 - [ ] Add `partial_close_events` field to `LeapsLedger`
-- [ ] Implement `partial_close_leaps()`
+- [ ] Implement `partial_close_leaps()` (no tax, no MIN_HOLD_DAYS check)
+- [ ] Implement `compute_terminal_nav()` with TAXABLE / TAX_SHELTERED branching
+- [ ] Implement `compute_leaps_tax_summary()`
 - [ ] Update `compute_leaps_nav_contribution` for partial close accounting
 - [ ] Add `iv_series` parameter to `run_leaps_simulation`; implement floor logic
 - [ ] Add `MIN_PREMIUM_PER_SHARE` guard in `create_leaps_contract`
+- [ ] Update `PerformanceReport` to add `terminal_nav` and `tax_summary` fields
+- [ ] Update `build_performance_report` to call both functions when ledger present
 - [ ] Tests:
-  - `partial_close_leaps` reduces n_contracts correctly, tax computed correctly
+  - `partial_close_leaps` reduces n_contracts correctly, no tax deducted
+  - `compute_terminal_nav` TAXABLE: applies LTCG to positive open_gain only
+  - `compute_terminal_nav` TAX_SHELTERED: terminal_tax = 0, post_tax_nav == pre_tax_nav
+  - `compute_terminal_nav` underwater contracts (open_gain < 0): terminal_tax = 0
+  - `compute_leaps_tax_summary` TAXABLE: total_tax = roll_tax + terminal_tax
+  - `compute_leaps_tax_summary` TAX_SHELTERED: total_tax = 0, annualized_tax_drag = 0
+  - `build_performance_report` terminal_nav and tax_summary are None when no LEAPS ledger
   - n_contracts guard: zero-premium contract is skipped
   - `iv_series` overrides config.iv at each month-end
 
@@ -697,11 +940,16 @@ This is the largest change. Do it last after all dependencies are stable.
   - LEAPS capital correctly carved out of initial NAV
   - Monthly contribution correctly split
   - Drift rebalancing triggers at ±10% relative band
-  - Partial close returns net_proceeds to base holdings
-  - LTCG guard: contract < 366 days old is not partially closed
+  - Partial close returns net_proceeds to base holdings (no tax deduction)
 
-### Sub-phase H — Integration, examples, coverage
+### Sub-phase H — `figures.py` + integration + coverage
 
+- [ ] Fix `figures.py` import: `CRISIS_PERIODS` from `finance.consts` not `finance.metrics`
+- [ ] Implement `compare_performance_table(reports)` in `figures.py`
+- [ ] Update `format_performance_table` to include `skewness`, `excess_kurtosis` rows
+- [ ] Update `format_performance_table` to include LEAPS tax rows when `terminal_nav` present
+- [ ] Tests for `compare_performance_table`: single-report case, multi-report alignment,
+      LEAPS rows present/absent based on terminal_nav
 - [ ] Update `tests/test_integration.py` for new full pipeline
 - [ ] Update `examples/` scripts for new APIs
 - [ ] Update `data/price_data.parquet` fixture: split VIX/IRX into `vol_prices`
@@ -717,7 +965,13 @@ This is the largest change. Do it last after all dependencies are stable.
 | Assumption | Justification |
 |---|---|
 | Non-LEAPS rebalancing is tax-free | ETF turnover tax drag is small; LEAPS is the dominant effect |
-| LTCG + NIIT (23.8%) applied uniformly on all taxable LEAPS gains | Avoids per-lot STCG/LTCG tracking; clearly labeled in docs |
+| Rebalancing is tax-free for all assets, including LEAPS partial closes | Equalizes treatment across asset classes; avoids per-lot STCG/LTCG tracking |
+| LTCG + NIIT (23.8%) applied on LEAPS roll events and terminal liquidation (not rebalancing) | Roll tax and terminal tax are the economically significant events; rebalancing closes are smaller and infrequent |
+| Terminal tax applies LTCG rate to all open gains regardless of individual contract hold durations | Conservative simplification: slightly understates LEAPS benefit in taxable accounts; avoids per-lot hold tracking |
+| Terminal tax = 0 for TAX_SHELTERED accounts | Correct: no tax realization in IRA/401k |
+| Both pre-tax and post-tax terminal NAV reported | Allows comparison of gross and net-of-tax performance |
+| Skewness and excess kurtosis computed on excess returns, not raw returns | Consistent basis with Sharpe/Sortino/Omega; isolates distributional effect of leverage net of the risk-free rate |
+| `annualized_tax_drag` uses geometric annualization `1 - (1 - drag)^(1/years)` | Correct for compounding; avoids linear approximation error on long backtests |
 | LEAPS strike is always 50% of spot | Configurable via `LEAPS_STRIKE_RATIO` in consts.py |
 | 30-day rolling VIX mean for daily MTM | Reduces mark-to-market noise from VIX spikes; documented |
 | `config.leaps_config.iv` is used as a floor, not primary | Prevents absurdly cheap contracts during low-vol regimes |
@@ -731,7 +985,7 @@ This is the largest change. Do it last after all dependencies are stable.
 | Risk | Mitigation |
 |---|---|
 | LEAPS key (`VTI_LEAPS`) with no corresponding price column (`VTI`) | `run_backtest` raises `ValueError` on startup if the underlying ticker is absent from `price_data.prices` |
-| All live LEAPS contracts are STCG-ineligible at drift check | Skip LEAPS partial close; log drift as unresolved; do not force a taxable close |
+| All live LEAPS contracts at drift check | Any live contract can be partially closed — no LTCG eligibility check required |
 | `partial_close_leaps` called with `target_value >= current_mtm` | Raises `ValueError`; caller responsible for checking before calling |
 | VIX data unavailable for a date range | `price_data.vol_prices` is empty DataFrame; `run_backtest` falls back to `config.leaps_config.iv` |
 | VXUS composite vol: V2TX.DE and VXEEM have different trading calendars | Blend on intersection; forward-fill to fill gaps (max 5 days) |
