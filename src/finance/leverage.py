@@ -6,7 +6,7 @@ All business logic is pure (no I/O). The module also owns the enumeration types
 
 import enum
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import pandas as pd
 from scipy import stats
@@ -19,8 +19,10 @@ from finance.consts import (
     LEAPS_STRIKE_RATIO,
     LTCG_RATE,
     MIN_HOLD_DAYS,
+    MIN_PREMIUM_PER_SHARE,
     SIX_MONTHS_DAYS,
     TIME_FLOOR,
+    TRADING_DAYS_PER_YEAR,
 )
 
 # ---------------------------------------------------------------------------
@@ -139,17 +141,88 @@ class LeapsRollEvent:
 
 
 @dataclass(frozen=True)
+class LeapsPartialCloseEvent:
+    """Record of a pro-rata partial LEAPS position reduction.
+
+    No tax is applied on the close — rebalancing is tax-free for all assets.
+
+    Attributes:
+        close_date: Execution date.
+        original_contract: Contract before the reduction.
+        continuation_contract: Same contract with reduced n_contracts.
+        n_contracts_closed: Number of contracts closed.
+        net_proceeds: Mark-to-market value of the closed portion (no tax deduction).
+    """
+
+    close_date: pd.Timestamp
+    original_contract: LeapsContract
+    continuation_contract: LeapsContract
+    n_contracts_closed: float
+    net_proceeds: float
+
+
+@dataclass(frozen=True)
 class LeapsLedger:
     """Complete transaction history for one LEAPS simulation.
 
     Attributes:
         contracts: All contracts ever created (includes both live and rolled-out).
         roll_events: All roll transactions executed during the simulation.
+        partial_close_events: All pro-rata partial close events (from rebalancing).
         account_type: Account type governing all contracts in this ledger.
     """
 
     contracts: tuple[LeapsContract, ...]
     roll_events: tuple[LeapsRollEvent, ...]
+    account_type: AccountType
+    partial_close_events: tuple[LeapsPartialCloseEvent, ...] = ()
+
+
+@dataclass(frozen=True)
+class TerminalNav:
+    """Pre- and post-tax terminal portfolio value for a LEAPS backtest.
+
+    Attributes:
+        pre_tax_nav: Final portfolio NAV including open LEAPS MTM gains, before
+            any terminal liquidation tax.
+        post_tax_nav: pre_tax_nav minus terminal LTCG + NIIT on all open LEAPS
+            gains. Equals pre_tax_nav for TAX_SHELTERED accounts.
+        terminal_tax: Dollar tax applied. Always 0 for TAX_SHELTERED accounts.
+        open_gain: Total unrealized gain across all live contracts at end date
+            (MTM - cost_basis). Can be negative.
+        ltcg_rate: Rate used for terminal tax calculation.
+        account_type: AccountType governing whether tax was applied.
+    """
+
+    pre_tax_nav: float
+    post_tax_nav: float
+    terminal_tax: float
+    open_gain: float
+    ltcg_rate: float
+    account_type: AccountType
+
+
+@dataclass(frozen=True)
+class LeapsTaxSummary:
+    """Aggregate LEAPS tax drag over the full backtest period.
+
+    Attributes:
+        total_roll_tax: Sum of tax_paid across all LeapsRollEvents.
+        n_rolls: Number of roll events executed.
+        terminal_tax: Terminal liquidation tax (from TerminalNav.terminal_tax).
+            0 for TAX_SHELTERED accounts.
+        total_tax: total_roll_tax + terminal_tax.
+        tax_drag_pct: total_tax as a fraction of final pre-tax NAV.
+        annualized_tax_drag: tax_drag_pct annualized over the backtest years.
+        account_type: AccountType governing tax treatment.
+    """
+
+    total_roll_tax: float
+    n_rolls: int
+    terminal_tax: float
+    total_tax: float
+    tax_drag_pct: float
+    annualized_tax_drag: float
     account_type: AccountType
 
 
@@ -310,7 +383,11 @@ def create_leaps_contract(
     expiry: pd.Timestamp = pd.Timestamp(purchase_date + pd.DateOffset(years=2))
     t_years = (expiry - purchase_date).days / 365.0
     premium_per_share = bs_call_price(spot, strike, t_years, iv, risk_free_rate, dividend_yield)
-    n_contracts = capital_to_deploy / (premium_per_share * CONTRACT_MULTIPLIER)
+    if premium_per_share < MIN_PREMIUM_PER_SHARE:
+        premium_per_share = MIN_PREMIUM_PER_SHARE
+        n_contracts = 0.0
+    else:
+        n_contracts = capital_to_deploy / (premium_per_share * CONTRACT_MULTIPLIER)
     return LeapsContract(
         purchase_date=purchase_date,
         expiry_date=expiry,
@@ -435,6 +512,35 @@ def roll_contract(
     )
 
 
+def _live_contracts(ledger: LeapsLedger, current_date: pd.Timestamp) -> list[LeapsContract]:
+    """Return the set of live contracts at current_date.
+
+    Excludes rolled-out originals and replaced partial-close originals.
+    Substitutes continuation contracts for partially-closed originals.
+
+    Arguments:
+        ledger: LeapsLedger with full contract and event history.
+        current_date: Valuation date.
+
+    Returns:
+        List of live LeapsContract objects.
+    """
+    rolled_out = {event.old_contract for event in ledger.roll_events}
+    partially_closed: dict[LeapsContract, LeapsContract] = {
+        ev.original_contract: ev.continuation_contract
+        for ev in ledger.partial_close_events
+    }
+    live: list[LeapsContract] = []
+    for c in ledger.contracts:
+        if c in rolled_out:
+            continue
+        if c.expiry_date <= current_date:
+            continue
+        effective = partially_closed.get(c, c)
+        live.append(effective)
+    return live
+
+
 def compute_leaps_nav_contribution(
     ledger: LeapsLedger,
     current_date: pd.Timestamp,
@@ -445,6 +551,7 @@ def compute_leaps_nav_contribution(
     """Compute total net P&L contribution of live LEAPS contracts to portfolio NAV.
 
     Live contracts are those not yet rolled out and not yet expired.
+    Partially-closed originals are replaced by their continuation contracts.
     NAV contribution = sum(mark_to_market) - sum(total_cost_basis).
 
     Arguments:
@@ -459,11 +566,7 @@ def compute_leaps_nav_contribution(
     """
     if not ledger.contracts:
         return 0.0
-    rolled_out = {event.old_contract for event in ledger.roll_events}
-    live = [
-        c for c in ledger.contracts
-        if c not in rolled_out and c.expiry_date > current_date
-    ]
+    live = _live_contracts(ledger, current_date)
     if not live:
         return 0.0
     total_mtm = sum(
@@ -471,6 +574,172 @@ def compute_leaps_nav_contribution(
     )
     total_cost = sum(c.premium_paid * CONTRACT_MULTIPLIER * c.n_contracts for c in live)
     return float(total_mtm - total_cost)
+
+
+def partial_close_leaps(
+    contract: LeapsContract,
+    current_date: pd.Timestamp,
+    current_spot: float,
+    target_value: float,
+    iv: float = DEFAULT_IV,
+    risk_free_rate: float = DEFAULT_RISK_FREE_RATE,
+) -> LeapsPartialCloseEvent:
+    """Reduce a LEAPS position pro-rata to reach target_value in mark-to-market.
+
+    No tax is applied on the close — rebalancing is tax-free for all assets.
+
+    Steps:
+      1. Mark full position to market.
+      2. scale = target_value / current_mtm (must be in (0, 1)).
+      3. n_contracts_closed = contract.n_contracts * (1 - scale).
+      4. net_proceeds = MTM of the closed portion.
+      5. Return a LeapsPartialCloseEvent with a continuation_contract
+         that has n_contracts = contract.n_contracts * scale.
+
+    Arguments:
+        contract: The contract to partially close.
+        current_date: Execution date.
+        current_spot: VTI spot price.
+        target_value: Desired total MTM value after the close (dollars).
+        iv: Implied volatility for pricing. Default 0.18.
+        risk_free_rate: Risk-free rate for Black-Scholes. Default 0.0.
+
+    Returns:
+        LeapsPartialCloseEvent with original, continuation, and net_proceeds.
+
+    Raises:
+        ValueError: If target_value >= current_mtm (no reduction needed).
+    """
+    current_mtm = price_leaps_contract(contract, current_spot, current_date, iv, risk_free_rate)
+    if target_value >= current_mtm:
+        raise ValueError(
+            f"target_value ({target_value:.2f}) must be less than "
+            f"current_mtm ({current_mtm:.2f})"
+        )
+    scale = target_value / current_mtm
+    n_closed = contract.n_contracts * (1.0 - scale)
+    net_proceeds = current_mtm * (1.0 - scale)
+    continuation = replace(contract, n_contracts=contract.n_contracts * scale)
+    return LeapsPartialCloseEvent(
+        close_date=current_date,
+        original_contract=contract,
+        continuation_contract=continuation,
+        n_contracts_closed=n_closed,
+        net_proceeds=net_proceeds,
+    )
+
+
+def compute_terminal_nav(
+    ledger: LeapsLedger,
+    final_nav: float,
+    final_date: pd.Timestamp,
+    final_spot: float,
+    iv: float = DEFAULT_IV,
+    risk_free_rate: float = DEFAULT_RISK_FREE_RATE,
+    ltcg_rate: float = LTCG_RATE,
+) -> TerminalNav:
+    """Compute pre- and post-tax terminal NAV assuming full liquidation of open LEAPS.
+
+    Terminal tax applies LTCG + NIIT to all open gains regardless of individual
+    contract hold durations (conservative simplification).
+    TAX_SHELTERED accounts always produce terminal_tax = 0.
+
+    Arguments:
+        ledger: Complete LeapsLedger from run_backtest or run_leaps_simulation.
+        final_nav: Portfolio NAV at the final backtest date (pre-tax, includes
+            LEAPS MTM contribution already).
+        final_date: Last date of the backtest.
+        final_spot: VTI spot price at final_date.
+        iv: Implied volatility for terminal MTM pricing. Default 0.18.
+        risk_free_rate: Risk-free rate for Black-Scholes terminal pricing. Default 0.0.
+        ltcg_rate: Combined LTCG + NIIT rate. Applied to positive open_gain only.
+
+    Returns:
+        TerminalNav with pre_tax_nav, post_tax_nav, terminal_tax, open_gain,
+        ltcg_rate, and account_type.
+    """
+    live = _live_contracts(ledger, final_date)
+    if not live:
+        return TerminalNav(
+            pre_tax_nav=final_nav,
+            post_tax_nav=final_nav,
+            terminal_tax=0.0,
+            open_gain=0.0,
+            ltcg_rate=ltcg_rate,
+            account_type=ledger.account_type,
+        )
+
+    total_mtm = sum(
+        price_leaps_contract(c, final_spot, final_date, iv, risk_free_rate) for c in live
+    )
+    total_cost = sum(c.premium_paid * CONTRACT_MULTIPLIER * c.n_contracts for c in live)
+    open_gain = total_mtm - total_cost
+
+    if ledger.account_type == AccountType.TAX_SHELTERED:
+        terminal_tax = 0.0
+    else:
+        terminal_tax = max(0.0, open_gain) * ltcg_rate
+
+    return TerminalNav(
+        pre_tax_nav=final_nav,
+        post_tax_nav=final_nav - terminal_tax,
+        terminal_tax=terminal_tax,
+        open_gain=open_gain,
+        ltcg_rate=ltcg_rate,
+        account_type=ledger.account_type,
+    )
+
+
+def compute_leaps_tax_summary(
+    ledger: LeapsLedger,
+    terminal_nav: TerminalNav,
+    final_nav: float,
+    years: float,
+) -> LeapsTaxSummary:
+    """Aggregate LEAPS tax drag over the full backtest period.
+
+    Arguments:
+        ledger: Complete LeapsLedger with all roll events.
+        terminal_nav: TerminalNav from compute_terminal_nav (provides terminal_tax).
+        final_nav: Pre-tax terminal portfolio NAV (used as denominator for drag pct).
+        years: Backtest duration in years (used to annualize drag).
+
+    Returns:
+        LeapsTaxSummary with total_roll_tax, n_rolls, terminal_tax, total_tax,
+        tax_drag_pct, annualized_tax_drag, and account_type.
+
+    Notes:
+        annualized_tax_drag = 1 - (1 - tax_drag_pct) ^ (1 / years).
+        Returns 0.0 for TAX_SHELTERED accounts.
+    """
+    total_roll_tax = sum(ev.tax_paid for ev in ledger.roll_events)
+    n_rolls = len(ledger.roll_events)
+    t_tax = terminal_nav.terminal_tax
+    total_tax = total_roll_tax + t_tax
+
+    if final_nav <= 0.0 or ledger.account_type == AccountType.TAX_SHELTERED:
+        return LeapsTaxSummary(
+            total_roll_tax=0.0,
+            n_rolls=n_rolls,
+            terminal_tax=0.0,
+            total_tax=0.0,
+            tax_drag_pct=0.0,
+            annualized_tax_drag=0.0,
+            account_type=ledger.account_type,
+        )
+
+    tax_drag_pct = total_tax / final_nav
+    safe_years = max(years, 1.0 / TRADING_DAYS_PER_YEAR)
+    annualized_drag = 1.0 - (1.0 - tax_drag_pct) ** (1.0 / safe_years)
+    return LeapsTaxSummary(
+        total_roll_tax=total_roll_tax,
+        n_rolls=n_rolls,
+        terminal_tax=t_tax,
+        total_tax=total_tax,
+        tax_drag_pct=tax_drag_pct,
+        annualized_tax_drag=annualized_drag,
+        account_type=ledger.account_type,
+    )
 
 
 # ---------------------------------------------------------------------------

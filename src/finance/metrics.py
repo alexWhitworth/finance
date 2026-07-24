@@ -16,6 +16,12 @@ from finance.consts import (
     TRADING_DAYS_PER_YEAR,
 )
 from finance.data import PriceData
+from finance.leverage import (
+    LeapsTaxSummary,
+    TerminalNav,
+    compute_leaps_tax_summary,
+    compute_terminal_nav,
+)
 from finance.portfolio import BacktestResult
 from finance.returns import ReturnData
 from finance.volatility import VolatilityModel, build_vol_contribution_table, forecast_portfolio_vol
@@ -68,8 +74,8 @@ class PerformanceReport:
     crisis_periods: tuple[PerformanceMetrics, ...]
     vol_contribution_table: pd.DataFrame
     forward_vol_forecast: float
-    terminal_nav: None = None
-    tax_summary: None = None
+    terminal_nav: TerminalNav | None = None
+    tax_summary: LeapsTaxSummary | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -323,8 +329,9 @@ def build_performance_report(
 
     Arguments:
         backtest_result: Output of portfolio.run_backtest().
-        price_data: PriceData used to build the backtest (reserved for
-            terminal NAV computation in Phase F; unused in Phase E).
+        price_data: PriceData used to build the backtest. The final VTI spot
+            price (price_data.prices["VTI"].iloc[-1]) is used for terminal NAV
+            pricing when a LEAPS ledger is present.
         return_data: ReturnData used to build the backtest (for vol table and
             risk-free rate series).
         vol_model: VolatilityModel at the backtest end date (for vol table).
@@ -332,7 +339,8 @@ def build_performance_report(
 
     Returns:
         PerformanceReport with full_period, crisis_periods, vol table,
-        forward_vol_forecast, and None placeholders for terminal_nav / tax_summary.
+        forward_vol_forecast, and terminal_nav / tax_summary populated when
+        a LEAPS ledger is present (None otherwise).
     """
     port_returns = backtest_result.return_series
     nav = backtest_result.nav_series
@@ -355,11 +363,22 @@ def build_performance_report(
     vol_table = build_vol_contribution_table(weights, return_data, vol_model)
     fwd_vol = forecast_portfolio_vol(weights, vol_model)
 
+    t_nav: TerminalNav | None = None
+    t_summary: LeapsTaxSummary | None = None
+    ledger = backtest_result.leaps_ledger
+    if ledger is not None:
+        final_nav_val = float(nav.iloc[-1])
+        final_date = nav.index[-1]
+        final_spot = float(price_data.prices["VTI"].iloc[-1])
+        t_nav = compute_terminal_nav(ledger, final_nav_val, final_date, final_spot)
+        years = len(port_returns) / TRADING_DAYS_PER_YEAR
+        t_summary = compute_leaps_tax_summary(ledger, t_nav, final_nav_val, years)
+
     return PerformanceReport(
         full_period=full_period,
         crisis_periods=tuple(crisis_metrics),
         vol_contribution_table=vol_table,
         forward_vol_forecast=fwd_vol,
-        terminal_nav=None,
-        tax_summary=None,
+        terminal_nav=t_nav,
+        tax_summary=t_summary,
     )

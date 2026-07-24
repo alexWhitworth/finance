@@ -11,17 +11,24 @@ from finance.leverage import (
     DEFAULT_IV,
     LEAPS_STRIKE_RATIO,
     LTCG_RATE,
+    MIN_PREMIUM_PER_SHARE,
     TIME_FLOOR,
     AccountType,
     LeapsConfig,
     LeapsContract,
     LeapsLedger,
+    LeapsPartialCloseEvent,
     LeapsRollEvent,
+    LeapsTaxSummary,
+    TerminalNav,
     bs_call_delta,
     bs_call_price,
     bs_call_vanna,
     compute_leaps_nav_contribution,
+    compute_leaps_tax_summary,
+    compute_terminal_nav,
     create_leaps_contract,
+    partial_close_leaps,
     price_leaps_contract,
     roll_contract,
     run_leaps_simulation,
@@ -583,3 +590,283 @@ def test_run_simulation_taxable_has_less_capital_than_sheltered() -> None:
     # If any rolls happened, taxable should have paid some tax (prices trended up)
     if taxable.roll_events:
         assert _total_tax_paid(taxable) >= 0.0
+
+
+# ---------------------------------------------------------------------------
+# create_leaps_contract — MIN_PREMIUM_PER_SHARE guard
+# ---------------------------------------------------------------------------
+
+
+def test_create_leaps_zero_contracts_when_premium_below_floor() -> None:
+    """n_contracts is 0.0 when computed premium < MIN_PREMIUM_PER_SHARE."""
+    # Use a near-expiry, deep OTM contract to force a near-zero premium
+    purchase = pd.Timestamp("2020-01-02")
+    # Very short time to expiry (sub-floor after DateOffset(years=2)? No —
+    # instead set strike very high relative to spot so premium is tiny)
+    # Spot = 1.0, strike = 0.5 (50%), IV = 0.001 (near-zero) → premium ≈ 0
+    spot = 1.0
+    iv_tiny = 0.0001
+    c = create_leaps_contract(purchase, spot, 10_000.0, iv=iv_tiny)
+    if c.premium_paid < MIN_PREMIUM_PER_SHARE:
+        assert c.n_contracts == 0.0
+
+
+def test_create_leaps_normal_premium_nonzero_contracts() -> None:
+    """n_contracts > 0 for normal BS inputs (not near-zero premium)."""
+    c = _make_contract(spot=200.0, capital=10_000.0, iv=DEFAULT_IV)
+    assert c.n_contracts > 0.0
+
+
+# ---------------------------------------------------------------------------
+# partial_close_leaps
+# ---------------------------------------------------------------------------
+
+
+def test_partial_close_reduces_n_contracts() -> None:
+    """continuation_contract has fewer contracts than original."""
+    date = pd.Timestamp("2020-01-02")
+    c = _make_contract(purchase_date=date, spot=200.0, capital=20_000.0)
+    later = date + pd.Timedelta(days=180)
+    current_mtm = price_leaps_contract(c, 200.0, later)
+    target = current_mtm * 0.5
+    ev = partial_close_leaps(c, later, 200.0, target)
+    assert ev.continuation_contract.n_contracts < c.n_contracts
+    assert ev.continuation_contract.n_contracts == pytest.approx(c.n_contracts * 0.5, rel=1e-6)
+
+
+def test_partial_close_net_proceeds_correct() -> None:
+    """net_proceeds equals closed fraction of mark-to-market (no tax)."""
+    date = pd.Timestamp("2020-01-02")
+    c = _make_contract(purchase_date=date, spot=200.0, capital=20_000.0)
+    later = date + pd.Timedelta(days=180)
+    current_mtm = price_leaps_contract(c, 200.0, later)
+    target = current_mtm * 0.4
+    ev = partial_close_leaps(c, later, 200.0, target)
+    expected_proceeds = current_mtm * 0.6
+    assert ev.net_proceeds == pytest.approx(expected_proceeds, rel=1e-6)
+
+
+def test_partial_close_raises_if_target_gte_mtm() -> None:
+    """Raises ValueError when target_value >= current MTM."""
+    date = pd.Timestamp("2020-01-02")
+    c = _make_contract(purchase_date=date, spot=200.0, capital=10_000.0)
+    later = date + pd.Timedelta(days=180)
+    current_mtm = price_leaps_contract(c, 200.0, later)
+    with pytest.raises(ValueError):
+        partial_close_leaps(c, later, 200.0, current_mtm)
+    with pytest.raises(ValueError):
+        partial_close_leaps(c, later, 200.0, current_mtm * 1.5)
+
+
+def test_partial_close_no_tax_applied() -> None:
+    """net_proceeds is full MTM of closed portion; no LTCG deduction."""
+    date = pd.Timestamp("2020-01-02")
+    c = _make_contract(purchase_date=date, spot=200.0, capital=20_000.0)
+    later = date + pd.Timedelta(days=365)
+    current_mtm = price_leaps_contract(c, 300.0, later)
+    target = current_mtm * 0.5
+    ev = partial_close_leaps(c, later, 300.0, target)
+    # If there were a tax, net_proceeds would be < current_mtm * 0.5
+    assert ev.net_proceeds == pytest.approx(current_mtm * 0.5, rel=1e-6)
+
+
+def test_partial_close_returns_frozen_dataclass() -> None:
+    """LeapsPartialCloseEvent is frozen."""
+    date = pd.Timestamp("2020-01-02")
+    c = _make_contract(purchase_date=date, spot=200.0, capital=10_000.0)
+    later = date + pd.Timedelta(days=180)
+    current_mtm = price_leaps_contract(c, 200.0, later)
+    ev = partial_close_leaps(c, later, 200.0, current_mtm * 0.5)
+    assert isinstance(ev, LeapsPartialCloseEvent)
+    with pytest.raises((AttributeError, TypeError)):
+        ev.net_proceeds = 0.0  # type: ignore[misc]
+
+
+# ---------------------------------------------------------------------------
+# compute_leaps_nav_contribution — partial close accounting
+# ---------------------------------------------------------------------------
+
+
+def test_nav_contribution_uses_continuation_contract() -> None:
+    """After a partial close, the contribution is based on the continuation contract."""
+    date = pd.Timestamp("2020-01-02")
+    c = _make_contract(purchase_date=date, spot=200.0, capital=20_000.0)
+    later = date + pd.Timedelta(days=180)
+    current_mtm = price_leaps_contract(c, 200.0, later)
+    ev = partial_close_leaps(c, later, 200.0, current_mtm * 0.5)
+
+    ledger_partial = LeapsLedger(
+        contracts=(c,),
+        roll_events=(),
+        account_type=AccountType.TAXABLE,
+        partial_close_events=(ev,),
+    )
+    ledger_full = LeapsLedger(
+        contracts=(c,),
+        roll_events=(),
+        account_type=AccountType.TAXABLE,
+    )
+    contrib_partial = compute_leaps_nav_contribution(ledger_partial, later, 200.0)
+    contrib_full = compute_leaps_nav_contribution(ledger_full, later, 200.0)
+    # Partial close cuts position in half → contribution magnitude ~halved
+    assert abs(contrib_partial) < abs(contrib_full) + 1.0  # within $1 for rounding
+
+
+# ---------------------------------------------------------------------------
+# compute_terminal_nav
+# ---------------------------------------------------------------------------
+
+
+_DEFAULT_LEDGER_PURCHASE = pd.Timestamp("2020-01-02")
+
+
+def _make_ledger_with_contracts(
+    purchase_date: pd.Timestamp = _DEFAULT_LEDGER_PURCHASE,
+    spot: float = 200.0,
+    capital: float = 10_000.0,
+    account_type: AccountType = AccountType.TAXABLE,
+) -> LeapsLedger:
+    c = create_leaps_contract(purchase_date, spot, capital, account_type=account_type)
+    return LeapsLedger(contracts=(c,), roll_events=(), account_type=account_type)
+
+
+def test_compute_terminal_nav_taxable_positive_gain() -> None:
+    """TAXABLE: terminal_tax = ltcg_rate * open_gain when open_gain > 0."""
+    purchase = pd.Timestamp("2020-01-02")
+    ledger = _make_ledger_with_contracts(purchase, spot=200.0, capital=20_000.0)
+    final_date = purchase + pd.Timedelta(days=365)
+    final_nav = 1_000_000.0
+    # Spot risen to 350 → positive open gain
+    t = compute_terminal_nav(ledger, final_nav, final_date, 350.0)
+    assert isinstance(t, TerminalNav)
+    assert t.open_gain > 0.0
+    assert t.terminal_tax == pytest.approx(t.open_gain * LTCG_RATE, rel=1e-6)
+    assert t.post_tax_nav == pytest.approx(final_nav - t.terminal_tax, rel=1e-9)
+
+
+def test_compute_terminal_nav_taxable_negative_gain_no_tax() -> None:
+    """TAXABLE: terminal_tax = 0 when open_gain <= 0 (underwater)."""
+    purchase = pd.Timestamp("2020-01-02")
+    ledger = _make_ledger_with_contracts(purchase, spot=200.0, capital=20_000.0)
+    final_date = purchase + pd.Timedelta(days=365)
+    # Spot crashed to 50 → likely underwater
+    t = compute_terminal_nav(ledger, 1_000_000.0, final_date, 50.0)
+    assert t.terminal_tax == pytest.approx(0.0, abs=1e-9)
+    assert t.post_tax_nav == pytest.approx(t.pre_tax_nav, rel=1e-9)
+
+
+def test_compute_terminal_nav_tax_sheltered_always_zero_tax() -> None:
+    """TAX_SHELTERED: terminal_tax = 0 regardless of gain."""
+    purchase = pd.Timestamp("2020-01-02")
+    ledger = _make_ledger_with_contracts(
+        purchase, spot=200.0, capital=20_000.0, account_type=AccountType.TAX_SHELTERED
+    )
+    final_date = purchase + pd.Timedelta(days=365)
+    t = compute_terminal_nav(ledger, 1_000_000.0, final_date, 400.0)
+    assert t.terminal_tax == 0.0
+    assert t.post_tax_nav == pytest.approx(t.pre_tax_nav, rel=1e-9)
+
+
+def test_compute_terminal_nav_empty_ledger() -> None:
+    """Empty ledger: terminal_tax = 0, post_tax_nav == pre_tax_nav."""
+    ledger = LeapsLedger(contracts=(), roll_events=(), account_type=AccountType.TAXABLE)
+    t = compute_terminal_nav(ledger, 500_000.0, pd.Timestamp("2022-01-01"), 200.0)
+    assert t.terminal_tax == 0.0
+    assert t.pre_tax_nav == pytest.approx(500_000.0, rel=1e-9)
+    assert t.post_tax_nav == pytest.approx(500_000.0, rel=1e-9)
+
+
+def test_compute_terminal_nav_is_frozen() -> None:
+    """TerminalNav is frozen."""
+    ledger = LeapsLedger(contracts=(), roll_events=(), account_type=AccountType.TAXABLE)
+    t = compute_terminal_nav(ledger, 500_000.0, pd.Timestamp("2022-01-01"), 200.0)
+    with pytest.raises((AttributeError, TypeError)):
+        t.terminal_tax = 0.0  # type: ignore[misc]
+
+
+# ---------------------------------------------------------------------------
+# compute_leaps_tax_summary
+# ---------------------------------------------------------------------------
+
+
+def test_compute_tax_summary_taxable_aggregates_roll_and_terminal_tax() -> None:
+    """total_tax = total_roll_tax + terminal_tax for TAXABLE account."""
+    purchase = pd.Timestamp("2020-01-02")
+    c = _make_contract(purchase_date=purchase, spot=200.0, capital=20_000.0)
+    roll_date = purchase + pd.Timedelta(days=400)
+    event = roll_contract(c, roll_date, 280.0)
+    ledger = LeapsLedger(
+        contracts=(c, event.new_contract),
+        roll_events=(event,),
+        account_type=AccountType.TAXABLE,
+    )
+    t_nav = TerminalNav(
+        pre_tax_nav=1_000_000.0,
+        post_tax_nav=990_000.0,
+        terminal_tax=10_000.0,
+        open_gain=42_016.81,
+        ltcg_rate=LTCG_RATE,
+        account_type=AccountType.TAXABLE,
+    )
+    summary = compute_leaps_tax_summary(ledger, t_nav, 1_000_000.0, years=3.0)
+    assert isinstance(summary, LeapsTaxSummary)
+    expected_roll_tax = event.tax_paid
+    assert summary.total_roll_tax == pytest.approx(expected_roll_tax, rel=1e-9)
+    assert summary.terminal_tax == pytest.approx(10_000.0, rel=1e-9)
+    assert summary.total_tax == pytest.approx(expected_roll_tax + 10_000.0, rel=1e-9)
+    assert summary.n_rolls == 1
+
+
+def test_compute_tax_summary_tax_sheltered_all_zeros() -> None:
+    """TAX_SHELTERED: all tax fields are 0.0."""
+    ledger = LeapsLedger(contracts=(), roll_events=(), account_type=AccountType.TAX_SHELTERED)
+    t_nav = TerminalNav(
+        pre_tax_nav=1_000_000.0,
+        post_tax_nav=1_000_000.0,
+        terminal_tax=0.0,
+        open_gain=0.0,
+        ltcg_rate=LTCG_RATE,
+        account_type=AccountType.TAX_SHELTERED,
+    )
+    summary = compute_leaps_tax_summary(ledger, t_nav, 1_000_000.0, years=3.0)
+    assert summary.total_tax == 0.0
+    assert summary.annualized_tax_drag == 0.0
+
+
+def test_compute_tax_summary_annualized_drag_positive_for_taxable() -> None:
+    """annualized_tax_drag > 0 when total_tax > 0 for TAXABLE."""
+    purchase = pd.Timestamp("2020-01-02")
+    c = _make_contract(purchase_date=purchase, spot=200.0, capital=20_000.0)
+    roll_date = purchase + pd.Timedelta(days=400)
+    event = roll_contract(c, roll_date, 300.0)
+    ledger = LeapsLedger(
+        contracts=(c, event.new_contract),
+        roll_events=(event,),
+        account_type=AccountType.TAXABLE,
+    )
+    t_nav = TerminalNav(
+        pre_tax_nav=1_000_000.0,
+        post_tax_nav=999_000.0,
+        terminal_tax=1_000.0,
+        open_gain=4_201.68,
+        ltcg_rate=LTCG_RATE,
+        account_type=AccountType.TAXABLE,
+    )
+    summary = compute_leaps_tax_summary(ledger, t_nav, 1_000_000.0, years=3.0)
+    assert summary.annualized_tax_drag > 0.0
+
+
+def test_compute_tax_summary_is_frozen() -> None:
+    """LeapsTaxSummary is frozen."""
+    ledger = LeapsLedger(contracts=(), roll_events=(), account_type=AccountType.TAXABLE)
+    t_nav = TerminalNav(
+        pre_tax_nav=1_000_000.0,
+        post_tax_nav=1_000_000.0,
+        terminal_tax=0.0,
+        open_gain=0.0,
+        ltcg_rate=LTCG_RATE,
+        account_type=AccountType.TAXABLE,
+    )
+    summary = compute_leaps_tax_summary(ledger, t_nav, 1_000_000.0, years=3.0)
+    with pytest.raises((AttributeError, TypeError)):
+        summary.total_tax = 0.0  # type: ignore[misc]

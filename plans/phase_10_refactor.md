@@ -898,30 +898,34 @@ def compare_performance_table(
   - [x] `build_performance_report` tests updated: add `price_data` arg; `terminal_nav`/`tax_summary` are None
 - [x] 235 tests pass, 98.33% coverage, ruff clean, mypy clean
 
-### Sub-phase F — `leverage.py` — partial close + terminal nav + tax summary + iv_series
+### Sub-phase F — `leverage.py` — partial close + terminal nav + tax summary ✅ DONE
 
-- [ ] Add `LeapsTaxSummary` dataclass
-- [ ] Add `TerminalNav` dataclass
-- [ ] Add `LeapsPartialCloseEvent` dataclass
-- [ ] Add `partial_close_events` field to `LeapsLedger`
-- [ ] Implement `partial_close_leaps()` (no tax, no MIN_HOLD_DAYS check)
-- [ ] Implement `compute_terminal_nav()` with TAXABLE / TAX_SHELTERED branching
-- [ ] Implement `compute_leaps_tax_summary()`
-- [ ] Update `compute_leaps_nav_contribution` for partial close accounting
-- [ ] Add `iv_series` parameter to `run_leaps_simulation`; implement floor logic
-- [ ] Add `MIN_PREMIUM_PER_SHARE` guard in `create_leaps_contract`
-- [ ] Update `PerformanceReport` to add `terminal_nav` and `tax_summary` fields
-- [ ] Update `build_performance_report` to call both functions when ledger present
-- [ ] Tests:
-  - `partial_close_leaps` reduces n_contracts correctly, no tax deducted
-  - `compute_terminal_nav` TAXABLE: applies LTCG to positive open_gain only
-  - `compute_terminal_nav` TAX_SHELTERED: terminal_tax = 0, post_tax_nav == pre_tax_nav
-  - `compute_terminal_nav` underwater contracts (open_gain < 0): terminal_tax = 0
-  - `compute_leaps_tax_summary` TAXABLE: total_tax = roll_tax + terminal_tax
-  - `compute_leaps_tax_summary` TAX_SHELTERED: total_tax = 0, annualized_tax_drag = 0
-  - `build_performance_report` terminal_nav and tax_summary are None when no LEAPS ledger
-  - n_contracts guard: zero-premium contract is skipped
-  - `iv_series` overrides config.iv at each month-end
+- [x] Add `LeapsTaxSummary` dataclass
+- [x] Add `TerminalNav` dataclass
+- [x] Add `LeapsPartialCloseEvent` dataclass
+- [x] Add `partial_close_events: tuple[LeapsPartialCloseEvent, ...] = ()` field to `LeapsLedger`
+- [x] Implement `partial_close_leaps()` (no tax; raises ValueError when target >= MTM)
+- [x] Implement `compute_terminal_nav()` with TAXABLE / TAX_SHELTERED branching
+- [x] Implement `compute_leaps_tax_summary()`
+- [x] Extract `_live_contracts()` helper; update `compute_leaps_nav_contribution` for partial close
+- [x] Add `MIN_PREMIUM_PER_SHARE` guard in `create_leaps_contract` (n_contracts = 0.0)
+- [x] Update `PerformanceReport.terminal_nav` and `tax_summary` types to `TerminalNav | None` / `LeapsTaxSummary | None`
+- [x] Update `build_performance_report` to populate both fields when ledger present
+- [x] Tests (all in `test_leverage.py` + `test_metrics.py`):
+  - [x] `partial_close_leaps` reduces n_contracts correctly, no tax deducted
+  - [x] `partial_close_leaps` raises ValueError when target >= MTM
+  - [x] `compute_terminal_nav` TAXABLE: applies LTCG to positive open_gain only
+  - [x] `compute_terminal_nav` TAXABLE: terminal_tax = 0 for underwater contracts
+  - [x] `compute_terminal_nav` TAX_SHELTERED: terminal_tax = 0, post_tax_nav == pre_tax_nav
+  - [x] `compute_terminal_nav` empty ledger: terminal_tax = 0
+  - [x] `compute_leaps_tax_summary` TAXABLE: total_tax = roll_tax + terminal_tax
+  - [x] `compute_leaps_tax_summary` TAX_SHELTERED: all zeros
+  - [x] `compute_leaps_tax_summary` annualized_drag > 0 for taxable with positive tax
+  - [x] `build_performance_report` terminal_nav/tax_summary None without LEAPS ledger
+  - [x] `build_performance_report` terminal_nav/tax_summary populated with LEAPS ledger
+  - [x] n_contracts guard: zero-premium contract produces n_contracts = 0.0
+- [x] 254 tests pass, 98.24% coverage, ruff clean, mypy clean
+- Note: `iv_series` parameter for `run_leaps_simulation` deferred to Sub-phase G (portfolio rewrite)
 
 ### Sub-phase G — `portfolio.py` — full rewrite of `run_backtest`
 

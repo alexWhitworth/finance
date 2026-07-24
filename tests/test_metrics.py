@@ -5,7 +5,14 @@ import pandas as pd
 import pytest
 
 from finance.data import PriceData
-from finance.leverage import RebalanceRule, WeightStrategy
+from finance.leverage import (
+    AccountType,
+    LeapsConfig,
+    RebalanceRule,
+    TerminalNav,
+    WeightStrategy,
+    run_leaps_simulation,
+)
 from finance.metrics import (
     TRADING_DAYS_PER_YEAR,
     PerformanceMetrics,
@@ -557,8 +564,8 @@ def test_build_performance_report_immutable() -> None:
         report.forward_vol_forecast = 0.0  # type: ignore[misc]
 
 
-def test_build_performance_report_terminal_nav_none() -> None:
-    """terminal_nav is None (Phase F placeholder)."""
+def test_build_performance_report_terminal_nav_none_without_leaps() -> None:
+    """terminal_nav is None when backtest_result has no LEAPS ledger."""
     br = _make_backtest_result(504)
     pd_obj = _make_price_data(505)
     rd = _make_return_data(504)
@@ -567,11 +574,80 @@ def test_build_performance_report_terminal_nav_none() -> None:
     assert report.terminal_nav is None
 
 
-def test_build_performance_report_tax_summary_none() -> None:
-    """tax_summary is None (Phase F placeholder)."""
+def test_build_performance_report_tax_summary_none_without_leaps() -> None:
+    """tax_summary is None when backtest_result has no LEAPS ledger."""
     br = _make_backtest_result(504)
     pd_obj = _make_price_data(505)
     rd = _make_return_data(504)
     vm = build_volatility_model(rd)
     report = build_performance_report(br, pd_obj, rd, vm)
     assert report.tax_summary is None
+
+
+def _make_backtest_result_with_leaps(n: int = 504) -> tuple[BacktestResult, PriceData]:
+    """BacktestResult with a synthetic LEAPS ledger attached."""
+    rng = np.random.default_rng(55)
+    idx = _bdate_range(n)
+    tickers = list(_TICKERS)
+    returns_data = pd.DataFrame(
+        {t: rng.normal(0.0004, 0.01, n) for t in tickers}, index=idx
+    )
+    port_returns = returns_data.mean(axis=1)
+    nav = _nav_from_returns(port_returns)
+    weights_df = pd.DataFrame({t: 1.0 / len(tickers) for t in tickers}, index=idx)
+    config = PortfolioConfig(
+        target_weights=_WEIGHTS,
+        initial_nav=1_000_000.0,
+        monthly_contribution=10_000.0,
+        rebalance_rule=RebalanceRule.QUARTERLY,
+        weight_strategy=WeightStrategy.USER_SPECIFIED,
+    )
+    # Build a small VTI price series for LEAPS simulation
+    vti_prices = pd.Series(
+        200.0 * np.cumprod(1 + rng.normal(0.0004, 0.01, n)),
+        index=idx,
+    )
+    pd_obj_leaps = PriceData(
+        prices=pd.DataFrame(dict.fromkeys(tickers, vti_prices), index=idx),
+        dividends=pd.DataFrame(0.0, index=idx, columns=tickers),
+        vol_prices=pd.DataFrame(),
+        tickers=_TICKERS,
+        start_date=str(idx[0].date()),
+        end_date=str(idx[-1].date()),
+        spliced=False,
+    )
+    ledger = run_leaps_simulation(
+        vti_prices,
+        monthly_contribution_to_leaps=5_000.0,
+        config=LeapsConfig(account_type=AccountType.TAXABLE),
+    )
+    br = BacktestResult(
+        nav_series=nav,
+        weight_history=weights_df,
+        return_series=port_returns,
+        leaps_ledger=ledger,
+        config=config,
+    )
+    return br, pd_obj_leaps
+
+
+def test_build_performance_report_terminal_nav_populated_with_leaps() -> None:
+    """terminal_nav is a TerminalNav when backtest_result has a LEAPS ledger."""
+    br, pd_obj = _make_backtest_result_with_leaps(504)
+    rd = _make_return_data(504)
+    vm = build_volatility_model(rd)
+    report = build_performance_report(br, pd_obj, rd, vm)
+    assert report.terminal_nav is not None
+    assert isinstance(report.terminal_nav, TerminalNav)
+    assert report.terminal_nav.pre_tax_nav > 0.0
+
+
+def test_build_performance_report_tax_summary_populated_with_leaps() -> None:
+    """tax_summary is a LeapsTaxSummary when backtest_result has a LEAPS ledger."""
+    br, pd_obj = _make_backtest_result_with_leaps(504)
+    rd = _make_return_data(504)
+    vm = build_volatility_model(rd)
+    report = build_performance_report(br, pd_obj, rd, vm)
+    assert report.tax_summary is not None
+    assert isinstance(report.tax_summary.n_rolls, int)
+    assert report.tax_summary.total_tax >= 0.0
