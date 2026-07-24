@@ -23,12 +23,15 @@ class ReturnData:
         log_returns: DatetimeIndex x asset columns, daily log returns.
         tey_adjusted: True if MUB returns include the TEY adjustment.
         marginal_rate: Marginal tax rate used for TEY (e.g. 0.408).
+        risk_free_rate: Daily annualized risk-free rate (decimal) aligned to
+            the returns index. Defaults to a zero Series when not supplied.
     """
 
     returns: pd.DataFrame
     log_returns: pd.DataFrame
     tey_adjusted: bool
     marginal_rate: float
+    risk_free_rate: pd.Series
 
 
 def compute_simple_returns(prices: pd.DataFrame) -> pd.DataFrame:
@@ -119,6 +122,7 @@ def build_return_data(
     price_data: PriceData,
     marginal_rate: float = NIIT_RATE,
     apply_tey: bool = True,
+    risk_free_series: pd.Series | None = None,
 ) -> ReturnData:
     """Compute full return dataset from PriceData.
 
@@ -129,9 +133,13 @@ def build_return_data(
         price_data: PriceData from data.build_price_data().
         marginal_rate: Marginal tax rate for MUB TEY adjustment.
         apply_tey: Whether to apply the TEY adjustment to MUB.
+        risk_free_series: Optional daily annualized risk-free rate Series
+            (decimal, e.g. 0.05 for 5%) from data.fetch_risk_free_rate().
+            If None, defaults to a zero Series aligned to the returns index.
 
     Returns:
-        ReturnData with aligned simple and log return DataFrames.
+        ReturnData with aligned simple and log return DataFrames and
+        risk_free_rate Series.
     """
     simple = compute_simple_returns(price_data.prices)
     log_ret = compute_log_returns(price_data.prices)
@@ -144,9 +152,15 @@ def build_return_data(
         simple = simple.copy()
         simple["MUB"] = tey_mub.reindex(simple.index, fill_value=0.0)
 
+    if risk_free_series is not None:
+        rfr = risk_free_series.reindex(simple.index, method="ffill").fillna(0.0)
+    else:
+        rfr = pd.Series(0.0, index=simple.index, name="risk_free_rate")
+
     return ReturnData(
         returns=simple,
         log_returns=log_ret,
         tey_adjusted=apply_tey,
         marginal_rate=marginal_rate,
+        risk_free_rate=rfr,
     )

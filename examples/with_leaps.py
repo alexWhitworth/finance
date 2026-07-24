@@ -78,7 +78,7 @@ def _run_scenario(
 
 if __name__ == "__main__":
     print("=== Fetching Price Data ===")
-    price_data = build_price_data("2015-01-01", "2024-12-31", use_aqmix_splice=True)
+    price_data = build_price_data("2007-09-10", "2026-06-30", use_aqmix_splice=True)
 
     print("=== Building Returns ===")
     return_data = build_return_data(price_data)
@@ -96,7 +96,7 @@ if __name__ == "__main__":
 
     print()
     print("=" * 52)
-    print("  LEAPS Backtest Summary (2015-01-01 → 2024-12-31)")
+    print("  LEAPS Backtest Summary (2007-09-10 → 2026-06-30)")
     print("=" * 52)
     print(f"  Taxable final NAV      : ${taxable_final:>15,.0f}")
     print(f"  Tax-Sheltered final NAV: ${sheltered_final:>15,.0f}")

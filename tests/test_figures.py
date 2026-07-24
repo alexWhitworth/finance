@@ -48,7 +48,11 @@ def _make_return_data(n: int = 504, seed: int = 42, start: str = "2015-01-02") -
     returns = prices.pct_change().dropna()
     log_returns = np.log(1 + returns)
     return ReturnData(
-        returns=returns, log_returns=log_returns, tey_adjusted=False, marginal_rate=0.0
+        returns=returns,
+        log_returns=log_returns,
+        tey_adjusted=False,
+        marginal_rate=0.0,
+        risk_free_rate=pd.Series(0.0, index=returns.index, name="risk_free_rate"),
     )
 
 

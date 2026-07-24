@@ -27,8 +27,8 @@ WEIGHTS = {
 }
 
 if __name__ == "__main__":
-    print("=== Fetching Price Data (2007-2024) ===")
-    price_data = build_price_data("2007-01-01", "2024-12-31", use_aqmix_splice=True)
+    print("=== Fetching Price Data (2007-2026) ===")
+    price_data = build_price_data("2007-09-10", "2026-06-30", use_aqmix_splice=True)
 
     print("=== Building Returns ===")
     return_data = build_return_data(price_data)

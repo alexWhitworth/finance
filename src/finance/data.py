@@ -12,6 +12,7 @@ import yfinance as yf
 TICKERS: tuple[str, ...] = ("VTI", "VXUS", "GLD", "MUB", "KMLM", "VGIT")
 KMLM_START: str = "2021-01-01"
 AQMIX_PROXY_TICKER: str = "AQMIX"
+TBILL_TICKER: str = "^IRX"  # 13-week T-bill annualized yield (percent)
 
 
 @dataclass(frozen=True)
@@ -90,6 +91,35 @@ def fetch_dividends(ticker: str, start_date: str, end_date: str) -> pd.Series:  
         divs.index = dt_index.tz_localize(None)
     result: pd.Series = divs.loc[start_date:end_date].rename(ticker)
     return result
+
+
+def fetch_risk_free_rate(  # pragma: no cover
+    start_date: str,
+    end_date: str,
+) -> pd.Series:
+    """Download the 3-month T-bill annualized yield and convert to a daily decimal rate.
+
+    Uses ^IRX from yfinance, which reports the annualized yield as a percentage
+    (e.g. 5.25 for 5.25%). Missing days are forward-filled so the series is
+    contiguous over all trading days in the range.
+
+    Arguments:
+        start_date: Start date string in YYYY-MM-DD format (inclusive).
+        end_date: End date string in YYYY-MM-DD format (inclusive).
+
+    Returns:
+        Series with DatetimeIndex of daily annualized rates as decimals
+        (e.g. 0.0525). Returns a zero-filled Series if no data is available.
+    """
+    raw = yf.download(TBILL_TICKER, start=start_date, end=end_date, progress=False)
+    if raw.empty:
+        return pd.Series(dtype=float, name="risk_free_rate")
+
+    close: pd.Series = raw["Close"].squeeze()
+    close = close / 100.0  # percent → decimal annualized rate
+    close = close.ffill()
+    close.name = "risk_free_rate"
+    return close
 
 
 def splice_kmlm(

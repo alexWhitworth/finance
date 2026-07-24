@@ -229,7 +229,13 @@ def test_run_backtest_flat_returns_nav_is_constant() -> None:
     idx = pd.bdate_range("2015-01-02", periods=n)
     returns = pd.DataFrame(0.0, index=idx, columns=list(_TICKERS))
     log_ret = pd.DataFrame(0.0, index=idx, columns=list(_TICKERS))
-    rd = ReturnData(returns=returns, log_returns=log_ret, tey_adjusted=False, marginal_rate=0.0)
+    rd = ReturnData(
+        returns=returns,
+        log_returns=log_ret,
+        tey_adjusted=False,
+        marginal_rate=0.0,
+        risk_free_rate=pd.Series(0.0, index=returns.index, name="risk_free_rate"),
+    )
     cfg = _config(initial_nav=500_000.0, contribution=0.0)
     result = run_backtest(rd, cfg)
     assert result.nav_series.iloc[-1] == pytest.approx(500_000.0, rel=1e-9)
@@ -253,7 +259,13 @@ def test_run_backtest_no_contribution_nav_from_returns() -> None:
     r = 0.001
     returns = pd.DataFrame(r, index=idx, columns=list(_TICKERS))
     log_ret = pd.DataFrame(r, index=idx, columns=list(_TICKERS))
-    rd = ReturnData(returns=returns, log_returns=log_ret, tey_adjusted=False, marginal_rate=0.0)
+    rd = ReturnData(
+        returns=returns,
+        log_returns=log_ret,
+        tey_adjusted=False,
+        marginal_rate=0.0,
+        risk_free_rate=pd.Series(0.0, index=returns.index, name="risk_free_rate"),
+    )
     cfg = _config(initial_nav=100_000.0, contribution=0.0)
     result = run_backtest(rd, cfg)
     expected = 100_000.0 * (1.0 + r) ** n

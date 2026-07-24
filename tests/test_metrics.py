@@ -286,21 +286,21 @@ def test_calmar_ratio_known_value() -> None:
 def test_omega_ratio_all_positive() -> None:
     """All returns above threshold → huge Omega (numerically inf-ish)."""
     r = pd.Series([0.01, 0.02, 0.03])
-    result = omega_ratio(r, threshold=0.0)
+    result = omega_ratio(r, risk_free_rate=0.0)
     assert result > 1e10
 
 
 def test_omega_ratio_all_negative() -> None:
     """All returns below threshold → Omega < 1."""
     r = pd.Series([-0.01, -0.02, -0.03])
-    result = omega_ratio(r, threshold=0.0)
+    result = omega_ratio(r, risk_free_rate=0.0)
     assert result < 1.0
 
 
 def test_omega_ratio_equal_gains_losses() -> None:
     """Equal gains and losses → Omega ≈ 1.0."""
     r = pd.Series([0.01, -0.01, 0.01, -0.01])
-    result = omega_ratio(r, threshold=0.0)
+    result = omega_ratio(r, risk_free_rate=0.0)
     assert result == pytest.approx(1.0, abs=1e-6)
 
 

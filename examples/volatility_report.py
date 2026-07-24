@@ -56,7 +56,7 @@ def _format_vol_table(tbl: pd.DataFrame) -> pd.DataFrame:
 
 if __name__ == "__main__":
     print("=== Fetching Price Data ===")
-    price_data = build_price_data("2015-01-01", "2024-12-31", use_aqmix_splice=True)
+    price_data = build_price_data("2007-09-10", "2026-06-30", use_aqmix_splice=True)
 
     print("=== Building Returns ===")
     return_data = build_return_data(price_data)

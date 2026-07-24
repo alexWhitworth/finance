@@ -183,22 +183,24 @@ def calmar_ratio(returns: pd.Series, nav_series: pd.Series) -> float:
     return float(ann / mdd)
 
 
-def omega_ratio(returns: pd.Series, threshold: float = 0.0) -> float:
+def omega_ratio(returns: pd.Series, risk_free_rate: float = RISK_FREE_RATE) -> float:
     """Compute Omega ratio.
 
-    Omega = sum(max(r - threshold, 0)) / (sum(max(threshold - r, 0)) + epsilon).
+    Omega = sum(max(r - threshold, 0)) / (sum(max(threshold - r, 0)) + epsilon),
+    where threshold is the daily risk-free rate derived from the annual rate.
 
     Arguments:
         returns: Daily simple return Series.
-        threshold: Return threshold separating gains from losses. Default 0.0.
+        risk_free_rate: Annual risk-free rate used as the return threshold. Default RISK_FREE_RATE.
 
     Returns:
         Omega ratio. Returns inf if there are no returns below threshold.
     """
     if len(returns) == 0:
         return 0.0
-    gains = (returns - threshold).clip(lower=0.0).sum()
-    losses = (threshold - returns).clip(lower=0.0).sum()
+    daily_rf = risk_free_rate / TRADING_DAYS_PER_YEAR
+    gains = (returns - daily_rf).clip(lower=0.0).sum()
+    losses = (daily_rf - returns).clip(lower=0.0).sum()
     eps = 1e-12
     return float(gains / (losses + eps))
 
@@ -247,7 +249,7 @@ def compute_metrics(
         sharpe=sharpe_ratio(returns, risk_free_rate),
         sortino=sortino_ratio(returns, risk_free_rate),
         calmar=calmar_ratio(returns, nav_series),
-        omega=omega_ratio(returns),
+        omega=omega_ratio(returns, risk_free_rate),
         period_label=period_label,
     )
 
@@ -257,19 +259,22 @@ def build_performance_report(
     return_data: ReturnData,
     vol_model: VolatilityModel,
     crisis_periods: dict[str, tuple[str, str]] = CRISIS_PERIODS,
-    risk_free_rate: float = RISK_FREE_RATE,
 ) -> PerformanceReport:
     """Build a complete PerformanceReport from a finished backtest.
 
     Crisis-period metrics are included only when the backtest overlaps the
     crisis window by at least MIN_CRISIS_OBSERVATIONS trading days.
 
+    The risk-free rate for each period (full or crisis) is taken as the mean
+    of return_data.risk_free_rate over that period's trading days, reflecting
+    the actual prevailing T-bill rate rather than a single hardcoded scalar.
+
     Arguments:
         backtest_result: Output of portfolio.run_backtest().
-        return_data: ReturnData used to build the backtest (for vol table).
+        return_data: ReturnData used to build the backtest (for vol table and
+            risk-free rate series).
         vol_model: VolatilityModel at the backtest end date (for vol table).
         crisis_periods: Mapping of label → (start, end) ISO strings.
-        risk_free_rate: Annual risk-free rate passed to all ratio functions.
 
     Returns:
         PerformanceReport with full_period, crisis_periods, vol table, and
@@ -277,8 +282,10 @@ def build_performance_report(
     """
     port_returns = backtest_result.return_series
     nav = backtest_result.nav_series
+    rfr = return_data.risk_free_rate
 
-    full_period = compute_metrics(port_returns, nav, "Full Period", risk_free_rate)
+    full_rfr = float(rfr.reindex(port_returns.index, method="ffill").fillna(0.0).mean())
+    full_period = compute_metrics(port_returns, nav, "Full Period", full_rfr)
 
     crisis_metrics: list[PerformanceMetrics] = []
     for label, (start, end) in crisis_periods.items():
@@ -286,7 +293,8 @@ def build_performance_report(
         if len(crisis_ret) < MIN_CRISIS_OBSERVATIONS:
             continue
         crisis_nav = nav.loc[crisis_ret.index]
-        crisis_metrics.append(compute_metrics(crisis_ret, crisis_nav, label, risk_free_rate))
+        crisis_rfr = float(rfr.reindex(crisis_ret.index, method="ffill").fillna(0.0).mean())
+        crisis_metrics.append(compute_metrics(crisis_ret, crisis_nav, label, crisis_rfr))
 
     weights = pd.Series(backtest_result.config.target_weights)
     weights = weights / weights.sum()

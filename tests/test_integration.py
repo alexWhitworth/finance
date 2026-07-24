@@ -37,7 +37,13 @@ def _synthetic_return_data(n_days: int = 756, seed: int = 0) -> ReturnData:
     )
     rets = prices.pct_change().dropna()
     log_rets = np.log(1 + rets)
-    return ReturnData(returns=rets, log_returns=log_rets, tey_adjusted=False, marginal_rate=0.0)
+    return ReturnData(
+        returns=rets,
+        log_returns=log_rets,
+        tey_adjusted=False,
+        marginal_rate=0.0,
+        risk_free_rate=pd.Series(0.0, index=rets.index, name="risk_free_rate"),
+    )
 
 
 def _base_config(contribution: float = 10_000.0) -> PortfolioConfig:
