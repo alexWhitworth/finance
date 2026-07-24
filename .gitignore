@@ -1,24 +1,30 @@
+# venv etc
 .venv/
-data/
-outputs/
-figures/
-.coverage
-coverage.xml
-htmlcov/
 .pytest_cache/
 __pycache__/
 *.pyc
 *.pyo
 *.egg-info/
+
+# outputs
+outputs/
+figures/
+
+# code-cov
+.coverage
+coverage.xml
+htmlcov/
+
+# build artifacts
 dist/
 build/
 .mypy_cache/
 .ruff_cache/
 *.log
-mutants/
-*.bak
 
+# claude
 .claude/settings.local.json
 .claude/*.log
 
+# judge verdicts
 plans/judge_verdicts
