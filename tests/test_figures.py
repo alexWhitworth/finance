@@ -32,7 +32,7 @@ from finance.volatility import build_volatility_model
 # Shared helpers
 # ---------------------------------------------------------------------------
 
-_TICKERS = ("VTI", "VXUS", "GLD", "VTEB", "KMLM", "VGIT")
+_TICKERS = ("VTI", "VXUS", "GLD", "MUB", "KMLM", "VGIT")
 _EQUAL_WEIGHTS = {t: 1.0 / len(_TICKERS) for t in _TICKERS}
 
 
@@ -40,7 +40,7 @@ def _make_return_data(n: int = 504, seed: int = 42, start: str = "2015-01-02") -
     """Synthetic ReturnData for 6 assets spanning ~2 years."""
     idx = pd.bdate_range(start, periods=n + 1)
     rng = np.random.default_rng(seed)
-    starts = {"VTI": 200.0, "VXUS": 60.0, "GLD": 170.0, "VTEB": 55.0, "KMLM": 25.0, "VGIT": 65.0}
+    starts = {"VTI": 200.0, "VXUS": 60.0, "GLD": 170.0, "MUB": 55.0, "KMLM": 25.0, "VGIT": 65.0}
     prices = pd.DataFrame(
         {t: starts[t] * np.cumprod(1 + rng.normal(0.0003, 0.01, n + 1)) for t in _TICKERS},
         index=idx,

@@ -22,7 +22,7 @@ from finance.volatility import build_volatility_model
 # Synthetic data factory
 # ---------------------------------------------------------------------------
 
-_TICKERS = ("VTI", "VXUS", "GLD", "VTEB", "KMLM", "VGIT")
+_TICKERS = ("VTI", "VXUS", "GLD", "MUB", "KMLM", "VGIT")
 _EQUAL_WEIGHTS = {t: 1.0 / len(_TICKERS) for t in _TICKERS}
 
 
@@ -30,7 +30,7 @@ def _synthetic_return_data(n_days: int = 756, seed: int = 0) -> ReturnData:
     """Generate ~3 years of synthetic daily returns for all 6 assets."""
     idx = pd.bdate_range("2020-01-02", periods=n_days + 1)
     rng = np.random.default_rng(seed)
-    starts = {"VTI": 200.0, "VXUS": 60.0, "GLD": 170.0, "VTEB": 55.0, "KMLM": 25.0, "VGIT": 65.0}
+    starts = {"VTI": 200.0, "VXUS": 60.0, "GLD": 170.0, "MUB": 55.0, "KMLM": 25.0, "VGIT": 65.0}
     prices = pd.DataFrame(
         {t: starts[t] * np.cumprod(1 + rng.normal(0.0003, 0.01, n_days + 1)) for t in _TICKERS},
         index=idx,
@@ -162,10 +162,10 @@ class TestMultiPortfolioReport:
         rd = _synthetic_return_data()
         # Equity-heavy vs bond-heavy
         equity_weights = {
-            "VTI": 0.7, "VXUS": 0.15, "GLD": 0.05, "VTEB": 0.05, "KMLM": 0.025, "VGIT": 0.025,
+            "VTI": 0.7, "VXUS": 0.15, "GLD": 0.05, "MUB": 0.05, "KMLM": 0.025, "VGIT": 0.025,
         }
         bond_weights = {
-            "VTI": 0.1, "VXUS": 0.05, "GLD": 0.05, "VTEB": 0.4, "KMLM": 0.1, "VGIT": 0.3,
+            "VTI": 0.1, "VXUS": 0.05, "GLD": 0.05, "MUB": 0.4, "KMLM": 0.1, "VGIT": 0.3,
         }
         cfg_equity = PortfolioConfig(
             target_weights=equity_weights,

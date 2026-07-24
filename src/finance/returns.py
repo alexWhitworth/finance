@@ -21,7 +21,7 @@ class ReturnData:
     Attributes:
         returns: DatetimeIndex x asset columns, daily simple returns.
         log_returns: DatetimeIndex x asset columns, daily log returns.
-        tey_adjusted: True if VTEB returns include the TEY adjustment.
+        tey_adjusted: True if MUB returns include the TEY adjustment.
         marginal_rate: Marginal tax rate used for TEY (e.g. 0.408).
     """
 
@@ -60,47 +60,47 @@ def compute_log_returns(prices: pd.DataFrame) -> pd.DataFrame:
     return log_df.dropna()
 
 
-def _decompose_vteb_return(
-    vteb_prices: pd.Series,
-    vteb_dividends: pd.Series,
+def _decompose_mub_return(
+    mub_prices: pd.Series,
+    mub_dividends: pd.Series,
 ) -> tuple[pd.Series, pd.Series]:
-    """Split VTEB total return into price-appreciation and income components.
+    """Split MUB total return into price-appreciation and income components.
 
     Arguments:
-        vteb_prices: Adjusted close price series for VTEB.
-        vteb_dividends: Per-share dividend series aligned to price index.
+        mub_prices: Adjusted close price series for MUB.
+        mub_dividends: Per-share dividend series aligned to price index.
 
     Returns:
         Tuple of (price_return, income_return) as daily simple return Series.
         income_return is non-zero only on ex-dividend dates.
     """
-    price_return = vteb_prices.pct_change().fillna(0.0)
+    price_return = mub_prices.pct_change().fillna(0.0)
 
     # Income return: dividend / prior price
-    prior_prices = vteb_prices.shift(1)
-    income_return = (vteb_dividends / prior_prices).fillna(0.0)
+    prior_prices = mub_prices.shift(1)
+    income_return = (mub_dividends / prior_prices).fillna(0.0)
 
     return price_return, income_return
 
 
 def adjust_tey(
-    vteb_prices: pd.Series,
-    vteb_dividends: pd.Series,
+    mub_prices: pd.Series,
+    mub_dividends: pd.Series,
     marginal_rate: float = NIIT_RATE,
 ) -> pd.Series:
-    """Adjust VTEB return series for tax-equivalent yield.
+    """Adjust MUB return series for tax-equivalent yield.
 
     The price-appreciation component is unchanged. The income (yield) component
     is scaled by 1 / (1 - marginal_rate) to reflect the pre-tax equivalent
     yield a taxable investor would require.
 
     Arguments:
-        vteb_prices: Adjusted close price series for VTEB.
-        vteb_dividends: Per-share dividends aligned to the price index.
+        mub_prices: Adjusted close price series for MUB.
+        mub_dividends: Per-share dividends aligned to the price index.
         marginal_rate: Combined marginal tax rate (default 0.408 for NIIT).
 
     Returns:
-        Daily simple return Series for VTEB with TEY-adjusted income component.
+        Daily simple return Series for MUB with TEY-adjusted income component.
 
     Raises:
         ValueError: If marginal_rate is not in (0, 1).
@@ -108,10 +108,10 @@ def adjust_tey(
     if not (0.0 < marginal_rate < 1.0):
         raise ValueError(f"marginal_rate must be in (0, 1), got {marginal_rate}")
 
-    price_ret, income_ret = _decompose_vteb_return(vteb_prices, vteb_dividends)
+    price_ret, income_ret = _decompose_mub_return(mub_prices, mub_dividends)
     tey_factor = 1.0 / (1.0 - marginal_rate)
     adjusted = price_ret + income_ret * tey_factor
-    adjusted.name = "VTEB"
+    adjusted.name = "MUB"
     return adjusted.iloc[1:]  # drop first row to match pct_change behaviour
 
 
@@ -122,13 +122,13 @@ def build_return_data(
 ) -> ReturnData:
     """Compute full return dataset from PriceData.
 
-    Applies TEY adjustment to VTEB if apply_tey is True.  All other assets
+    Applies TEY adjustment to MUB if apply_tey is True.  All other assets
     use raw adjusted-close simple returns.
 
     Arguments:
         price_data: PriceData from data.build_price_data().
-        marginal_rate: Marginal tax rate for VTEB TEY adjustment.
-        apply_tey: Whether to apply the TEY adjustment to VTEB.
+        marginal_rate: Marginal tax rate for MUB TEY adjustment.
+        apply_tey: Whether to apply the TEY adjustment to MUB.
 
     Returns:
         ReturnData with aligned simple and log return DataFrames.
@@ -136,13 +136,13 @@ def build_return_data(
     simple = compute_simple_returns(price_data.prices)
     log_ret = compute_log_returns(price_data.prices)
 
-    if apply_tey and "VTEB" in price_data.prices.columns:
-        vteb_divs = price_data.dividends["VTEB"].reindex(
+    if apply_tey and "MUB" in price_data.prices.columns:
+        mub_divs = price_data.dividends["MUB"].reindex(
             price_data.prices.index, fill_value=0.0
         )
-        tey_vteb = adjust_tey(price_data.prices["VTEB"], vteb_divs, marginal_rate)
+        tey_mub = adjust_tey(price_data.prices["MUB"], mub_divs, marginal_rate)
         simple = simple.copy()
-        simple["VTEB"] = tey_vteb.reindex(simple.index, fill_value=0.0)
+        simple["MUB"] = tey_mub.reindex(simple.index, fill_value=0.0)
 
     return ReturnData(
         returns=simple,

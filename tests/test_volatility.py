@@ -36,7 +36,7 @@ def _return_df(n: int = 400, seed: int = 0) -> pd.DataFrame:
     """Synthetic 6-asset daily return DataFrame."""
     rng = np.random.default_rng(seed)
     idx = pd.bdate_range("2019-01-02", periods=n)
-    tickers = ["VTI", "VXUS", "GLD", "VTEB", "KMLM", "VGIT"]
+    tickers = ["VTI", "VXUS", "GLD", "MUB", "KMLM", "VGIT"]
     vols = [0.012, 0.013, 0.009, 0.003, 0.008, 0.004]
     data = {t: rng.normal(0.0, v, n) for t, v in zip(tickers, vols, strict=True)}
     return pd.DataFrame(data, index=idx)
@@ -46,8 +46,8 @@ def _make_return_data(n: int = 400) -> ReturnData:
     """Build a ReturnData from synthetic prices for 6 assets."""
     idx = pd.bdate_range("2019-01-02", periods=n + 1)
     rng = np.random.default_rng(7)
-    tickers = ("VTI", "VXUS", "GLD", "VTEB", "KMLM", "VGIT")
-    starts = {"VTI": 200.0, "VXUS": 60.0, "GLD": 170.0, "VTEB": 55.0, "KMLM": 25.0, "VGIT": 65.0}
+    tickers = ("VTI", "VXUS", "GLD", "MUB", "KMLM", "VGIT")
+    starts = {"VTI": 200.0, "VXUS": 60.0, "GLD": 170.0, "MUB": 55.0, "KMLM": 25.0, "VGIT": 65.0}
     prices_data = {
         t: starts[t] * np.cumprod(1 + rng.normal(0.0003, 0.01, n + 1)) for t in tickers
     }

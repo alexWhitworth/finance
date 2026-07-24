@@ -20,7 +20,7 @@ from finance.returns import ReturnData, build_return_data
 # Constants / helpers
 # ---------------------------------------------------------------------------
 
-_TICKERS = ("VTI", "VXUS", "GLD", "VTEB", "KMLM", "VGIT")
+_TICKERS = ("VTI", "VXUS", "GLD", "MUB", "KMLM", "VGIT")
 _EQUAL_WEIGHTS = {t: 1.0 / len(_TICKERS) for t in _TICKERS}
 
 _QUARTER_END_MONTHS = {3, 6, 9, 12}
@@ -54,7 +54,7 @@ def _make_return_data(
     rng = np.random.default_rng(seed)
     starts = {
         "VTI": 200.0, "VXUS": 60.0, "GLD": 170.0,
-        "VTEB": 55.0, "KMLM": 25.0, "VGIT": 65.0,
+        "MUB": 55.0, "KMLM": 25.0, "VGIT": 65.0,
     }
     prices_data = {
         t: starts[t] * np.cumprod(1 + rng.normal(daily_ret, daily_vol, n + 1))

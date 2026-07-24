@@ -9,7 +9,7 @@ from dataclasses import dataclass
 import pandas as pd
 import yfinance as yf
 
-TICKERS: tuple[str, ...] = ("VTI", "VXUS", "GLD", "VTEB", "KMLM", "VGIT")
+TICKERS: tuple[str, ...] = ("VTI", "VXUS", "GLD", "MUB", "KMLM", "VGIT")
 KMLM_START: str = "2021-01-01"
 AQMIX_PROXY_TICKER: str = "AQMIX"
 
@@ -171,7 +171,7 @@ def build_price_data(
         PriceData with prices, dividends, tickers, dates, and splice flag.
 
     Notes:
-        Dividends are fetched only for VTEB (required for TEY adjustment).
+        Dividends are fetched only for MUB (required for TEY adjustment).
         All other dividend columns will be zero-filled.
     """
     needs_splice = use_aqmix_splice and start_date < KMLM_START
@@ -184,7 +184,6 @@ def build_price_data(
         fetch_tickers = TICKERS
 
     raw_prices = fetch_prices(fetch_tickers, start_date, end_date)
-    raw_prices = _forward_fill_prices(raw_prices)
 
     if needs_splice:
         kmlm_col = raw_prices["KMLM"]
@@ -196,12 +195,16 @@ def build_price_data(
     else:
         prices = raw_prices[list(TICKERS)].copy()
 
-    # Fetch VTEB dividends for TEY adjustment
-    vteb_divs = fetch_dividends("VTEB", start_date, end_date)
+    # Trim rows before any ticker's inception (leading NaNs); then fill small holiday gaps.
+    prices = prices.loc[prices.dropna().index[0]:]
+    prices = _forward_fill_prices(prices)
+
+    # Fetch MUB dividends for TEY adjustment
+    mub_divs = fetch_dividends("MUB", start_date, end_date)
     dividends = pd.DataFrame(0.0, index=prices.index, columns=list(TICKERS))
-    if not vteb_divs.empty:
-        vteb_divs = vteb_divs.reindex(prices.index, fill_value=0.0)
-        dividends["VTEB"] = vteb_divs
+    if not mub_divs.empty:
+        mub_divs = mub_divs.reindex(prices.index, fill_value=0.0)
+        dividends["MUB"] = mub_divs
 
     return PriceData(
         prices=prices,

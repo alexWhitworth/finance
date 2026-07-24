@@ -20,8 +20,8 @@ def daily_dates() -> pd.DatetimeIndex:
 def sample_prices(daily_dates: pd.DatetimeIndex) -> pd.DataFrame:
     """Synthetic price DataFrame for 6 assets over 252 business days. Used by Phase 3+ tests."""
     rng = np.random.default_rng(42)
-    tickers = ["VTI", "VXUS", "GLD", "VTEB", "KMLM", "VGIT"]
-    starts = {"VTI": 200.0, "VXUS": 60.0, "GLD": 170.0, "VTEB": 55.0, "KMLM": 25.0, "VGIT": 65.0}
+    tickers = ["VTI", "VXUS", "GLD", "MUB", "KMLM", "VGIT"]
+    starts = {"VTI": 200.0, "VXUS": 60.0, "GLD": 170.0, "MUB": 55.0, "KMLM": 25.0, "VGIT": 65.0}
     data = {}
     for t in tickers:
         shocks = rng.normal(0.0003, 0.01, size=len(daily_dates))

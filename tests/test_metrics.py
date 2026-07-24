@@ -29,7 +29,7 @@ from finance.volatility import build_volatility_model
 # Helpers
 # ---------------------------------------------------------------------------
 
-_TICKERS = ("VTI", "VXUS", "GLD", "VTEB", "KMLM", "VGIT")
+_TICKERS = ("VTI", "VXUS", "GLD", "MUB", "KMLM", "VGIT")
 _WEIGHTS = {t: 1.0 / len(_TICKERS) for t in _TICKERS}
 
 
@@ -79,7 +79,7 @@ def _make_backtest_result(n: int = 504) -> BacktestResult:
 def _make_return_data(n: int = 504) -> ReturnData:
     idx = _bdate_range(n + 1)
     rng = np.random.default_rng(7)
-    starts = {"VTI": 200.0, "VXUS": 60.0, "GLD": 170.0, "VTEB": 55.0, "KMLM": 25.0, "VGIT": 65.0}
+    starts = {"VTI": 200.0, "VXUS": 60.0, "GLD": 170.0, "MUB": 55.0, "KMLM": 25.0, "VGIT": 65.0}
     prices_data = {
         t: starts[t] * np.cumprod(1 + rng.normal(0.0003, 0.01, n + 1))
         for t in _TICKERS

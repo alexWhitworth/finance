@@ -7,7 +7,7 @@ import pytest
 from finance.data import PriceData
 from finance.returns import (
     NIIT_RATE,
-    _decompose_vteb_return,
+    _decompose_mub_return,
     adjust_tey,
     build_return_data,
     compute_log_returns,
@@ -30,7 +30,7 @@ def _price_df(n: int = 5) -> pd.DataFrame:
     return pd.DataFrame(
         {
             "VTI": 200.0 * np.cumprod(1 + rng.normal(0, 0.01, n)),
-            "VTEB": 55.0 * np.cumprod(1 + rng.normal(0, 0.002, n)),
+            "MUB": 55.0 * np.cumprod(1 + rng.normal(0, 0.002, n)),
         },
         index=idx,
     )
@@ -87,16 +87,16 @@ def test_log_returns_approx_simple_for_small() -> None:
 
 
 # ---------------------------------------------------------------------------
-# _decompose_vteb_return
+# _decompose_mub_return
 # ---------------------------------------------------------------------------
 
 
 def test_decompose_income_only_on_ex_date() -> None:
     """Income return is zero on non-dividend days."""
-    prices = _price_series([55.0, 55.0, 55.0, 55.0, 55.0], name="VTEB")
+    prices = _price_series([55.0, 55.0, 55.0, 55.0, 55.0], name="MUB")
     divs = pd.Series(0.0, index=prices.index)
     divs.iloc[2] = 0.10  # dividend on day 3
-    _price_ret, income_ret = _decompose_vteb_return(prices, divs)
+    _price_ret, income_ret = _decompose_mub_return(prices, divs)
     assert income_ret.iloc[0] == pytest.approx(0.0)
     assert income_ret.iloc[1] == pytest.approx(0.0)
     assert income_ret.iloc[2] == pytest.approx(0.10 / 55.0)
@@ -110,7 +110,7 @@ def test_decompose_income_only_on_ex_date() -> None:
 
 def test_tey_amplifies_income() -> None:
     """TEY scales up income return by 1/(1-rate)."""
-    prices = _price_series([55.0, 55.0, 55.0], name="VTEB")
+    prices = _price_series([55.0, 55.0, 55.0], name="MUB")
     divs = pd.Series(0.0, index=prices.index)
     divs.iloc[1] = 0.055  # yield = 0.1% of price
 
@@ -123,7 +123,7 @@ def test_tey_amplifies_income() -> None:
 
 def test_tey_no_dividend_unchanged() -> None:
     """Days with no dividend are unaffected by TEY."""
-    prices = _price_series([55.0, 56.0, 57.0], name="VTEB")
+    prices = _price_series([55.0, 56.0, 57.0], name="MUB")
     divs = pd.Series(0.0, index=prices.index)
     adjusted = adjust_tey(prices, divs, marginal_rate=0.408)
     simple = prices.pct_change().dropna()
@@ -132,7 +132,7 @@ def test_tey_no_dividend_unchanged() -> None:
 
 def test_tey_raises_invalid_rate() -> None:
     """marginal_rate outside (0, 1) raises ValueError — tests all boundary cases."""
-    prices = _price_series([55.0, 55.0], name="VTEB")
+    prices = _price_series([55.0, 55.0], name="MUB")
     divs = pd.Series(0.0, index=prices.index)
     with pytest.raises(ValueError, match="marginal_rate"):
         adjust_tey(prices, divs, marginal_rate=1.5)
@@ -146,7 +146,7 @@ def test_tey_raises_invalid_rate() -> None:
 
 def test_tey_default_rate_is_niit() -> None:
     """Default marginal rate matches NIIT_RATE constant."""
-    prices = _price_series([55.0, 55.0, 55.0], name="VTEB")
+    prices = _price_series([55.0, 55.0, 55.0], name="MUB")
     divs = pd.Series(0.0, index=prices.index)
     divs.iloc[1] = 0.055
     r1 = adjust_tey(prices, divs)
@@ -162,15 +162,15 @@ def test_tey_default_rate_is_niit() -> None:
 def _make_price_data(n: int = 20) -> PriceData:
     idx = pd.bdate_range("2022-01-03", periods=n)
     rng = np.random.default_rng(42)
-    tickers = ("VTI", "VXUS", "GLD", "VTEB", "KMLM", "VGIT")
+    tickers = ("VTI", "VXUS", "GLD", "MUB", "KMLM", "VGIT")
     starts = [200.0, 60.0, 170.0, 55.0, 25.0, 65.0]
     prices_data = {}
     for t, s in zip(tickers, starts, strict=False):
         prices_data[t] = s * np.cumprod(1 + rng.normal(0, 0.01, n))
     prices = pd.DataFrame(prices_data, index=idx)
     dividends = pd.DataFrame(0.0, index=idx, columns=list(tickers))
-    # Inject a small VTEB dividend mid-series
-    dividends.loc[idx[n // 2], "VTEB"] = 0.05
+    # Inject a small MUB dividend mid-series
+    dividends.loc[idx[n // 2], "MUB"] = 0.05
     return PriceData(
         prices=prices,
         dividends=dividends,
@@ -199,13 +199,13 @@ def test_build_return_data_tey_flag() -> None:
     assert build_return_data(pd_obj, apply_tey=False).tey_adjusted is False
 
 
-def test_build_return_data_vteb_differs_with_tey() -> None:
-    """VTEB returns differ when TEY is applied vs not."""
+def test_build_return_data_mub_differs_with_tey() -> None:
+    """MUB returns differ when TEY is applied vs not."""
     pd_obj = _make_price_data(30)
     rd_tey = build_return_data(pd_obj, apply_tey=True)
     rd_raw = build_return_data(pd_obj, apply_tey=False)
     # With at least one dividend, TEY-adjusted != raw on the dividend date
-    assert not rd_tey.returns["VTEB"].equals(rd_raw.returns["VTEB"])
+    assert not rd_tey.returns["MUB"].equals(rd_raw.returns["MUB"])
 
 
 def test_return_data_immutable() -> None:

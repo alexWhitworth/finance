@@ -6,7 +6,7 @@ A Python library for backtesting multi-asset portfolios with optional synthetic 
 
 - **Performance metrics** — annualized return, max drawdown, Sharpe, Sortino, Calmar, Omega ratios over full period and pre-defined crisis windows (GFC, COVID, 2022 rate hike)
 - **Volatility attribution** — EWMA vol (λ=0.95), 36-month rolling weekly correlations, per-asset contribution table summing to 1
-- **TEY adjustment** — VTEB returns scaled to tax-equivalent yield at 40.8% NIIT
+- **TEY adjustment** — MUB returns scaled to tax-equivalent yield at 40.8% NIIT
 - **LEAPS leverage** — DITM VTI LEAPS (50% strike, Black-Scholes pricing), biannual roll with LTCG preservation, taxable vs. tax-sheltered scenarios
 - **Quarterly rebalancing** — user-specified weights (extensible to risk parity and threshold-drift)
 
@@ -36,7 +36,7 @@ return_data = build_return_data(price_data)
 # 2. Run backtest
 config = PortfolioConfig(
     target_weights={"VTI": 0.40, "VXUS": 0.20, "GLD": 0.10,
-                    "VTEB": 0.10, "KMLM": 0.10, "VGIT": 0.10},
+                    "MUB": 0.10, "KMLM": 0.10, "VGIT": 0.10},
     initial_nav=1_000_000.0,
     monthly_contribution=10_000.0,
     rebalance_rule=RebalanceRule.QUARTERLY,
