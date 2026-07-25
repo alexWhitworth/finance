@@ -568,6 +568,70 @@ def test_run_simulation_sheltered_has_no_tax() -> None:
         assert event.tax_paid == 0.0
 
 
+# ---------------------------------------------------------------------------
+# run_leaps_simulation — initial_capital (F-G2-01 day-1 deployment)
+# ---------------------------------------------------------------------------
+
+
+def test_run_simulation_initial_capital_day1_contract() -> None:
+    """initial_capital deploys a single day-1 contract with matching cost basis."""
+    prices = _flat_price_series(n_months=6, price=200.0)
+    init_cap = 300_000.0
+    result = run_leaps_simulation(
+        prices,
+        monthly_contribution_to_leaps=0.0,  # isolate the day-1 contract
+        config=LeapsConfig(),
+        initial_capital=init_cap,
+    )
+    assert len(result.contracts) == 1
+    c0 = result.contracts[0]
+    assert c0.purchase_date == pd.Timestamp(prices.index[0])
+    basis = c0.premium_paid * CONTRACT_MULTIPLIER * c0.n_contracts
+    assert basis == pytest.approx(init_cap, rel=1e-9)
+
+
+def test_run_simulation_initial_capital_zero_no_contract() -> None:
+    """initial_capital=0.0 (default) creates no day-1 contract."""
+    prices = _flat_price_series(n_months=6, price=200.0)
+    result = run_leaps_simulation(
+        prices,
+        monthly_contribution_to_leaps=0.0,
+        config=LeapsConfig(),
+        initial_capital=0.0,
+    )
+    assert result.contracts == ()
+
+
+def test_run_simulation_initial_capital_uses_iv_series() -> None:
+    """Day-1 contract respects the iv_series value (floored at config.iv)."""
+    prices = _flat_price_series(n_months=6, price=200.0)
+    high_iv = pd.Series(0.40, index=prices.index)
+    result_hi = run_leaps_simulation(
+        prices, 0.0, LeapsConfig(iv=0.18), iv_series=high_iv, initial_capital=300_000.0,
+    )
+    result_lo = run_leaps_simulation(
+        prices, 0.0, LeapsConfig(iv=0.18), initial_capital=300_000.0,
+    )
+    # Higher IV → higher premium on the day-1 contract.
+    assert result_hi.contracts[0].premium_paid > result_lo.contracts[0].premium_paid
+
+
+def test_run_simulation_initial_capital_adds_to_monthly() -> None:
+    """With both initial_capital and monthly contributions, day-1 contract is first."""
+    prices = _flat_price_series(n_months=6, price=200.0)
+    result = run_leaps_simulation(
+        prices,
+        monthly_contribution_to_leaps=10_000.0,
+        config=LeapsConfig(),
+        initial_capital=250_000.0,
+    )
+    # First contract is the day-1 carve-out (basis == 250k), followed by monthly buys.
+    c0 = result.contracts[0]
+    basis0 = c0.premium_paid * CONTRACT_MULTIPLIER * c0.n_contracts
+    assert basis0 == pytest.approx(250_000.0, rel=1e-9)
+    assert len(result.contracts) > 1
+
+
 def test_run_simulation_taxable_has_less_capital_than_sheltered() -> None:
     """Taxable simulation produces less total notional than tax-sheltered over the same period."""
     rng = np.random.default_rng(7)
@@ -889,7 +953,8 @@ def test_run_leaps_simulation_iv_series_overrides_config_iv() -> None:
 
     assert len(result_iv_override.contracts) > 0
     first_premium_override = result_iv_override.contracts[0].premium_paid
-    first_premium_low = run_leaps_simulation(prices, 10_000.0, config_low_iv).contracts[0].premium_paid
+    result_low = run_leaps_simulation(prices, 10_000.0, config_low_iv)
+    first_premium_low = result_low.contracts[0].premium_paid
 
     assert first_premium_override > first_premium_low
     assert first_premium_override == pytest.approx(result_high.contracts[0].premium_paid, rel=1e-6)
@@ -905,7 +970,7 @@ def test_run_leaps_simulation_iv_series_floor_respected() -> None:
     result_base = run_leaps_simulation(prices, 10_000.0, config)
 
     assert len(result_floored.contracts) == len(result_base.contracts)
-    for c_floored, c_base in zip(result_floored.contracts, result_base.contracts):
+    for c_floored, c_base in zip(result_floored.contracts, result_base.contracts, strict=True):
         assert c_floored.premium_paid == pytest.approx(c_base.premium_paid, rel=1e-9)
 
 

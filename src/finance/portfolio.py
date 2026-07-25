@@ -8,14 +8,14 @@ from dataclasses import dataclass
 
 import pandas as pd
 
-from finance.consts import DEFAULT_IV, DRIFT_BAND_RELATIVE
+from finance.consts import DEFAULT_IV, DRIFT_BAND_RELATIVE, LEAPS_KEY_SUFFIX
 from finance.data import PriceData
 from finance.leverage import (
     LeapsConfig,
     LeapsLedger,
     RebalanceRule,
     WeightStrategy,
-    compute_leaps_nav_contribution,
+    compute_leaps_mtm,
 )
 from finance.returns import ReturnData
 
@@ -209,21 +209,36 @@ def run_backtest(
         BacktestResult with NAV series, weight history, return series, and ledger.
 
     Raises:
-        ValueError: If any asset in config.target_weights is absent from return_data.
-        ValueError: If leaps_config is set but "VTI" is absent from price_data.prices.
+        ValueError: If any base asset in config.target_weights is absent from return_data.
+        ValueError: If a LEAPS underlying (key without "_LEAPS") is absent from price_data.prices.
+        ValueError: If more than one distinct LEAPS underlying is requested.
+        ValueError: If LEAPS keys are present but config.leaps_config is None.
     """
     from finance.leverage import run_leaps_simulation
 
     returns = return_data.returns
-    assets = list(config.target_weights.keys())
 
-    missing = [a for a in assets if a not in returns.columns]
+    # Split target weights into base assets and carved-out LEAPS keys (Model B)
+    leaps_keys = [k for k in config.target_weights if k.endswith(LEAPS_KEY_SUFFIX)]
+    base_assets = [k for k in config.target_weights if k not in leaps_keys]
+
+    missing = [a for a in base_assets if a not in returns.columns]
     if missing:
         raise ValueError(f"Assets missing from return_data: {missing}")
 
-    # Normalized target weights
-    raw_w = pd.Series({a: config.target_weights[a] for a in assets})
-    target_w = raw_w / raw_w.sum()
+    use_leaps = len(leaps_keys) > 0
+    if use_leaps and config.leaps_config is None:
+        raise ValueError("LEAPS keys present in target_weights but leaps_config is None")
+
+    # Normalize all weights (base + LEAPS) to sum to 1.0
+    raw_w = pd.Series({k: config.target_weights[k] for k in config.target_weights})
+    norm_w = raw_w / raw_w.sum()
+    leaps_fraction = float(sum(norm_w[k] for k in leaps_keys))
+
+    # Base-only target weights, renormalized among base assets (sum to 1.0)
+    base_target_w = pd.Series({a: norm_w[a] for a in base_assets})
+    if len(base_assets) > 0 and base_target_w.sum() > 0:
+        base_target_w = base_target_w / base_target_w.sum()
 
     idx = pd.DatetimeIndex(returns.index)
 
@@ -236,30 +251,44 @@ def run_backtest(
         for _, grp in returns.groupby(idx.to_period("M"))
     }
 
-    # LEAPS setup — run simulation internally if config requests it
+    # LEAPS setup — carve capital out of NAV and run a fresh simulation (Model B)
     leaps_ledger: LeapsLedger | None = None
-    vti_prices: pd.Series | None = None
+    underlying_prices: pd.Series | None = None
     iv = DEFAULT_IV
     rfr_series: pd.Series | None = None
 
-    if config.leaps_config is not None:
-        if "VTI" not in price_data.prices.columns:
-            raise ValueError("leaps_config requires 'VTI' in price_data.prices")
-        vti_prices = price_data.prices["VTI"].reindex(idx, method="ffill")
+    if use_leaps:
+        underlyings = {k.removesuffix(LEAPS_KEY_SUFFIX) for k in leaps_keys}
+        if len(underlyings) > 1:
+            raise ValueError(f"Only one LEAPS underlying is supported; got {sorted(underlyings)}")
+        underlying = next(iter(underlyings))
+        if underlying not in price_data.prices.columns:
+            raise ValueError(f"LEAPS underlying '{underlying}' absent from price_data.prices")
+
+        assert config.leaps_config is not None  # guarded above
         iv = config.leaps_config.iv
+        underlying_prices = price_data.prices[underlying].reindex(idx, method="ffill")
         rfr_series = return_data.risk_free_rate.reindex(idx, method="ffill").fillna(0.0)
+
+        initial_leaps_capital = config.initial_nav * leaps_fraction
+        leaps_monthly = config.monthly_contribution * leaps_fraction
         leaps_ledger = run_leaps_simulation(
-            vti_prices,
-            config.monthly_contribution,
+            underlying_prices,
+            leaps_monthly,
             config.leaps_config,
             risk_free_series=return_data.risk_free_rate,
+            initial_capital=initial_leaps_capital,
         )
 
-    # Initialize holdings: dollar value per asset
+    # Initialize base holdings: dollar value per base asset (LEAPS capital carved out)
+    base_nav_init = config.initial_nav * (1.0 - leaps_fraction)
     holdings: dict[str, float] = {
-        a: config.initial_nav * float(target_w[a]) for a in assets
+        a: base_nav_init * float(base_target_w[a]) for a in base_assets
     }
     prev_total_nav = config.initial_nav
+
+    # Base share of the monthly contribution (LEAPS share is handled inside the ledger)
+    base_contribution = config.monthly_contribution * (1.0 - leaps_fraction)
 
     nav_values: list[float] = []
     return_values: list[float] = []
@@ -269,41 +298,43 @@ def run_backtest(
         date_ts = pd.Timestamp(date)
         day_ret = returns.loc[date_ts]
 
-        # (a) Apply daily returns to holdings
-        for a in assets:
+        # (a) Apply daily returns to base holdings
+        for a in base_assets:
             holdings[a] *= 1.0 + float(day_ret[a])  # type: ignore[arg-type]
 
-        # (e) LEAPS mark-to-market contribution (computed before contribution cash flow)
-        leaps_contrib = 0.0
-        if leaps_ledger is not None and vti_prices is not None:
-            spot = float(vti_prices.loc[date_ts])
+        # (e) LEAPS gross mark-to-market (carved-out capital value)
+        leaps_value = 0.0
+        if leaps_ledger is not None and underlying_prices is not None:
+            spot = float(underlying_prices.loc[date_ts])
             rfr = float(rfr_series.loc[date_ts]) if rfr_series is not None else 0.0
-            leaps_contrib = compute_leaps_nav_contribution(
-                leaps_ledger, date_ts, spot, iv, rfr
-            )
+            leaps_value = compute_leaps_mtm(leaps_ledger, date_ts, spot, iv, rfr)
 
-        nav_before_contrib = sum(holdings.values()) + leaps_contrib
+        nav_before_contrib = sum(holdings.values()) + leaps_value
 
         # (b) Market return — excludes the upcoming contribution
         port_return = nav_before_contrib / prev_total_nav - 1.0
 
-        # (c) Month-end: add contribution proportional to target weights
-        if date_ts in month_end_dates:
-            alloc = apply_contribution(nav_before_contrib, config.monthly_contribution, target_w)
-            for a in assets:
+        # (c) Month-end: add the base share of the contribution across base assets
+        if date_ts in month_end_dates and base_assets:
+            alloc = apply_contribution(nav_before_contrib, base_contribution, base_target_w)
+            for a in base_assets:
                 holdings[a] += alloc[a]
 
-        # (d) Rebalance: realign base holdings to target weights
-        if date_ts in rebal_dates:
+        # (d) Rebalance: realign base holdings to base target weights
+        if date_ts in rebal_dates and base_assets:
             base_nav = sum(holdings.values())
-            for a in assets:
-                holdings[a] = base_nav * float(target_w[a])
+            for a in base_assets:
+                holdings[a] = base_nav * float(base_target_w[a])
 
-        total_nav = sum(holdings.values()) + leaps_contrib
+        total_nav = sum(holdings.values()) + leaps_value
 
         nav_values.append(total_nav)
         return_values.append(port_return)
-        weight_rows.append({a: holdings[a] / total_nav for a in assets})
+        row = {a: holdings[a] / total_nav for a in base_assets}
+        for k in leaps_keys:
+            share = float(norm_w[k]) / leaps_fraction if leaps_fraction > 0 else 0.0
+            row[k] = leaps_value * share / total_nav
+        weight_rows.append(row)
 
         prev_total_nav = total_nav
 

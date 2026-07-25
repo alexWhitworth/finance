@@ -785,8 +785,13 @@ def run_leaps_simulation(
     config: LeapsConfig,
     risk_free_series: pd.Series | None = None,
     iv_series: pd.Series | None = None,
+    initial_capital: float = 0.0,
 ) -> LeapsLedger:
     """Run the full LEAPS accumulation and roll simulation over a price history.
+
+    On the first trading day:
+      0. Deploy initial_capital into a single DITM 2-year contract (if > 0), so
+         the carved-out starting capital participates in all subsequent rolls.
 
     On each month-end trading day:
       1. Check all live contracts for roll conditions; execute rolls if triggered.
@@ -808,6 +813,9 @@ def run_leaps_simulation(
             and roll pricing, overriding config.iv. config.iv is used as a floor:
             iv = max(iv_series[date], config.iv). Falls back to config.iv if None
             or if the date is missing from the series.
+        initial_capital: Carved-out capital deployed on the first date of
+            price_series as a single DITM contract. Default 0.0 (no initial
+            position). Used by the carved-out (Model B) portfolio backtest.
 
     Returns:
         LeapsLedger with the complete history of all contracts and roll events.
@@ -833,6 +841,31 @@ def run_leaps_simulation(
     all_contracts: list[LeapsContract] = []
     live_contracts: list[LeapsContract] = []
     roll_events_list: list[LeapsRollEvent] = []
+
+    # Day-1 deployment of carved-out capital (Model B carve-out)
+    if initial_capital > 0:
+        first_date: pd.Timestamp = pd.Timestamp(price_series.index[0])
+        first_spot = float(price_series.iloc[0])
+        if risk_free_series is not None and not risk_free_series.empty:
+            first_rfr = float(
+                risk_free_series.reindex([first_date], method="ffill").fillna(0.0).iloc[0]
+            )
+        else:
+            first_rfr = config.risk_free_rate
+        if iv_series is not None and not iv_series.empty:
+            first_vix = float(
+                iv_series.reindex([first_date], method="ffill").fillna(config.iv).iloc[0]
+            )
+            first_iv = max(first_vix, config.iv)
+        else:
+            first_iv = config.iv
+        initial_c = create_leaps_contract(
+            first_date, first_spot, initial_capital, first_iv, config.account_type,
+            first_rfr, config.dividend_yield,
+        )
+        if initial_c.n_contracts > 0:
+            all_contracts.append(initial_c)
+            live_contracts.append(initial_c)
 
     for date in month_end_dates:
         spot = float(price_series.loc[date])
