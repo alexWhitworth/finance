@@ -578,6 +578,36 @@ def compute_leaps_nav_contribution(
     return float(total_mtm - total_cost)
 
 
+def compute_leaps_mtm(
+    ledger: LeapsLedger,
+    current_date: pd.Timestamp,
+    current_spot: float,
+    iv: float = DEFAULT_IV,
+    risk_free_rate: float = DEFAULT_RISK_FREE_RATE,
+) -> float:
+    """Compute total mark-to-market value of all live LEAPS contracts.
+
+    Unlike compute_leaps_nav_contribution (net P&L for the overlay model),
+    this returns the gross position value — used by the carved-out capital
+    model where LEAPS premium is part of portfolio NAV rather than an
+    external overlay.
+
+    Arguments:
+        ledger: The LeapsLedger containing all contract and roll history.
+        current_date: Valuation date.
+        current_spot: Current spot price of the underlying.
+        iv: Implied volatility for mark-to-market pricing. Default 0.18.
+        risk_free_rate: Continuously compounded risk-free rate for BS pricing. Default 0.0.
+
+    Returns:
+        Total MTM value in dollars of all live contracts. 0.0 if none are live.
+    """
+    live = _live_contracts(ledger, current_date)
+    return float(
+        sum(price_leaps_contract(c, current_spot, current_date, iv, risk_free_rate) for c in live)
+    )
+
+
 def partial_close_leaps(
     contract: LeapsContract,
     current_date: pd.Timestamp,
