@@ -2,9 +2,12 @@
 
 Verifies the complete data → returns → volatility → backtest → metrics chain
 using synthetic (offline) data.  No network I/O is performed.
+The real-data smoke test (TestRealDataSmoke) loads data/price_data.parquet.
 """
 
 from __future__ import annotations
+
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -231,3 +234,95 @@ class TestMultiPortfolioReport:
         report = build_performance_report(result, pd_obj, rd, vol_model, crisis_periods=crisis)
         # GFC has no data overlap — crisis_periods tuple should be empty
         assert len(report.crisis_periods) == 0
+
+
+# ---------------------------------------------------------------------------
+# Real-data smoke test — loads data/price_data.parquet (committed to repo)
+# ---------------------------------------------------------------------------
+
+_PARQUET_PATH = Path(__file__).parent.parent / "data" / "price_data.parquet"
+_ASSET_TICKERS = ("VTI", "VXUS", "GLD", "MUB", "KMLM", "VGIT")
+
+
+@pytest.fixture(scope="module")
+def real_pipeline() -> dict[str, object]:
+    """Full pipeline result built from the committed parquet fixture."""
+    df = pd.read_parquet(_PARQUET_PATH)
+
+    # IRX is stored as an annualized decimal rate (e.g. 0.052); VIX as index level (e.g. 18.5).
+    prices = df[list(_ASSET_TICKERS)]
+    irx = df["IRX"]
+    vix = df["VIX"] / 100.0  # index level → decimal IV
+
+    dividends = pd.DataFrame(0.0, index=prices.index, columns=list(_ASSET_TICKERS))
+    vol_prices = pd.DataFrame({"^VIX": vix}, index=prices.index)
+
+    pd_obj = PriceData(
+        prices=prices,
+        dividends=dividends,
+        vol_prices=vol_prices,
+        tickers=_ASSET_TICKERS,
+        start_date=str(prices.index[0].date()),
+        end_date=str(prices.index[-1].date()),
+        spliced=False,
+    )
+
+    from finance.returns import build_return_data
+
+    rd = build_return_data(pd_obj, apply_tey=False, risk_free_series=irx)
+
+    cfg = PortfolioConfig(
+        target_weights={t: 1.0 / len(_ASSET_TICKERS) for t in _ASSET_TICKERS},
+        initial_nav=1_000_000.0,
+        monthly_contribution=5_000.0,
+        rebalance_rule=RebalanceRule.QUARTERLY,
+        weight_strategy=WeightStrategy.USER_SPECIFIED,
+        leaps_config=None,
+    )
+
+    result = run_backtest(rd, pd_obj, cfg)
+    vol_model = build_volatility_model(rd)
+    report = build_performance_report(result, pd_obj, rd, vol_model)
+    return {"rd": rd, "pd_obj": pd_obj, "result": result, "report": report}
+
+
+class TestRealDataSmoke:
+    """Smoke tests using the committed data/price_data.parquet fixture.
+
+    Verifies that the full pipeline runs without error on real market data and
+    produces structurally valid outputs. Catches schema drift between the parquet
+    file and the code that would be invisible to synthetic-data tests.
+    """
+
+    def test_parquet_loads_expected_columns(self) -> None:
+        """Parquet file contains all required asset and auxiliary columns."""
+        df = pd.read_parquet(_PARQUET_PATH)
+        for col in (*_ASSET_TICKERS, "IRX", "VIX"):
+            assert col in df.columns, f"Expected column '{col}' missing from parquet"
+
+    def test_nav_positive_throughout(self, real_pipeline: dict[str, object]) -> None:
+        result: BacktestResult = real_pipeline["result"]  # type: ignore[assignment]
+        assert (result.nav_series > 0).all()
+
+    def test_nav_length_matches_returns(self, real_pipeline: dict[str, object]) -> None:
+        result: BacktestResult = real_pipeline["result"]  # type: ignore[assignment]
+        rd: ReturnData = real_pipeline["rd"]  # type: ignore[assignment]
+        assert len(result.nav_series) == len(rd.returns)
+
+    def test_weights_sum_to_one(self, real_pipeline: dict[str, object]) -> None:
+        result: BacktestResult = real_pipeline["result"]  # type: ignore[assignment]
+        assert (result.weight_history.sum(axis=1) - 1.0).abs().max() < 1e-9
+
+    def test_return_series_no_nans(self, real_pipeline: dict[str, object]) -> None:
+        result: BacktestResult = real_pipeline["result"]  # type: ignore[assignment]
+        assert result.return_series.isna().sum() == 0
+
+    def test_report_metrics_finite(self, real_pipeline: dict[str, object]) -> None:
+        report: PerformanceReport = real_pipeline["report"]  # type: ignore[assignment]
+        m = report.full_period
+        for field in (m.annualized_return, m.annualized_std, m.max_drawdown, m.sharpe):
+            assert np.isfinite(field), f"Non-finite metric: {field}"
+
+    def test_vol_contributions_sum_to_one(self, real_pipeline: dict[str, object]) -> None:
+        report: PerformanceReport = real_pipeline["report"]  # type: ignore[assignment]
+        assert report.vol_contribution_table["contrib"].sum() == pytest.approx(1.0, abs=1e-6)
