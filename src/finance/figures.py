@@ -313,18 +313,101 @@ def format_performance_table(report: PerformanceReport) -> str:
         rows.append(_metrics_to_row(m))
 
     df = pd.DataFrame(rows).set_index("Period")
-    col_labels = ["Ann. Return", "Ann. Std", "Max DD", "Sharpe", "Sortino", "Calmar", "Omega"]
+    col_labels = [
+        "Ann. Return", "Ann. Std", "Max DD",
+        "Sharpe", "Sortino", "Calmar", "Omega",
+        "Skewness", "Ex. Kurt",
+    ]
     df.columns = pd.Index(col_labels)
 
     lines = [
-        "=" * 76,
+        "=" * 100,
         "  Performance Report",
-        "=" * 76,
+        "=" * 100,
         df.to_string(float_format=lambda x: f"{x:.4f}"),
-        "-" * 76,
+        "-" * 100,
         f"  Forward Vol Forecast : {report.forward_vol_forecast:.4f}",
-        "=" * 76,
     ]
+
+    if report.terminal_nav is not None:
+        tn = report.terminal_nav
+        ts = report.tax_summary
+        lines += [
+            "-" * 100,
+            "  LEAPS Terminal NAV",
+            f"    Pre-tax  NAV : ${tn.pre_tax_nav:>15,.2f}",
+            f"    Post-tax NAV : ${tn.post_tax_nav:>15,.2f}",
+        ]
+        if ts is not None:
+            lines += [
+                f"    Total Tax Drag  : {ts.tax_drag_pct:.4f}",
+                f"    Ann. Tax Drag   : {ts.annualized_tax_drag:.4f}",
+            ]
+
+    lines.append("=" * 100)
+    return os.linesep.join(lines)
+
+
+def compare_performance_table(reports: list[tuple[str, PerformanceReport]]) -> str:
+    """Format multiple PerformanceReports side-by-side as a human-readable table string.
+
+    Each report contributes one column per period (full period + crisis periods).
+    Rows are metrics; columns are labelled "<name> | <period>".
+
+    Arguments:
+        reports: List of (label, PerformanceReport) pairs in display order.
+
+    Returns:
+        A formatted string suitable for printing to stdout.
+    """
+    col_order = [
+        "Ann. Return", "Ann. Std", "Max DD",
+        "Sharpe", "Sortino", "Calmar", "Omega",
+        "Skewness", "Ex. Kurt",
+    ]
+
+    columns: dict[str, pd.Series] = {}
+    for label, report in reports:
+        for m in (report.full_period, *report.crisis_periods):
+            col_label = f"{label} | {m.period_label}"
+            row = _metrics_to_row(m)
+            columns[col_label] = pd.Series(
+                {k: row[k] for k in ("ann_return", "ann_std", "max_drawdown",
+                                     "sharpe", "sortino", "calmar", "omega",
+                                     "skewness", "excess_kurtosis")},
+                index=["ann_return", "ann_std", "max_drawdown",
+                       "sharpe", "sortino", "calmar", "omega",
+                       "skewness", "excess_kurtosis"],
+            )
+
+    df = pd.DataFrame(columns).T
+    df.columns = pd.Index(col_order)
+
+    lines = [
+        "=" * 100,
+        "  Portfolio Comparison",
+        "=" * 100,
+        df.to_string(float_format=lambda x: f"{x:.4f}"),
+        "-" * 100,
+    ]
+    for label, report in reports:
+        lines.append(
+            f"  [{label}] Forward Vol Forecast : {report.forward_vol_forecast:.4f}"
+        )
+        if report.terminal_nav is not None:
+            tn = report.terminal_nav
+            ts = report.tax_summary
+            lines.append(
+                f"  [{label}] Pre-tax NAV: ${tn.pre_tax_nav:>15,.2f}  "
+                f"Post-tax NAV: ${tn.post_tax_nav:>15,.2f}"
+            )
+            if ts is not None:
+                lines.append(
+                    f"  [{label}] Tax Drag: {ts.tax_drag_pct:.4f}  "
+                    f"Ann. Tax Drag: {ts.annualized_tax_drag:.4f}"
+                )
+
+    lines.append("=" * 100)
     return os.linesep.join(lines)
 
 
@@ -346,4 +429,6 @@ def _metrics_to_row(m: PerformanceMetrics) -> dict[str, object]:
         "sortino": m.sortino,
         "calmar": m.calmar,
         "omega": m.omega,
+        "skewness": m.skewness,
+        "excess_kurtosis": m.excess_kurtosis,
     }

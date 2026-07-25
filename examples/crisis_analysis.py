@@ -30,7 +30,7 @@ if __name__ == "__main__":
     START, END = "2010-02-01", "2026-06-30"
 
     print("=== Fetching Price Data ===")
-    price_data = build_price_data(START, END, use_aqmix_splice=True)
+    price_data = build_price_data(START, END, use_splice=True)
 
     print("=== Fetching Risk-Free Rate ===")
     rfr_series = fetch_risk_free_rate(START, END)
@@ -48,13 +48,13 @@ if __name__ == "__main__":
     )
 
     print("=== Running Backtest ===")
-    result = run_backtest(return_data, config)
+    result = run_backtest(return_data, price_data, config)
 
     print("=== Building Volatility Model ===")
     vol_model = build_volatility_model(return_data)
 
     print("=== Building Performance Report ===")
-    report = build_performance_report(result, return_data, vol_model)
+    report = build_performance_report(result, price_data, return_data, vol_model)
 
     print("\n=== Full-Period Metrics ===")
     print(format_performance_table(report))

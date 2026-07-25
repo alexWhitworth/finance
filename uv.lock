@@ -359,7 +359,7 @@ wheels = [
 
 [[package]]
 name = "finance"
-version = "0.8.5"
+version = "0.9.1"
 source = { editable = "." }
 dependencies = [
     { name = "numpy" },

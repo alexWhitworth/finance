@@ -27,10 +27,13 @@ from finance.volatility import build_volatility_model
 from finance.leverage import RebalanceRule, WeightStrategy
 from finance.portfolio import PortfolioConfig, run_backtest
 from finance.metrics import build_performance_report
-from finance.figures import plot_nav_growth, plot_drawdown, plot_vol_contributions, format_performance_table
+from finance.figures import (
+    plot_nav_growth, plot_drawdown, plot_vol_contributions,
+    format_performance_table, compare_performance_table,
+)
 
 # 1. Fetch and prepare data
-price_data = build_price_data("2015-01-01", "2024-12-31", use_aqmix_splice=True)
+price_data = build_price_data("2015-01-01", "2024-12-31", use_splice=True)
 return_data = build_return_data(price_data)
 
 # 2. Run backtest
@@ -43,17 +46,35 @@ config = PortfolioConfig(
     weight_strategy=WeightStrategy.USER_SPECIFIED,
     leaps_config=None,
 )
-result = run_backtest(return_data, config)
+result = run_backtest(return_data, price_data, config)
 
 # 3. Build report
 vol_model = build_volatility_model(return_data)
-report = build_performance_report(result, return_data, vol_model)
+report = build_performance_report(result, price_data, return_data, vol_model)
 print(format_performance_table(report))
 
 # 4. Save charts to figures/
 plot_nav_growth({"My Portfolio": result})
 plot_drawdown({"My Portfolio": result})
 plot_vol_contributions(report)
+
+# 5. Compare multiple portfolios side-by-side
+print(compare_performance_table([("Conservative", report), ("Aggressive", report2)]))
+```
+
+### LEAPS overlay
+
+Add a `VTI_LEAPS` allocation key and a `LeapsConfig` to run the LEAPS simulation internally:
+
+```python
+from finance.leverage import AccountType, LeapsConfig
+
+leaps_config = PortfolioConfig(
+    target_weights={"VTI": 0.35, ..., "VTI_LEAPS": 0.05},
+    leaps_config=LeapsConfig(iv=0.18, ltcg_rate=0.238, account_type=AccountType.TAXABLE),
+    ...
+)
+result = run_backtest(return_data, price_data, leaps_config)
 ```
 
 ## Development
@@ -64,7 +85,7 @@ uv run ruff check src/ tests/  # lint
 uv run mypy src/               # type-check
 ```
 
-**211 tests · 98.97% line coverage · ruff clean · mypy strict clean**
+**304 tests · 98.49% line coverage · ruff clean · mypy strict clean**
 
 ## Examples
 

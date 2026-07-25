@@ -17,6 +17,7 @@ import pytest
 from finance.data import PriceData
 from finance.figures import (
     _compute_drawdown_series,
+    compare_performance_table,
     format_performance_table,
     plot_drawdown,
     plot_leaps_tax_drag,
@@ -310,3 +311,118 @@ class TestFormatPerformanceTable:
         report = _make_report(rd)
         table = format_performance_table(report)
         assert "COVID" in table
+
+    def test_contains_skewness_and_kurtosis_columns(self) -> None:
+        rd = _make_return_data()
+        report = _make_report(rd)
+        table = format_performance_table(report)
+        assert "Skewness" in table
+        assert "Ex. Kurt" in table
+
+    def test_no_leaps_tax_section_without_terminal_nav(self) -> None:
+        rd = _make_return_data()
+        report = _make_report(rd)
+        # report.terminal_nav is None for a no-LEAPS backtest
+        assert report.terminal_nav is None
+        table = format_performance_table(report)
+        assert "LEAPS Terminal NAV" not in table
+
+    def test_leaps_tax_section_with_terminal_nav(self) -> None:
+        """Injects a synthetic terminal_nav to exercise the LEAPS tax block."""
+        from dataclasses import replace
+
+        from finance.leverage import AccountType, LeapsTaxSummary, TerminalNav
+
+        rd = _make_return_data()
+        report = _make_report(rd)
+        synthetic_tn = TerminalNav(
+            pre_tax_nav=1_100_000.0,
+            post_tax_nav=1_050_000.0,
+            terminal_tax=50_000.0,
+            open_gain=200_000.0,
+            ltcg_rate=0.238,
+            account_type=AccountType.TAXABLE,
+        )
+        synthetic_ts = LeapsTaxSummary(
+            total_roll_tax=0.0,
+            n_rolls=0,
+            terminal_tax=50_000.0,
+            total_tax=50_000.0,
+            tax_drag_pct=0.05,
+            annualized_tax_drag=0.012,
+            account_type=AccountType.TAXABLE,
+        )
+        report_with_leaps = replace(report, terminal_nav=synthetic_tn, tax_summary=synthetic_ts)
+        table = format_performance_table(report_with_leaps)
+        assert "LEAPS Terminal NAV" in table
+        assert "Pre-tax" in table
+        assert "Post-tax" in table
+        assert "Ann. Tax Drag" in table
+
+
+# ---------------------------------------------------------------------------
+# compare_performance_table
+# ---------------------------------------------------------------------------
+
+
+class TestComparePerformanceTable:
+    def test_single_report(self) -> None:
+        rd = _make_return_data()
+        report = _make_report(rd)
+        table = compare_performance_table([("Base", report)])
+        assert isinstance(table, str)
+        assert "Base" in table
+        assert "Full Period" in table
+
+    def test_multi_report_both_labels_present(self) -> None:
+        rd = _make_return_data()
+        r1 = _make_report(rd)
+        r2 = _make_report(_make_return_data(seed=99))
+        table = compare_performance_table([("Alpha", r1), ("Beta", r2)])
+        assert "Alpha" in table
+        assert "Beta" in table
+
+    def test_multi_report_metric_columns_present(self) -> None:
+        rd = _make_return_data()
+        r1 = _make_report(rd)
+        r2 = _make_report(_make_return_data(seed=7))
+        table = compare_performance_table([("X", r1), ("Y", r2)])
+        for col in ("Sharpe", "Sortino", "Skewness", "Ex. Kurt"):
+            assert col in table
+
+    def test_leaps_rows_absent_without_terminal_nav(self) -> None:
+        rd = _make_return_data()
+        report = _make_report(rd)
+        table = compare_performance_table([("Base", report)])
+        assert "Pre-tax" not in table
+        assert "Post-tax" not in table
+
+    def test_leaps_rows_present_with_terminal_nav(self) -> None:
+        from dataclasses import replace
+
+        from finance.leverage import AccountType, LeapsTaxSummary, TerminalNav
+
+        rd = _make_return_data()
+        report = _make_report(rd)
+        synthetic_tn = TerminalNav(
+            pre_tax_nav=1_200_000.0,
+            post_tax_nav=1_150_000.0,
+            terminal_tax=50_000.0,
+            open_gain=210_000.0,
+            ltcg_rate=0.238,
+            account_type=AccountType.TAXABLE,
+        )
+        synthetic_ts = LeapsTaxSummary(
+            total_roll_tax=0.0,
+            n_rolls=0,
+            terminal_tax=50_000.0,
+            total_tax=50_000.0,
+            tax_drag_pct=0.04,
+            annualized_tax_drag=0.01,
+            account_type=AccountType.TAXABLE,
+        )
+        report_leaps = replace(report, terminal_nav=synthetic_tn, tax_summary=synthetic_ts)
+        table = compare_performance_table([("LEAPS", report_leaps)])
+        assert "Pre-tax" in table
+        assert "Post-tax" in table
+        assert "Ann. Tax Drag" in table
