@@ -25,6 +25,7 @@ build/
 # claude
 .claude/settings.local.json
 .claude/*.log
+.claude/worktrees
 
 # judge verdicts
 plans/judge_verdicts
