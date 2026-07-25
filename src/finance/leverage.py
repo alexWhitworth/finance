@@ -47,9 +47,11 @@ class RebalanceRule(enum.Enum):
 
     Attributes:
         QUARTERLY: Rebalance on the last business day of Mar/Jun/Sep/Dec.
+        DRIFT: Rebalance when any asset weight drifts beyond DRIFT_BAND_RELATIVE of its target.
     """
 
     QUARTERLY = "quarterly"
+    DRIFT = "drift"
 
 
 class WeightStrategy(enum.Enum):
@@ -752,6 +754,7 @@ def run_leaps_simulation(
     monthly_contribution_to_leaps: float,
     config: LeapsConfig,
     risk_free_series: pd.Series | None = None,
+    iv_series: pd.Series | None = None,
 ) -> LeapsLedger:
     """Run the full LEAPS accumulation and roll simulation over a price history.
 
@@ -770,6 +773,11 @@ def run_leaps_simulation(
         risk_free_series: Optional daily annualized risk-free rate Series (decimal).
             When supplied, the rate on each month-end date is used for BS pricing,
             overriding config.risk_free_rate.
+        iv_series: Optional daily VIX series (decimal, e.g. 0.20 for 20%). When
+            supplied, the value on each month-end date is used for contract creation
+            and roll pricing, overriding config.iv. config.iv is used as a floor:
+            iv = max(iv_series[date], config.iv). Falls back to config.iv if None
+            or if the date is missing from the series.
 
     Returns:
         LeapsLedger with the complete history of all contracts and roll events.
@@ -787,6 +795,11 @@ def run_leaps_simulation(
     if risk_free_series is not None and not risk_free_series.empty:
         rfr_aligned = risk_free_series.reindex(month_end_dates, method="ffill").fillna(0.0)
 
+    # Pre-align iv series to month-end dates if supplied
+    iv_aligned: pd.Series | None = None
+    if iv_series is not None and not iv_series.empty:
+        iv_aligned = iv_series.reindex(month_end_dates, method="ffill").fillna(config.iv)
+
     all_contracts: list[LeapsContract] = []
     live_contracts: list[LeapsContract] = []
     roll_events_list: list[LeapsRollEvent] = []
@@ -795,13 +808,14 @@ def run_leaps_simulation(
         spot = float(price_series.loc[date])
         new_expiry: pd.Timestamp = pd.Timestamp(date + pd.DateOffset(years=2))
         rfr = float(rfr_aligned.loc[date]) if rfr_aligned is not None else config.risk_free_rate
+        iv = max(float(iv_aligned.loc[date]), config.iv) if iv_aligned is not None else config.iv
 
         # Check roll conditions on every live contract
         still_live: list[LeapsContract] = []
         for contract in live_contracts:
             if should_roll(contract, date, new_expiry):
                 event = roll_contract(
-                    contract, date, spot, config.iv, config.ltcg_rate, rfr, config.dividend_yield
+                    contract, date, spot, iv, config.ltcg_rate, rfr, config.dividend_yield
                 )
                 roll_events_list.append(event)
                 all_contracts.append(event.new_contract)
@@ -813,7 +827,7 @@ def run_leaps_simulation(
         # Monthly purchase
         if monthly_contribution_to_leaps > 0:
             new_c = create_leaps_contract(
-                date, spot, monthly_contribution_to_leaps, config.iv, config.account_type,
+                date, spot, monthly_contribution_to_leaps, iv, config.account_type,
                 rfr, config.dividend_yield,
             )
             if new_c.n_contracts > 0:

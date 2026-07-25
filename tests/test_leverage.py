@@ -870,3 +870,54 @@ def test_compute_tax_summary_is_frozen() -> None:
     summary = compute_leaps_tax_summary(ledger, t_nav, 1_000_000.0, years=3.0)
     with pytest.raises((AttributeError, TypeError)):
         summary.total_tax = 0.0  # type: ignore[misc]
+
+
+# ---------------------------------------------------------------------------
+# run_leaps_simulation — iv_series
+# ---------------------------------------------------------------------------
+
+
+def test_run_leaps_simulation_iv_series_overrides_config_iv() -> None:
+    """iv_series above config.iv produces higher premium than config.iv alone."""
+    prices = _flat_price_series(n_months=6, price=200.0)
+    config_low_iv = LeapsConfig(iv=0.18)
+    config_high_iv = LeapsConfig(iv=0.30)
+
+    result_high = run_leaps_simulation(prices, 10_000.0, config_high_iv)
+    iv_series = pd.Series(0.30, index=prices.index)
+    result_iv_override = run_leaps_simulation(prices, 10_000.0, config_low_iv, iv_series=iv_series)
+
+    assert len(result_iv_override.contracts) > 0
+    first_premium_override = result_iv_override.contracts[0].premium_paid
+    first_premium_low = run_leaps_simulation(prices, 10_000.0, config_low_iv).contracts[0].premium_paid
+
+    assert first_premium_override > first_premium_low
+    assert first_premium_override == pytest.approx(result_high.contracts[0].premium_paid, rel=1e-6)
+
+
+def test_run_leaps_simulation_iv_series_floor_respected() -> None:
+    """iv_series below config.iv is floored at config.iv; result matches no-iv_series run."""
+    prices = _flat_price_series(n_months=6, price=200.0)
+    config = LeapsConfig(iv=0.18)
+
+    iv_series = pd.Series(0.05, index=prices.index)
+    result_floored = run_leaps_simulation(prices, 10_000.0, config, iv_series=iv_series)
+    result_base = run_leaps_simulation(prices, 10_000.0, config)
+
+    assert len(result_floored.contracts) == len(result_base.contracts)
+    for c_floored, c_base in zip(result_floored.contracts, result_base.contracts):
+        assert c_floored.premium_paid == pytest.approx(c_base.premium_paid, rel=1e-9)
+
+
+def test_run_leaps_simulation_iv_series_none_unchanged() -> None:
+    """Passing iv_series=None explicitly is identical to not passing it at all."""
+    prices = _flat_price_series(n_months=6, price=200.0)
+    config = LeapsConfig(iv=0.18)
+
+    result_default = run_leaps_simulation(prices, 10_000.0, config)
+    result_none = run_leaps_simulation(prices, 10_000.0, config, iv_series=None)
+
+    assert len(result_none.contracts) == len(result_default.contracts)
+    assert result_none.contracts[0].premium_paid == pytest.approx(
+        result_default.contracts[0].premium_paid, rel=1e-9
+    )

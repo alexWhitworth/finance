@@ -949,22 +949,43 @@ Design decisions locked in:
 - `partial_close_events` accumulated in a local `list` during the loop; frozen onto the ledger once at the return boundary (mirrors `run_leaps_simulation` pattern).
 - `"VTI_LEAPS"` and `"VTI"` may coexist in `target_weights`; standard usage does not mix them.
 
-- [ ] Add `RebalanceRule.DRIFT` enum value
-- [ ] Implement `should_rebalance()` helper
-- [ ] Update `run_backtest` signature: `(return_data, price_data, config)` — remove `leaps_ledger`
-- [ ] Implement LEAPS key detection and capital routing (Model B)
-- [ ] Add `iv_series` parameter to `run_leaps_simulation`; pass raw VIX series for contract creation/rolling
-- [ ] Implement monthly contribution split (LEAPS vs. base)
-- [ ] Implement VIX-based dynamic IV with 30-day smoothing for daily MTM
-- [ ] Implement drift rebalancing: local `partial_close_list`, freeze onto ledger at return
-- [ ] Delete VTI spot reconstruction logic
-- [ ] Update all existing `run_backtest` tests for new signature (no `leaps_ledger` arg; add `price_data`)
-- [ ] Add tests:
-  - LEAPS capital correctly carved out of initial NAV
-  - Monthly contribution correctly split between LEAPS and base
-  - Drift rebalancing triggers at ±10% relative band
-  - Partial close returns net_proceeds to base holdings (no tax deduction)
-  - `partial_close_events` frozen correctly onto final ledger
+- [x] Add `RebalanceRule.DRIFT` enum value
+- [x] Implement `should_rebalance()` helper (5 tests: QUARTERLY always False, DRIFT no-trigger, DRIFT trigger, zero-target skip, custom band)
+- [x] Add `iv_series` parameter to `run_leaps_simulation`; pass raw VIX series for contract creation/rolling (3 tests: override, floor, None unchanged)
+- 262 tests pass, 98.28% coverage, ruff clean, mypy clean (as of preparatory tasks above)
+
+#### Step G1 — Signature migration (mechanical, no logic change)
+
+- [ ] Change `run_backtest` signature to `(return_data, price_data, config)` — remove `leaps_ledger`
+- [ ] Replace VTI spot reconstruction hack with `price_data.prices["VTI"]`
+- [ ] If `config.leaps_config` is set and the underlying ticker is in `price_data.prices`, run `run_leaps_simulation` internally at startup — same LEAPS MTM loop behavior as today, just internally initiated
+- [ ] Validate that LEAPS underlying ticker exists in `price_data.prices`; raise `ValueError` if absent
+- [ ] Update all existing `run_backtest` tests: add `price_data` arg, remove `leaps_ledger` arg, build VTI prices as a `PriceData.prices` column
+- [ ] Goal: all existing tests green, identical behavior, new signature in place
+
+#### Step G2 — LEAPS capital routing (Model B) + VIX IV
+
+- [ ] Detect `"VTI_LEAPS"` keys via `LEAPS_KEY_SUFFIX`; route carved-out capital into `run_leaps_simulation`
+- [ ] Base holdings dict contains only non-LEAPS keys
+- [ ] Split monthly contributions: `leaps_fraction` → LEAPS, `(1 - leaps_fraction)` → base
+- [ ] Read `"^VIX"` from `price_data.vol_prices`; 30-day rolling mean for daily MTM, raw VIX for contract creation; `config.leaps_config.iv` as floor throughout
+- [ ] Pass raw VIX series as `iv_series` arg to `run_leaps_simulation`
+- [ ] Tests:
+  - LEAPS capital correctly carved out of initial NAV (base holdings sum = initial_nav * (1 - leaps_fraction))
+  - Monthly contribution correctly split (LEAPS portion matches leaps_fraction * contribution)
+  - VIX IV floor respected (no contract priced below config.leaps_config.iv)
+
+#### Step G3 — Drift rebalancing + partial close accumulation
+
+- [ ] Add DRIFT branch to main loop: check `should_rebalance()` monthly at `month_end_dates`
+- [ ] On drift trigger: partially close LEAPS overshoot via `partial_close_leaps()`; add `net_proceeds` to base holdings proportional to base target weights
+- [ ] Accumulate `partial_close_list: list[LeapsPartialCloseEvent]` during loop; `replace(ledger, partial_close_events=tuple(partial_close_list))` once at return boundary
+- [ ] QUARTERLY rule: `get_rebalance_dates()` behavior unchanged
+- [ ] Tests:
+  - Drift rebalancing triggers at ±10% relative band breach
+  - No trigger within band
+  - `net_proceeds` from partial close added back to base holdings (no tax deduction)
+  - `partial_close_events` frozen correctly onto final ledger (tuple, not list)
 
 ### Sub-phase H — `figures.py` + integration + coverage
 

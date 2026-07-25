@@ -13,6 +13,7 @@ from finance.portfolio import (
     compute_target_weights,
     get_rebalance_dates,
     run_backtest,
+    should_rebalance,
 )
 from finance.returns import ReturnData, build_return_data
 
@@ -359,3 +360,55 @@ def test_run_backtest_config_stored() -> None:
     cfg = _config()
     result = run_backtest(rd, cfg)
     assert result.config is cfg
+
+
+# ---------------------------------------------------------------------------
+# should_rebalance
+# ---------------------------------------------------------------------------
+
+
+def test_should_rebalance_quarterly_always_false() -> None:
+    """QUARTERLY rule always returns False regardless of weight deviation."""
+    current = pd.Series({"A": 0.80, "B": 0.20})
+    target = pd.Series({"A": 0.50, "B": 0.50})
+    assert should_rebalance(current, target, RebalanceRule.QUARTERLY) is False
+
+
+def test_should_rebalance_drift_no_trigger_within_band() -> None:
+    """DRIFT rule returns False when all relative deviations are within the band.
+
+    target=0.50, current=0.54 → deviation = 0.04/0.50 = 8% < 10%.
+    """
+    current = pd.Series({"A": 0.54, "B": 0.46})
+    target = pd.Series({"A": 0.50, "B": 0.50})
+    assert should_rebalance(current, target, RebalanceRule.DRIFT) is False
+
+
+def test_should_rebalance_drift_triggers_at_band_breach() -> None:
+    """DRIFT rule returns True when one asset exceeds the 10% relative band.
+
+    target=0.50, current=0.56 → deviation = 0.06/0.50 = 12% > 10%.
+    """
+    current = pd.Series({"A": 0.56, "B": 0.44})
+    target = pd.Series({"A": 0.50, "B": 0.50})
+    assert should_rebalance(current, target, RebalanceRule.DRIFT) is True
+
+
+def test_should_rebalance_drift_zero_target_weight_skipped() -> None:
+    """DRIFT rule skips assets with target=0.0 (division by zero guard).
+
+    Asset B has target=0.0 and current=0.05; must not raise and return False
+    when no other asset breaches.
+    """
+    current = pd.Series({"A": 0.95, "B": 0.05})
+    target = pd.Series({"A": 1.00, "B": 0.00})
+    # A: |0.95 - 1.00| / 1.00 = 5% < 10%; B skipped
+    assert should_rebalance(current, target, RebalanceRule.DRIFT) is False
+
+
+def test_should_rebalance_drift_uses_custom_band() -> None:
+    """Custom band=0.05 triggers on an 8% relative deviation (outside 5%, within 10%)."""
+    current = pd.Series({"A": 0.54, "B": 0.46})
+    target = pd.Series({"A": 0.50, "B": 0.50})
+    # Default 10% band: no trigger; custom 5% band: 8% > 5% → trigger
+    assert should_rebalance(current, target, RebalanceRule.DRIFT, band=0.05) is True
