@@ -940,9 +940,10 @@ def compare_performance_table(
 - [x] 254 tests pass, 98.24% coverage, ruff clean, mypy clean
 - Note: `iv_series` parameter for `run_leaps_simulation` deferred to Sub-phase G (portfolio rewrite)
 
-### Sub-phase G — `portfolio.py` — full rewrite of `run_backtest`
+### Sub-phase G — `portfolio.py` — full rewrite of `run_backtest` ⏳ PENDING JUDGE REVIEW
 
 This is the largest change. Do it last after all dependencies are stable.
+All steps (prep, G1, G2, G3) implemented; awaiting judge verification. See `plans/spec.json` (all G2/G3 features `status: pending_judge`).
 
 Design decisions locked in:
 - External `leaps_ledger` parameter removed; LEAPS always initiated internally via LEAPS keys in `target_weights`.
@@ -963,29 +964,41 @@ Design decisions locked in:
 - [x] Update all existing `run_backtest` tests: add `price_data` arg, remove `leaps_ledger` arg, build VTI prices as a `PriceData.prices` column
 - [x] 263 tests pass, 98.41% coverage, ruff clean, mypy clean
 
-#### Step G2 — LEAPS capital routing (Model B) + VIX IV
+#### Step G2 — LEAPS capital routing (Model B) + VIX IV ⏳ PENDING JUDGE REVIEW
 
-- [ ] Detect `"VTI_LEAPS"` keys via `LEAPS_KEY_SUFFIX`; route carved-out capital into `run_leaps_simulation`
-- [ ] Base holdings dict contains only non-LEAPS keys
-- [ ] Split monthly contributions: `leaps_fraction` → LEAPS, `(1 - leaps_fraction)` → base
-- [ ] Read `"^VIX"` from `price_data.vol_prices`; 30-day rolling mean for daily MTM, raw VIX for contract creation; `config.leaps_config.iv` as floor throughout
-- [ ] Pass raw VIX series as `iv_series` arg to `run_leaps_simulation`
-- [ ] Tests:
-  - LEAPS capital correctly carved out of initial NAV (base holdings sum = initial_nav * (1 - leaps_fraction))
-  - Monthly contribution correctly split (LEAPS portion matches leaps_fraction * contribution)
-  - VIX IV floor respected (no contract priced below config.leaps_config.iv)
+- [x] Detect `"VTI_LEAPS"` keys via `LEAPS_KEY_SUFFIX`; route carved-out capital into `run_leaps_simulation`
+- [x] Base holdings dict contains only non-LEAPS keys
+- [x] Split monthly contributions: `leaps_fraction` → LEAPS, `(1 - leaps_fraction)` → base
+- [x] Read `"^VIX"` from `price_data.vol_prices`; 30-day rolling mean for daily MTM, raw VIX for contract creation; `config.leaps_config.iv` as floor throughout
+- [x] Pass raw VIX series as `iv_series` arg to `run_leaps_simulation`
+- [x] Tests:
+  - [x] LEAPS capital correctly carved out of initial NAV (base holdings sum = initial_nav * (1 - leaps_fraction))
+  - [x] Initial carved-out capital deployed **day 1** as a single contract (cost basis == initial_nav * leaps_fraction)
+  - [x] Monthly contribution correctly split (LEAPS portion matches leaps_fraction * contribution)
+  - [x] VIX IV floor respected (no contract priced below config.leaps_config.iv); above-floor raises premium; empty vol_prices falls back; raw-vs-smoothed distinction on creation
+- Design decisions (locked during implementation):
+  - LEAPS triggers on `*_LEAPS` **keys** (Model B), not `leaps_config` presence. Gross MTM (`compute_leaps_mtm`) replaces the G1 overlay net-P&L.
+  - `run_leaps_simulation` gained `initial_capital` (default 0.0) for the day-1 carve-out so it participates in rolls.
+  - Single-underlying constraint: >1 distinct LEAPS underlying raises `ValueError` (one `leaps_ledger` per `BacktestResult`).
+  - Added `VIX_MTM_WINDOW = 30` to `consts.py`.
+- Commits `6770a10` (F-G2-01/02), `d3beaca` (F-G2-03). 280 tests pass, 98.51% coverage (portfolio.py 100%), ruff + mypy clean.
 
-#### Step G3 — Drift rebalancing + partial close accumulation
+#### Step G3 — Drift rebalancing + partial close accumulation ⏳ PENDING JUDGE REVIEW
 
-- [ ] Add DRIFT branch to main loop: check `should_rebalance()` monthly at `month_end_dates`
-- [ ] On drift trigger: partially close LEAPS overshoot via `partial_close_leaps()`; add `net_proceeds` to base holdings proportional to base target weights
-- [ ] Accumulate `partial_close_list: list[LeapsPartialCloseEvent]` during loop; `replace(ledger, partial_close_events=tuple(partial_close_list))` once at return boundary
-- [ ] QUARTERLY rule: `get_rebalance_dates()` behavior unchanged
-- [ ] Tests:
-  - Drift rebalancing triggers at ±10% relative band breach
-  - No trigger within band
-  - `net_proceeds` from partial close added back to base holdings (no tax deduction)
-  - `partial_close_events` frozen correctly onto final ledger (tuple, not list)
+- [x] Add DRIFT branch to main loop: check `should_rebalance()` monthly at `month_end_dates`
+- [x] On drift trigger: partially close LEAPS overshoot pro-rata; add `net_proceeds` to base holdings proportional to base target weights (tax-free)
+- [x] Accumulate partial closes via a local scale-map during loop; `replace(ledger, partial_close_events=tuple(...))` once at return boundary
+- [x] QUARTERLY rule: `get_rebalance_dates()` behavior unchanged
+- [x] Tests:
+  - [x] Drift rebalancing triggers at ±10% relative band breach
+  - [x] No trigger within band
+  - [x] `net_proceeds` from partial close added back to base holdings (no tax deduction)
+  - [x] `partial_close_events` frozen correctly onto final ledger (tuple, not list); ledger remains frozen
+- Design decision (locked during implementation):
+  - `_live_contracts` maps each original to a **single** continuation (no chaining). Cumulative closes across multiple drift dates therefore collapse into **one** `LeapsPartialCloseEvent` per trimmed contract. Daily MTM is tracked via a local `leaps_scale` map (base contract → surviving fraction) so prior closes take effect without rebuilding the frozen ledger mid-loop.
+  - Pro-rata reduction formula applied inline (matches `partial_close_leaps()`, which stays the single-contract reference primitive with its own unit tests).
+  - Spec bumped to **1.1.0**; F-G3-02/03 acceptance criteria reconciled with the single-continuation invariant.
+- Commit `1f35637`. 289 tests pass, 98.32% coverage (portfolio.py 100%), ruff + mypy clean.
 
 ### Sub-phase H — `figures.py` + integration + coverage
 
