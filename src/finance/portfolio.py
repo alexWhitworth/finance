@@ -8,7 +8,7 @@ from dataclasses import dataclass
 
 import pandas as pd
 
-from finance.consts import DEFAULT_IV, DRIFT_BAND_RELATIVE, LEAPS_KEY_SUFFIX
+from finance.consts import DEFAULT_IV, DRIFT_BAND_RELATIVE, LEAPS_KEY_SUFFIX, VIX_MTM_WINDOW
 from finance.data import PriceData
 from finance.leverage import (
     LeapsConfig,
@@ -194,10 +194,18 @@ def run_backtest(
       b. Compute market return (before contribution, to exclude cash-flow effects).
       c. On month-end: apply monthly_contribution proportional to target weights.
       d. On rebalance date: realign holdings to target weights.
-      e. If leaps_config present: include LEAPS mark-to-market in total NAV.
+      e. If LEAPS keys present: include carved-out LEAPS mark-to-market in total NAV.
 
-    LEAPS overlay (when config.leaps_config is set):
-      - Requires "VTI" in price_data.prices for absolute spot pricing.
+    LEAPS (Model B carve-out, triggered by any "*_LEAPS" key in target_weights):
+      - The underlying (key without the "_LEAPS" suffix) must exist in
+        price_data.prices for absolute spot pricing.
+      - LEAPS capital is carved out of NAV: initial_nav * leaps_fraction is
+        deployed day-1 and the LEAPS share of each monthly contribution flows
+        into run_leaps_simulation; base holdings hold the remainder.
+      - Dynamic IV: when price_data.vol_prices has a "^VIX" column, raw VIX drives
+        contract creation and rolls, while a VIX_MTM_WINDOW-day rolling mean drives
+        daily mark-to-market. config.leaps_config.iv is the floor throughout.
+        Absent "^VIX", config.leaps_config.iv is used everywhere.
       - run_leaps_simulation is called internally; no external ledger accepted.
 
     Arguments:
@@ -256,6 +264,7 @@ def run_backtest(
     underlying_prices: pd.Series | None = None
     iv = DEFAULT_IV
     rfr_series: pd.Series | None = None
+    mtm_iv_series: pd.Series | None = None  # 30-day smoothed VIX for daily MTM
 
     if use_leaps:
         underlyings = {k.removesuffix(LEAPS_KEY_SUFFIX) for k in leaps_keys}
@@ -270,6 +279,13 @@ def run_backtest(
         underlying_prices = price_data.prices[underlying].reindex(idx, method="ffill")
         rfr_series = return_data.risk_free_rate.reindex(idx, method="ffill").fillna(0.0)
 
+        # VIX-based dynamic IV: raw VIX for contract creation/roll (via iv_series),
+        # 30-day rolling mean for daily MTM. config.iv is the floor throughout.
+        raw_vix: pd.Series | None = None
+        if not price_data.vol_prices.empty and "^VIX" in price_data.vol_prices.columns:
+            raw_vix = price_data.vol_prices["^VIX"].reindex(idx, method="ffill")
+            mtm_iv_series = raw_vix.rolling(VIX_MTM_WINDOW).mean().ffill()
+
         initial_leaps_capital = config.initial_nav * leaps_fraction
         leaps_monthly = config.monthly_contribution * leaps_fraction
         leaps_ledger = run_leaps_simulation(
@@ -277,6 +293,7 @@ def run_backtest(
             leaps_monthly,
             config.leaps_config,
             risk_free_series=return_data.risk_free_rate,
+            iv_series=raw_vix,
             initial_capital=initial_leaps_capital,
         )
 
@@ -307,7 +324,12 @@ def run_backtest(
         if leaps_ledger is not None and underlying_prices is not None:
             spot = float(underlying_prices.loc[date_ts])
             rfr = float(rfr_series.loc[date_ts]) if rfr_series is not None else 0.0
-            leaps_value = compute_leaps_mtm(leaps_ledger, date_ts, spot, iv, rfr)
+            day_iv = iv
+            if mtm_iv_series is not None:
+                smoothed = mtm_iv_series.loc[date_ts]
+                if pd.notna(smoothed):
+                    day_iv = max(float(smoothed), iv)
+            leaps_value = compute_leaps_mtm(leaps_ledger, date_ts, spot, day_iv, rfr)
 
         nav_before_contrib = sum(holdings.values()) + leaps_value
 

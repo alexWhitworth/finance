@@ -46,6 +46,7 @@ DEFAULT_DIVIDEND_YIELD: float = 0.013
 MIN_PREMIUM_PER_SHARE: float = 0.01
 LEAPS_KEY_SUFFIX: str = "_LEAPS"
 DRIFT_BAND_RELATIVE: float = 0.10
+VIX_MTM_WINDOW: int = 30  # rolling-mean window (days) for VIX-smoothed daily MTM IV
 
 MIN_CRISIS_OBSERVATIONS: int = 20
 RISK_FREE_RATE_DEFAULT: float = 0.0

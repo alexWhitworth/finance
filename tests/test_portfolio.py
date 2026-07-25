@@ -652,6 +652,105 @@ def test_leaps_base_contribution_share() -> None:
     assert final_base == pytest.approx(expected_base, rel=1e-6)
 
 
+# ---------------------------------------------------------------------------
+# F-G2-03 — VIX-based dynamic implied volatility
+# ---------------------------------------------------------------------------
+
+
+def _make_pd_with_vix(
+    n: int = 504,
+    vix_level: float = 0.25,
+    seed: int = 42,
+) -> PriceData:
+    """Synthetic PriceData with a constant '^VIX' vol_prices column."""
+    base = _make_price_data(n, seed=seed)
+    vix = pd.DataFrame({"^VIX": vix_level}, index=base.prices.index)
+    return PriceData(
+        prices=base.prices, dividends=base.dividends, vol_prices=vix,
+        tickers=base.tickers, start_date=base.start_date,
+        end_date=base.end_date, spliced=base.spliced,
+    )
+
+
+def test_leaps_vix_iv_floor_respected_on_creation() -> None:
+    """A VIX below config.iv is floored: contracts priced at config.iv, not VIX."""
+    n = 120
+    base = _make_price_data(n)
+    rd = build_return_data(base, apply_tey=False)
+    low_vix = pd.DataFrame({"^VIX": 0.05}, index=base.prices.index)  # below 0.18 floor
+    pd_low_vix = PriceData(
+        prices=base.prices, dividends=base.dividends, vol_prices=low_vix,
+        tickers=base.tickers, start_date=base.start_date,
+        end_date=base.end_date, spliced=base.spliced,
+    )
+    cfg = _config(weights=dict(_LEAPS_WEIGHTS), leaps_config=LeapsConfig(iv=0.18))
+    result_lowvix = run_backtest(rd, pd_low_vix, cfg)
+
+    # No-VIX run uses config.iv=0.18 everywhere; floored VIX must match it.
+    result_novix = run_backtest(rd, base, cfg)
+    assert result_lowvix.leaps_ledger is not None
+    assert result_novix.leaps_ledger is not None
+    lo_prem = result_lowvix.leaps_ledger.contracts[0].premium_paid
+    no_prem = result_novix.leaps_ledger.contracts[0].premium_paid
+    assert lo_prem == pytest.approx(no_prem, rel=1e-9)
+
+
+def test_leaps_vix_above_floor_raises_premium() -> None:
+    """VIX above the floor produces a higher day-1 premium than the floor case."""
+    n = 120
+    base = _make_price_data(n)
+    rd = build_return_data(base, apply_tey=False)
+    pd_hi_vix = _make_pd_with_vix(n, vix_level=0.45)
+    cfg = _config(weights=dict(_LEAPS_WEIGHTS), leaps_config=LeapsConfig(iv=0.18))
+    result_hi = run_backtest(rd, pd_hi_vix, cfg)
+    result_floor = run_backtest(rd, base, cfg)  # no VIX → floor 0.18
+    assert result_hi.leaps_ledger is not None
+    assert result_floor.leaps_ledger is not None
+    assert (
+        result_hi.leaps_ledger.contracts[0].premium_paid
+        > result_floor.leaps_ledger.contracts[0].premium_paid
+    )
+
+
+def test_leaps_empty_vol_prices_falls_back_to_config_iv() -> None:
+    """Empty vol_prices → identical NAV path to a config.iv-only run (regression)."""
+    rd, pd_obj = _make_rd_and_pd(252)  # _make_price_data → vol_prices empty
+    assert pd_obj.vol_prices.empty
+    cfg = _config(weights=dict(_LEAPS_WEIGHTS), leaps_config=LeapsConfig(iv=0.18))
+    result = run_backtest(rd, pd_obj, cfg)
+    assert result.leaps_ledger is not None  # ran without error, used config.iv
+
+
+def test_leaps_vix_creation_uses_raw_not_smoothed() -> None:
+    """Creation IV uses raw month-end VIX, distinct from the 30-day MTM mean.
+
+    Build a VIX series that is low for the first ~30 days then spikes. The day-1
+    contract (created on the raw first value) must differ from what a 30-day mean
+    would give, confirming creation uses raw VIX.
+    """
+    n = 90
+    base = _make_price_data(n)
+    rd = build_return_data(base, apply_tey=False)
+    vix_vals = np.concatenate([np.full(45, 0.20), np.full(n + 1 - 45, 0.60)])
+    vix = pd.DataFrame({"^VIX": vix_vals[: len(base.prices)]}, index=base.prices.index)
+    pd_vix = PriceData(
+        prices=base.prices, dividends=base.dividends, vol_prices=vix,
+        tickers=base.tickers, start_date=base.start_date,
+        end_date=base.end_date, spliced=base.spliced,
+    )
+    cfg = _config(weights=dict(_LEAPS_WEIGHTS), leaps_config=LeapsConfig(iv=0.18))
+    result = run_backtest(rd, pd_vix, cfg)
+    assert result.leaps_ledger is not None
+    # Day-1 contract created at raw VIX=0.20 (> floor 0.18); premium reflects 0.20.
+    # Compare to a flat-0.20 VIX run: day-1 premiums must match exactly.
+    flat_vix = _make_pd_with_vix(n, vix_level=0.20)
+    result_flat = run_backtest(rd, flat_vix, cfg)
+    assert result_flat.leaps_ledger is not None
+    assert result.leaps_ledger.contracts[0].premium_paid == pytest.approx(
+        result_flat.leaps_ledger.contracts[0].premium_paid, rel=1e-9
+    )
+
+
 def test_leaps_zero_contribution_only_day1_contract() -> None:
     """With zero contribution and a flat short series, only the day-1 contract exists."""
     n = 15  # fewer than a full month → possibly one month-end

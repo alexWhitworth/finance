@@ -444,7 +444,7 @@
       "description": "Read '^VIX' from price_data.vol_prices when present. For contract creation and rolling (month-end events), pass the raw VIX series as iv_series to run_leaps_simulation. For daily mark-to-market, use a 30-day rolling mean of VIX (ffill) to reduce noise. In all cases config.leaps_config.iv is the floor: iv = max(vix_value, config.leaps_config.iv). When vol_prices lacks '^VIX' or is empty, fall back to config.leaps_config.iv everywhere.",
       "phase": 2,
       "priority": 2,
-      "status": "pending",
+      "status": "pending_judge",
       "layer": "python",
       "dependencies": [
         "F-G2-01"
