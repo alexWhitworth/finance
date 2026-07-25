@@ -940,10 +940,10 @@ def compare_performance_table(
 - [x] 254 tests pass, 98.24% coverage, ruff clean, mypy clean
 - Note: `iv_series` parameter for `run_leaps_simulation` deferred to Sub-phase G (portfolio rewrite)
 
-### Sub-phase G — `portfolio.py` — full rewrite of `run_backtest` ⏳ PENDING JUDGE REVIEW
+### Sub-phase G — `portfolio.py` — full rewrite of `run_backtest` ✅ JUDGE PASS (CONDITIONAL_PASS)
 
 This is the largest change. Do it last after all dependencies are stable.
-All steps (prep, G1, G2, G3) implemented; awaiting judge verification. See `plans/spec.json` (all G2/G3 features `status: pending_judge`).
+All steps (prep, G1, G2, G3) implemented and judge-verified. See `plans/spec.json` (all G2/G3 features `status: complete`) and `plans/judge_verdicts/phase_G_verdict_round_1.txt`.
 
 Design decisions locked in:
 - External `leaps_ledger` parameter removed; LEAPS always initiated internally via LEAPS keys in `target_weights`.
