@@ -323,7 +323,7 @@
       "description": "On initialization, detect LEAPS keys via LEAPS_KEY_SUFFIX ('_LEAPS'). Carve LEAPS capital out of initial_nav: leaps_capital = initial_nav * sum(target_weights[k] for LEAPS keys). The initial carved-out capital is deployed on day 1 as a single create_leaps_contract on the underlying's first-date spot; run_leaps_simulation then handles subsequent monthly additions and rolls on price_data.prices[underlying]. Base holdings dict contains only non-LEAPS keys, initialized to initial_nav * (1 - leaps_fraction) split by base target weights.",
       "phase": 2,
       "priority": 1,
-      "status": "pending_judge",
+      "status": "complete",
       "layer": "python",
       "dependencies": [],
       "linked_schemas": [
@@ -388,7 +388,7 @@
       "description": "At each month-end, split monthly_contribution: leaps_contribution = monthly_contribution * leaps_fraction routed to new LEAPS contracts (via run_leaps_simulation's monthly purchase), base_contribution = monthly_contribution * (1 - leaps_fraction) allocated across base assets proportional to their normalized base target weights.",
       "phase": 2,
       "priority": 1,
-      "status": "pending_judge",
+      "status": "complete",
       "layer": "python",
       "dependencies": [
         "F-G2-01"
@@ -444,7 +444,7 @@
       "description": "Read '^VIX' from price_data.vol_prices when present. For contract creation and rolling (month-end events), pass the raw VIX series as iv_series to run_leaps_simulation. For daily mark-to-market, use a 30-day rolling mean of VIX (ffill) to reduce noise. In all cases config.leaps_config.iv is the floor: iv = max(vix_value, config.leaps_config.iv). When vol_prices lacks '^VIX' or is empty, fall back to config.leaps_config.iv everywhere.",
       "phase": 2,
       "priority": 2,
-      "status": "pending_judge",
+      "status": "complete",
       "layer": "python",
       "dependencies": [
         "F-G2-01"
@@ -506,7 +506,7 @@
       "description": "For RebalanceRule.DRIFT, check monthly at month_end_dates whether any weight is outside its relative band via should_rebalance(). On trigger, rebalance all assets (base and LEAPS) with no tax and no MIN_HOLD_DAYS guard. For QUARTERLY, get_rebalance_dates() behavior is unchanged.",
       "phase": 3,
       "priority": 1,
-      "status": "pending_judge",
+      "status": "complete",
       "layer": "python",
       "dependencies": [
         "F-G2-01",
@@ -566,7 +566,7 @@
       "description": "When drift rebalancing fires and the LEAPS position exceeds its target value, reduce the position pro-rata to hit the target MTM by applying a uniform scale factor (scale = target_total_mtm / current_total_mtm) to every live contract via a local scale_map. This applies the same pro-rata reduction formula implemented by partial_close_leaps() but inline, so cumulative closes across multiple drift events compose into one continuation per contract (the flat original->continuation model in _live_contracts supports a single level). net_proceeds (current_total_mtm - target) are added back to base holdings proportional to base target weights (tax-free). If target LEAPS value >= current MTM (undershoot), no close occurs. partial_close_leaps() remains the reference single-contract primitive, covered by its own unit tests.",
       "phase": 3,
       "priority": 1,
-      "status": "pending_judge",
+      "status": "complete",
       "layer": "python",
       "dependencies": [
         "F-G3-01"
@@ -634,7 +634,7 @@
       "description": "Partial close events generated during the drift-rebalance loop are accumulated in a function-scoped mutable list[LeapsPartialCloseEvent]. At the return boundary, the final ledger is produced once via replace(ledger, partial_close_events=tuple(partial_close_list)). No dataclasses.replace() is called inside the loop (avoids O(n^2) allocations). Mirrors the run_leaps_simulation contracts/roll_events pattern. Implementation: a local scale_map (base contract -> cumulative surviving fraction) tracks pro-rata closes during the loop so daily MTM reflects prior closes without rebuilding the frozen ledger; at the return boundary one LeapsPartialCloseEvent per trimmed contract is built (original=base contract, continuation=replace(c, n_contracts*final_scale)) and the ledger is frozen once via replace(). Repeated closes of the same contract collapse into a single cumulative event.",
       "phase": 3,
       "priority": 2,
-      "status": "pending_judge",
+      "status": "complete",
       "layer": "python",
       "dependencies": [
         "F-G3-02"
