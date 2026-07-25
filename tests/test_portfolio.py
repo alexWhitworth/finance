@@ -149,16 +149,16 @@ def test_rebalance_dates_sorted() -> None:
 
 
 def test_compute_target_weights_user_specified_sums_to_one() -> None:
-    """USER_SPECIFIED weights normalize to sum = 1.0."""
-    cfg = _config(weights={"A": 2.0, "B": 2.0, "C": 1.0})
+    """USER_SPECIFIED weights (already unit-normed) pass through summing to 1.0."""
+    cfg = _config(weights={"A": 0.4, "B": 0.4, "C": 0.2})
     current = pd.Series({"A": 0.4, "B": 0.4, "C": 0.2})
     w = compute_target_weights(cfg, current, 1_000.0, pd.Timestamp("2020-01-02"))
     assert w.sum() == pytest.approx(1.0, abs=1e-12)
 
 
 def test_compute_target_weights_user_specified_proportions() -> None:
-    """USER_SPECIFIED weights preserve proportions of target_weights dict."""
-    cfg = _config(weights={"A": 3.0, "B": 1.0})
+    """USER_SPECIFIED weights (unit-normed) preserve the given proportions."""
+    cfg = _config(weights={"A": 0.75, "B": 0.25})
     current = pd.Series({"A": 0.5, "B": 0.5})
     w = compute_target_weights(cfg, current, 1_000.0, pd.Timestamp("2020-01-02"))
     assert w["A"] == pytest.approx(0.75, abs=1e-9)
@@ -405,8 +405,10 @@ def test_run_backtest_leaps_missing_underlying_raises() -> None:
         vol_prices=pd_obj.vol_prices, tickers=tuple(prices_no_vti.columns),
         start_date=pd_obj.start_date, end_date=pd_obj.end_date, spliced=False,
     )
-    # Base assets must still exist in returns; drop VTI from weights too.
+    # Drop VTI from base weights; absorb its share into VTI_LEAPS so sum stays 1.0.
+    # VTI_LEAPS still requires VTI spot prices → triggers the missing-underlying error.
     weights = {k: v for k, v in _LEAPS_WEIGHTS.items() if k != "VTI"}
+    weights["VTI_LEAPS"] = weights["VTI_LEAPS"] + _LEAPS_WEIGHTS["VTI"]
     cfg = _config(weights=weights, leaps_config=LeapsConfig())
     with pytest.raises(ValueError, match="underlying 'VTI' absent"):
         run_backtest(rd, pd_no_vti, cfg)

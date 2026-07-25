@@ -47,6 +47,13 @@ class PortfolioConfig:
     weight_strategy: WeightStrategy
     leaps_config: LeapsConfig | None = None
 
+    def __post_init__(self) -> None:
+        total = sum(self.target_weights.values())
+        if abs(total - 1.0) > 1e-6:
+            raise ValueError(
+                f"target_weights must sum to 1.0; got {total:.6f}"
+            )
+
 
 @dataclass(frozen=True)
 class BacktestResult:
@@ -241,13 +248,11 @@ def run_backtest(
     if use_leaps and config.leaps_config is None:
         raise ValueError("LEAPS keys present in target_weights but leaps_config is None")
 
-    # Normalize all weights (base + LEAPS) to sum to 1.0
-    raw_w = pd.Series({k: config.target_weights[k] for k in config.target_weights})
-    norm_w = raw_w / raw_w.sum()
-    leaps_fraction = float(sum(norm_w[k] for k in leaps_keys))
+    w = pd.Series(config.target_weights)
+    leaps_fraction = float(w[leaps_keys].sum()) if leaps_keys else 0.0
 
     # Base-only target weights, renormalized among base assets (sum to 1.0)
-    base_target_w = pd.Series({a: norm_w[a] for a in base_assets})
+    base_target_w = w[base_assets]
     if len(base_assets) > 0 and base_target_w.sum() > 0:
         base_target_w = base_target_w / base_target_w.sum()
 
@@ -368,10 +373,10 @@ def run_backtest(
             total_val = base_val + leaps_value
             weights_now = {a: holdings[a] / total_val for a in base_assets}
             for k in leaps_keys:
-                share = float(norm_w[k]) / leaps_fraction if leaps_fraction > 0 else 0.0
+                share = float(w[k]) / leaps_fraction if leaps_fraction > 0 else 0.0
                 weights_now[k] = leaps_value * share / total_val
             current_weights = pd.Series(weights_now)
-            if should_rebalance(current_weights, norm_w, RebalanceRule.DRIFT):
+            if should_rebalance(current_weights, w, RebalanceRule.DRIFT):
                 # Realign base assets to their targets within the base sleeve.
                 for a in base_assets:
                     holdings[a] = base_val * float(base_target_w[a])
@@ -393,7 +398,7 @@ def run_backtest(
         return_values.append(port_return)
         row = {a: holdings[a] / total_nav for a in base_assets}
         for k in leaps_keys:
-            share = float(norm_w[k]) / leaps_fraction if leaps_fraction > 0 else 0.0
+            share = float(w[k]) / leaps_fraction if leaps_fraction > 0 else 0.0
             row[k] = leaps_value * share / total_nav
         weight_rows.append(row)
 
