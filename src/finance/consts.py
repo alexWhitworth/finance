@@ -11,18 +11,30 @@ SPLICE_MAP: dict[str, tuple[str, str]] = {
     "MUB": ("VWITX", "2007-09-10"),
 }
 
-VOL_INDEX_TICKERS: frozenset[str] = frozenset({"^VIX", "V2TX.DE", "VXEEM", "^GVZ", "^OVX", "^MOVE"})
-
-VXUS_VOL_BLEND: dict[str, float] = {"V2TX.DE": 0.75, "VXEEM": 0.25}
-VXUS_VOL_DEVELOPED_WEIGHT: float = 0.75
+VOL_INDEX_TICKERS: frozenset[str] = frozenset({"^VIX", "^GVZ", "^MOVE"})
 
 ASSET_VOL_INDEX: dict[str, str | None] = {
     "VTI": "^VIX",
-    "VXUS": "VXUS_COMPOSITE",
+    # VXUS: preferred blend was V2TX.DE (VSTOXX, 75%) + ^VXEEM (25%); both delisted on yfinance.
+    # Fallback: ^VIX scaled by VOL_INDEX_SCALAR["VXUS"] = 1.15.
+    "VXUS": "^VIX",
     "GLD": "^GVZ",
     "MUB": "^MOVE",
     "KMLM": None,
     "VGIT": "^MOVE",
+}
+
+# Scalar applied to the fetched vol index after unit conversion (÷100).
+# Add an entry here whenever a proxy ticker systematically under- or over-states
+# the true vol level for a given asset.
+#
+# VXUS note: the preferred approach was a blended IV from V2TX.DE (VSTOXX,
+# developed-market weight 0.75) and ^VXEEM (EM weight 0.25). Both tickers are
+# delisted / unavailable on yfinance as of mid-2025. ^VIX * 1.15 is a fallback
+# proxy; international equity vol runs ~15% higher than US vol historically.
+# Revisit if a reliable developed + EM blend becomes available again.
+VOL_INDEX_SCALAR: dict[str, float] = {
+    "VXUS": 1.15,
 }
 
 TBILL_TICKER: str = "^IRX"

@@ -33,7 +33,7 @@ from finance.figures import (
 )
 
 # 1. Fetch and prepare data
-price_data = build_price_data("2015-01-01", "2024-12-31", use_splice=True)
+price_data = build_price_data("2015-01-01", "2026-06-30", use_splice=True)
 return_data = build_return_data(price_data)
 
 # 2. Run backtest

@@ -20,14 +20,16 @@ from finance.portfolio import PortfolioConfig, run_backtest
 from finance.returns import build_return_data
 from finance.volatility import build_volatility_model
 
+# VTI and VTI_LEAPS keys are independent: VTI_LEAPS does not replace VTI.
+# The portfolio can hold both the underlying and LEAPS
 BASE_WEIGHTS = {
-    "VTI": 0.30,
+    "VTI": 0.0,
     "VXUS": 0.20,
     "GLD": 0.10,
     "MUB": 0.10,
     "KMLM": 0.10,
-    "VGIT": 0.15,
-    "VTI_LEAPS": 0.05,
+    "VGIT": 0.10,
+    "VTI_LEAPS": 0.4,
 }
 
 INITIAL_NAV = 1_000_000.0

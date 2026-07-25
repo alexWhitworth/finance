@@ -9,7 +9,7 @@ from dataclasses import dataclass
 import pandas as pd
 import yfinance as yf
 
-from finance.consts import SPLICE_MAP, TBILL_TICKER, TICKERS, VXUS_VOL_BLEND
+from finance.consts import SPLICE_MAP, TBILL_TICKER, TICKERS, VOL_INDEX_SCALAR
 
 
 @dataclass(frozen=True)
@@ -129,8 +129,7 @@ def fetch_volatility_index(  # pragma: no cover
 ) -> pd.Series:
     """Fetch the volatility index series for a given asset.
 
-    For VXUS, blends V2TX.DE (developed) and VXEEM (emerging) using VXUS_VOL_BLEND
-    weights. For all other assets, fetches the single index defined in ASSET_VOL_INDEX.
+    Fetches the single index defined in ASSET_VOL_INDEX for the given ticker.
     Returns an empty Series if no vol index is mapped for the asset.
 
     Arguments:
@@ -148,24 +147,13 @@ def fetch_volatility_index(  # pragma: no cover
     if vol_key is None:
         return pd.Series(dtype=float, name=f"{asset_ticker}_IV")
 
-    if vol_key == "VXUS_COMPOSITE":
-        raw_dev = yf.download(
-            "V2TX.DE", start=start_date, end=end_date, auto_adjust=True, progress=False
-        )
-        raw_em = yf.download(
-            "VXEEM", start=start_date, end=end_date, auto_adjust=True, progress=False
-        )
-        dev: pd.Series = (raw_dev["Close"].squeeze() / 100.0).ffill()
-        em: pd.Series = (raw_em["Close"].squeeze() / 100.0).ffill()
-        w_dev = VXUS_VOL_BLEND["V2TX.DE"]
-        w_em = VXUS_VOL_BLEND["VXEEM"]
-        composite: pd.Series = (w_dev * dev + w_em * em).rename(f"{asset_ticker}_IV")
-        return composite
-
     raw = yf.download(vol_key, start=start_date, end=end_date, auto_adjust=True, progress=False)
     if raw.empty:
         return pd.Series(dtype=float, name=f"{asset_ticker}_IV")
-    result: pd.Series = (raw["Close"].squeeze() / 100.0).ffill().rename(f"{asset_ticker}_IV")
+    scalar = VOL_INDEX_SCALAR.get(asset_ticker, 1.0)
+    result: pd.Series = (
+        (raw["Close"].squeeze() / 100.0 * scalar).ffill().rename(f"{asset_ticker}_IV")
+    )
     return result
 
 
