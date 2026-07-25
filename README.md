@@ -4,11 +4,11 @@ A Python library for backtesting multi-asset portfolios with optional synthetic 
 
 ## Features
 
-- **Performance metrics** — annualized return, max drawdown, Sharpe, Sortino, Calmar, Omega ratios over full period and pre-defined crisis windows (GFC, COVID, 2022 rate hike)
+- **Performance metrics** — annualized return, max drawdown, Sharpe, Sortino, Calmar, Omega ratios, skew, and excess-kurtosis over full period and pre-defined crisis windows (GFC, COVID, 2022 rate hike)
 - **Volatility attribution** — EWMA vol (λ=0.95), 36-month rolling weekly correlations, per-asset contribution table summing to 1
-- **TEY adjustment** — MUB returns scaled to tax-equivalent yield at 40.8% NIIT
+- **TEY adjustment** — muni returns scaled to tax-equivalent yield at 40.8% NIIT
 - **LEAPS leverage** — DITM VTI LEAPS (50% strike, Black-Scholes pricing), biannual roll with LTCG preservation, taxable vs. tax-sheltered scenarios
-- **Quarterly rebalancing** — user-specified weights (extensible to risk parity and threshold-drift)
+- **Rebalancing** — Quarterly to user-specified weights or monthly threshold-drift (extensible to risk parity)
 
 ## Setup
 
@@ -55,8 +55,6 @@ plot_nav_growth({"My Portfolio": result})
 plot_drawdown({"My Portfolio": result})
 plot_vol_contributions(report)
 ```
-
-See `implementation_plan.md` for full architecture, API contracts, and LEAPS leverage usage.
 
 ## Development
 

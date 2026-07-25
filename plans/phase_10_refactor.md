@@ -770,12 +770,15 @@ def should_rebalance(
 
 #### Changed: `run_backtest` — new signature
 
+The external `leaps_ledger` parameter is removed. LEAPS is always initiated
+internally by `run_backtest` when LEAPS keys are present in `target_weights`.
+There is no bypass path for pre-built ledgers.
+
 ```python
 def run_backtest(
     return_data: ReturnData,
     price_data: PriceData,
     config: PortfolioConfig,
-    leaps_ledger: LeapsLedger | None = None,
 ) -> BacktestResult:
 ```
 
@@ -806,6 +809,16 @@ def run_backtest(
   LTCG eligibility check needed, no MIN_HOLD_DAYS guard
 - `net_proceeds` from any LEAPS partial close are added back to base holdings
 - For `QUARTERLY` rule: `get_rebalance_dates()` behavior unchanged
+
+**`partial_close_events` accumulation pattern:**
+`LeapsLedger` remains `frozen=True`. Partial close events generated during the
+drift-rebalance loop are accumulated in a local mutable `list[LeapsPartialCloseEvent]`
+(a function-scoped construction buffer, invisible to callers). At the return boundary,
+the final ledger is produced once via `replace(ledger, partial_close_events=tuple(partial_close_list))`.
+This is identical to how `run_leaps_simulation` builds `contracts` and `roll_events`:
+local mutable lists → frozen tuples at return. It is O(n) and consistent with the
+FP/OOP hybrid pattern throughout the codebase. Do **not** use `dataclasses.replace()`
+inside the loop — that would produce O(n²) throwaway allocations.
 
 **VTI spot price — no reconstruction:**
 - `price_data.prices["VTI"]` provides absolute prices directly.
@@ -931,20 +944,27 @@ def compare_performance_table(
 
 This is the largest change. Do it last after all dependencies are stable.
 
+Design decisions locked in:
+- External `leaps_ledger` parameter removed; LEAPS always initiated internally via LEAPS keys in `target_weights`.
+- `partial_close_events` accumulated in a local `list` during the loop; frozen onto the ledger once at the return boundary (mirrors `run_leaps_simulation` pattern).
+- `"VTI_LEAPS"` and `"VTI"` may coexist in `target_weights`; standard usage does not mix them.
+
 - [ ] Add `RebalanceRule.DRIFT` enum value
 - [ ] Implement `should_rebalance()` helper
-- [ ] Update `run_backtest` signature: add `price_data: PriceData`
+- [ ] Update `run_backtest` signature: `(return_data, price_data, config)` — remove `leaps_ledger`
 - [ ] Implement LEAPS key detection and capital routing (Model B)
+- [ ] Add `iv_series` parameter to `run_leaps_simulation`; pass raw VIX series for contract creation/rolling
 - [ ] Implement monthly contribution split (LEAPS vs. base)
-- [ ] Implement VIX-based dynamic IV with 30-day smoothing for MTM
-- [ ] Implement drift rebalancing with LTCG eligibility guard for LEAPS partial close
+- [ ] Implement VIX-based dynamic IV with 30-day smoothing for daily MTM
+- [ ] Implement drift rebalancing: local `partial_close_list`, freeze onto ledger at return
 - [ ] Delete VTI spot reconstruction logic
-- [ ] Update all 26 existing `run_backtest` tests for new signature
+- [ ] Update all existing `run_backtest` tests for new signature (no `leaps_ledger` arg; add `price_data`)
 - [ ] Add tests:
   - LEAPS capital correctly carved out of initial NAV
-  - Monthly contribution correctly split
+  - Monthly contribution correctly split between LEAPS and base
   - Drift rebalancing triggers at ±10% relative band
   - Partial close returns net_proceeds to base holdings (no tax deduction)
+  - `partial_close_events` frozen correctly onto final ledger
 
 ### Sub-phase H — `figures.py` + integration + coverage
 
