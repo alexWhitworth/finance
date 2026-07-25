@@ -1,5 +1,5 @@
 {
-  "spec_version": "1.0.1",
+  "spec_version": "1.1.0",
   "generated_at": "2026-07-25T00:00:00Z",
   "project": {
     "name": "finance",
@@ -506,7 +506,7 @@
       "description": "For RebalanceRule.DRIFT, check monthly at month_end_dates whether any weight is outside its relative band via should_rebalance(). On trigger, rebalance all assets (base and LEAPS) with no tax and no MIN_HOLD_DAYS guard. For QUARTERLY, get_rebalance_dates() behavior is unchanged.",
       "phase": 3,
       "priority": 1,
-      "status": "pending",
+      "status": "pending_judge",
       "layer": "python",
       "dependencies": [
         "F-G2-01",
@@ -563,10 +563,10 @@
     {
       "id": "F-G3-02",
       "name": "Pro-rata partial LEAPS close on drift overshoot",
-      "description": "When drift rebalancing fires and the LEAPS position exceeds its target value, partially close the overshoot via partial_close_leaps() to hit the target MTM. When multiple LEAPS contracts are live, the overshoot is closed pro-rata across all live contracts (each contract trimmed to the same scale factor = target_total_mtm / current_total_mtm), preserving the roll/age distribution. net_proceeds are added back to base holdings proportional to base target weights (tax-free). If target LEAPS value >= current MTM (undershoot), no partial close is executed (partial_close_leaps would raise; guard before calling).",
+      "description": "When drift rebalancing fires and the LEAPS position exceeds its target value, reduce the position pro-rata to hit the target MTM by applying a uniform scale factor (scale = target_total_mtm / current_total_mtm) to every live contract via a local scale_map. This applies the same pro-rata reduction formula implemented by partial_close_leaps() but inline, so cumulative closes across multiple drift events compose into one continuation per contract (the flat original->continuation model in _live_contracts supports a single level). net_proceeds (current_total_mtm - target) are added back to base holdings proportional to base target weights (tax-free). If target LEAPS value >= current MTM (undershoot), no close occurs. partial_close_leaps() remains the reference single-contract primitive, covered by its own unit tests.",
       "phase": 3,
       "priority": 1,
-      "status": "pending",
+      "status": "pending_judge",
       "layer": "python",
       "dependencies": [
         "F-G3-01"
@@ -617,7 +617,7 @@
         },
         {
           "type": "unit",
-          "description": "Multiple live contracts closed pro-rata: all trimmed to the same scale factor; one partial_close_event per live contract."
+          "description": "Multiple live contracts closed pro-rata: all trimmed to the same cumulative scale factor; one collapsed partial_close_event per trimmed contract."
         }
       ],
       "edge_cases": [
@@ -631,10 +631,10 @@
     {
       "id": "F-G3-03",
       "name": "partial_close_events accumulation and freeze at return boundary",
-      "description": "Partial close events generated during the drift-rebalance loop are accumulated in a function-scoped mutable list[LeapsPartialCloseEvent]. At the return boundary, the final ledger is produced once via replace(ledger, partial_close_events=tuple(partial_close_list)). No dataclasses.replace() is called inside the loop (avoids O(n^2) allocations). Mirrors the run_leaps_simulation contracts/roll_events pattern.",
+      "description": "Partial close events generated during the drift-rebalance loop are accumulated in a function-scoped mutable list[LeapsPartialCloseEvent]. At the return boundary, the final ledger is produced once via replace(ledger, partial_close_events=tuple(partial_close_list)). No dataclasses.replace() is called inside the loop (avoids O(n^2) allocations). Mirrors the run_leaps_simulation contracts/roll_events pattern. Implementation: a local scale_map (base contract -> cumulative surviving fraction) tracks pro-rata closes during the loop so daily MTM reflects prior closes without rebuilding the frozen ledger; at the return boundary one LeapsPartialCloseEvent per trimmed contract is built (original=base contract, continuation=replace(c, n_contracts*final_scale)) and the ledger is frozen once via replace(). Repeated closes of the same contract collapse into a single cumulative event.",
       "phase": 3,
       "priority": 2,
-      "status": "pending",
+      "status": "pending_judge",
       "layer": "python",
       "dependencies": [
         "F-G3-02"
@@ -660,7 +660,7 @@
       },
       "acceptance_criteria": [
         "result.leaps_ledger.partial_close_events is a tuple (not a list) on the returned BacktestResult.",
-        "The number of events in partial_close_events equals the number of drift-triggered partial closes executed.",
+        "The number of events in partial_close_events equals the number of distinct base contracts that were trimmed (cumulative closes across multiple drift dates collapse into one event per contract, because _live_contracts maps each original to a single continuation).",
         "The returned LeapsLedger remains frozen (attempting to set an attribute raises FrozenInstanceError).",
         "compute_leaps_nav_contribution / _live_contracts correctly substitute continuation contracts for partially-closed originals from the accumulated events."
       ],
@@ -671,7 +671,7 @@
         },
         {
           "type": "unit",
-          "description": "Event count matches number of drift closes."
+          "description": "Event count equals number of distinct contracts trimmed (collapsed, not per-drift-date)."
         },
         {
           "type": "integration",

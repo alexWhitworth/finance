@@ -4,7 +4,7 @@ All business logic is pure. Receives ReturnData + PriceData + PortfolioConfig
 and produces BacktestResult consumed by metrics.py.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import pandas as pd
 
@@ -12,10 +12,13 @@ from finance.consts import DEFAULT_IV, DRIFT_BAND_RELATIVE, LEAPS_KEY_SUFFIX, VI
 from finance.data import PriceData
 from finance.leverage import (
     LeapsConfig,
+    LeapsContract,
     LeapsLedger,
+    LeapsPartialCloseEvent,
     RebalanceRule,
     WeightStrategy,
-    compute_leaps_mtm,
+    _live_contracts,
+    price_leaps_contract,
 )
 from finance.returns import ReturnData
 
@@ -307,6 +310,13 @@ def run_backtest(
     # Base share of the monthly contribution (LEAPS share is handled inside the ledger)
     base_contribution = config.monthly_contribution * (1.0 - leaps_fraction)
 
+    # Drift-rebalance state: cumulative surviving fraction per base contract.
+    # Daily LEAPS MTM is scaled by this map so partial closes take effect
+    # without rebuilding the frozen ledger inside the loop (frozen once at return).
+    leaps_scale: dict[LeapsContract, float] = {}
+    partial_close_list: list[LeapsPartialCloseEvent] = []
+    target_leaps_value = config.initial_nav * leaps_fraction  # dollar target for LEAPS sleeve
+
     nav_values: list[float] = []
     return_values: list[float] = []
     weight_rows: list[dict[str, float]] = []
@@ -319,7 +329,7 @@ def run_backtest(
         for a in base_assets:
             holdings[a] *= 1.0 + float(day_ret[a])  # type: ignore[arg-type]
 
-        # (e) LEAPS gross mark-to-market (carved-out capital value)
+        # (e) LEAPS gross mark-to-market (carved-out capital value), scaled by prior closes
         leaps_value = 0.0
         if leaps_ledger is not None and underlying_prices is not None:
             spot = float(underlying_prices.loc[date_ts])
@@ -329,7 +339,11 @@ def run_backtest(
                 smoothed = mtm_iv_series.loc[date_ts]
                 if pd.notna(smoothed):
                     day_iv = max(float(smoothed), iv)
-            leaps_value = compute_leaps_mtm(leaps_ledger, date_ts, spot, day_iv, rfr)
+            live = _live_contracts(leaps_ledger, date_ts)
+            leaps_value = sum(
+                price_leaps_contract(c, spot, date_ts, day_iv, rfr) * leaps_scale.get(c, 1.0)
+                for c in live
+            )
 
         nav_before_contrib = sum(holdings.values()) + leaps_value
 
@@ -342,11 +356,36 @@ def run_backtest(
             for a in base_assets:
                 holdings[a] += alloc[a]
 
-        # (d) Rebalance: realign base holdings to base target weights
+        # (d) QUARTERLY rebalance: realign base holdings to base target weights
         if date_ts in rebal_dates and base_assets:
             base_nav = sum(holdings.values())
             for a in base_assets:
                 holdings[a] = base_nav * float(base_target_w[a])
+
+        # (f) DRIFT rebalance: check monthly; trim LEAPS overshoot pro-rata (tax-free)
+        if config.rebalance_rule == RebalanceRule.DRIFT and date_ts in month_end_dates:
+            base_val = sum(holdings.values())
+            total_val = base_val + leaps_value
+            weights_now = {a: holdings[a] / total_val for a in base_assets}
+            for k in leaps_keys:
+                share = float(norm_w[k]) / leaps_fraction if leaps_fraction > 0 else 0.0
+                weights_now[k] = leaps_value * share / total_val
+            current_weights = pd.Series(weights_now)
+            if should_rebalance(current_weights, norm_w, RebalanceRule.DRIFT):
+                # Realign base assets to their targets within the base sleeve.
+                for a in base_assets:
+                    holdings[a] = base_val * float(base_target_w[a])
+                # Trim LEAPS overshoot back to the target dollar sleeve, pro-rata.
+                if leaps_value > target_leaps_value and leaps_value > 0:
+                    close_scale = target_leaps_value / leaps_value
+                    net_proceeds = leaps_value - target_leaps_value
+                    for c in _live_contracts(leaps_ledger, date_ts):  # type: ignore[arg-type]
+                        leaps_scale[c] = leaps_scale.get(c, 1.0) * close_scale
+                    # Return proceeds to base holdings by base target weights (tax-free).
+                    if base_assets:
+                        for a in base_assets:
+                            holdings[a] += net_proceeds * float(base_target_w[a])
+                    leaps_value = target_leaps_value
 
         total_nav = sum(holdings.values()) + leaps_value
 
@@ -359,6 +398,23 @@ def run_backtest(
         weight_rows.append(row)
 
         prev_total_nav = total_nav
+
+    # Freeze accumulated partial closes onto the ledger once, at the return boundary.
+    # Every entry in leaps_scale is a surviving fraction < 1.0 (only closes write it).
+    if leaps_ledger is not None and leaps_scale:
+        final_date = pd.Timestamp(returns.index[-1])
+        for c, surviving in leaps_scale.items():
+            continuation = replace(c, n_contracts=c.n_contracts * surviving)
+            partial_close_list.append(
+                LeapsPartialCloseEvent(
+                    close_date=final_date,
+                    original_contract=c,
+                    continuation_contract=continuation,
+                    n_contracts_closed=c.n_contracts * (1.0 - surviving),
+                    net_proceeds=0.0,  # per-contract proceeds already booked to base at close time
+                )
+            )
+        leaps_ledger = replace(leaps_ledger, partial_close_events=tuple(partial_close_list))
 
     nav_series = pd.Series(nav_values, index=returns.index, name="NAV")
     return_series = pd.Series(return_values, index=returns.index, name="portfolio_return")

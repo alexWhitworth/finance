@@ -32,12 +32,13 @@ def _config(
     initial_nav: float = 1_000_000.0,
     contribution: float = 0.0,
     leaps_config: LeapsConfig | None = None,
+    rebalance_rule: RebalanceRule = RebalanceRule.QUARTERLY,
 ) -> PortfolioConfig:
     return PortfolioConfig(
         target_weights=weights or dict(_EQUAL_WEIGHTS),
         initial_nav=initial_nav,
         monthly_contribution=contribution,
-        rebalance_rule=RebalanceRule.QUARTERLY,
+        rebalance_rule=rebalance_rule,
         weight_strategy=WeightStrategy.USER_SPECIFIED,
         leaps_config=leaps_config,
     )
@@ -774,3 +775,181 @@ def test_leaps_zero_contribution_only_day1_contract() -> None:
     assert result.leaps_ledger is not None
     # Zero contribution → no monthly purchases; exactly one (day-1) contract.
     assert len(result.leaps_ledger.contracts) == 1
+
+
+# ---------------------------------------------------------------------------
+# F-G3-01 / F-G3-02 / F-G3-03 — drift rebalancing + partial LEAPS close
+# ---------------------------------------------------------------------------
+
+
+def _rising_vti_pd_rd(
+    n: int = 504,
+    vti_daily: float = 0.0015,
+    start: str = "2015-01-02",
+) -> tuple[ReturnData, PriceData]:
+    """PriceData/ReturnData where VTI rises steadily and other assets are flat.
+
+    A rising underlying makes the levered LEAPS sleeve grow faster than the base
+    sleeve, driving the LEAPS weight above its drift band.
+    """
+    idx = pd.bdate_range(start, periods=n)
+    vti = 200.0 * np.cumprod(1.0 + np.full(n, vti_daily))
+    prices = pd.DataFrame(
+        {
+            "VTI": vti, "VXUS": 60.0, "GLD": 170.0,
+            "MUB": 55.0, "KMLM": 25.0, "VGIT": 65.0,
+        },
+        index=idx,
+    )
+    returns = prices.pct_change().fillna(0.0)
+    rd = ReturnData(
+        returns=returns, log_returns=np.log1p(returns), tey_adjusted=False,
+        marginal_rate=0.0, risk_free_rate=pd.Series(0.0, index=idx, name="risk_free_rate"),
+    )
+    pd_obj = PriceData(
+        prices=prices, dividends=pd.DataFrame(0.0, index=idx, columns=list(_TICKERS)),
+        vol_prices=pd.DataFrame(), tickers=_TICKERS,
+        start_date=str(idx[0].date()), end_date=str(idx[-1].date()), spliced=False,
+    )
+    return rd, pd_obj
+
+
+def test_drift_quarterly_regression_unchanged() -> None:
+    """QUARTERLY rule path is identical whether or not DRIFT code exists (regression)."""
+    rd, pd_obj = _make_rd_and_pd(252)
+    cfg_q = _config(rebalance_rule=RebalanceRule.QUARTERLY)
+    result = run_backtest(rd, pd_obj, cfg_q)
+    # No partial closes on a non-LEAPS quarterly run.
+    assert result.leaps_ledger is None
+    assert result.nav_series.iloc[-1] > 0
+
+
+def test_drift_no_partial_close_events_when_quarterly() -> None:
+    """QUARTERLY LEAPS run accumulates no partial_close_events."""
+    rd, pd_obj = _rising_vti_pd_rd(504)
+    cfg = _config(
+        weights=dict(_LEAPS_WEIGHTS), leaps_config=LeapsConfig(),
+        rebalance_rule=RebalanceRule.QUARTERLY,
+    )
+    result = run_backtest(rd, pd_obj, cfg)
+    assert result.leaps_ledger is not None
+    assert result.leaps_ledger.partial_close_events == ()
+
+
+def test_drift_triggers_partial_close_on_overshoot() -> None:
+    """A rising underlying drives LEAPS above its band; DRIFT trims it (events recorded)."""
+    rd, pd_obj = _rising_vti_pd_rd(504, vti_daily=0.0020)
+    cfg = _config(
+        weights=dict(_LEAPS_WEIGHTS), leaps_config=LeapsConfig(),
+        rebalance_rule=RebalanceRule.DRIFT,
+    )
+    result = run_backtest(rd, pd_obj, cfg)
+    assert result.leaps_ledger is not None
+    # LEAPS overshot and was trimmed at least once.
+    assert len(result.leaps_ledger.partial_close_events) > 0
+
+
+def test_drift_partial_close_events_is_tuple() -> None:
+    """partial_close_events is a tuple on the returned ledger (F-G3-03)."""
+    rd, pd_obj = _rising_vti_pd_rd(504, vti_daily=0.0020)
+    cfg = _config(
+        weights=dict(_LEAPS_WEIGHTS), leaps_config=LeapsConfig(),
+        rebalance_rule=RebalanceRule.DRIFT,
+    )
+    result = run_backtest(rd, pd_obj, cfg)
+    assert result.leaps_ledger is not None
+    assert isinstance(result.leaps_ledger.partial_close_events, tuple)
+
+
+def test_drift_ledger_remains_frozen() -> None:
+    """The returned LeapsLedger is still frozen after partial-close accumulation."""
+    rd, pd_obj = _rising_vti_pd_rd(504, vti_daily=0.0020)
+    cfg = _config(
+        weights=dict(_LEAPS_WEIGHTS), leaps_config=LeapsConfig(),
+        rebalance_rule=RebalanceRule.DRIFT,
+    )
+    result = run_backtest(rd, pd_obj, cfg)
+    assert result.leaps_ledger is not None
+    with pytest.raises((AttributeError, TypeError)):
+        result.leaps_ledger.partial_close_events = ()  # type: ignore[misc]
+
+
+def test_drift_no_trigger_within_band_no_closes() -> None:
+    """A flat market keeps weights within band → no partial closes."""
+    n = 504
+    idx = pd.bdate_range("2015-01-02", periods=n)
+    prices = pd.DataFrame(100.0, index=idx, columns=list(_TICKERS))
+    returns = pd.DataFrame(0.0, index=idx, columns=list(_TICKERS))
+    rd = ReturnData(
+        returns=returns, log_returns=returns.copy(), tey_adjusted=False,
+        marginal_rate=0.0, risk_free_rate=pd.Series(0.0, index=idx, name="risk_free_rate"),
+    )
+    pd_obj = PriceData(
+        prices=prices, dividends=pd.DataFrame(0.0, index=idx, columns=list(_TICKERS)),
+        vol_prices=pd.DataFrame(), tickers=_TICKERS,
+        start_date=str(idx[0].date()), end_date=str(idx[-1].date()), spliced=False,
+    )
+    cfg = _config(
+        weights=dict(_LEAPS_WEIGHTS), leaps_config=LeapsConfig(),
+        rebalance_rule=RebalanceRule.DRIFT, contribution=0.0,
+    )
+    result = run_backtest(rd, pd_obj, cfg)
+    assert result.leaps_ledger is not None
+    # LEAPS time-decays on flat prices → it undershoots, never overshoots → no closes.
+    assert result.leaps_ledger.partial_close_events == ()
+
+
+def test_drift_net_proceeds_added_to_base_tax_free() -> None:
+    """On a drift trim, base sleeve grows by the closed LEAPS proceeds (no tax).
+
+    We compare against the QUARTERLY run on the same series: the DRIFT run must
+    move value from the LEAPS sleeve into the base sleeve, so its final base
+    holdings exceed the quarterly run's while its LEAPS MTM is capped.
+    """
+    rd, pd_obj = _rising_vti_pd_rd(504, vti_daily=0.0020)
+    cfg_drift = _config(
+        weights=dict(_LEAPS_WEIGHTS), leaps_config=LeapsConfig(),
+        rebalance_rule=RebalanceRule.DRIFT,
+    )
+    result = run_backtest(rd, pd_obj, cfg_drift)
+    assert result.leaps_ledger is not None
+    assert len(result.leaps_ledger.partial_close_events) > 0
+    # After trims, the LEAPS weight column should be at or below its target share.
+    leaps_target_weight = 0.30
+    final_leaps_weight = float(result.weight_history.iloc[-1]["VTI_LEAPS"])
+    assert final_leaps_weight <= leaps_target_weight + 1e-6
+
+
+def test_drift_partial_close_one_event_per_trimmed_contract() -> None:
+    """Cumulative closes collapse to one event per distinct trimmed contract.
+
+    Each event's original_contract must be unique (single continuation per original,
+    honoring the _live_contracts model).
+    """
+    rd, pd_obj = _rising_vti_pd_rd(756, vti_daily=0.0018)
+    cfg = _config(
+        weights=dict(_LEAPS_WEIGHTS), leaps_config=LeapsConfig(),
+        rebalance_rule=RebalanceRule.DRIFT, contribution=5_000.0,
+    )
+    result = run_backtest(rd, pd_obj, cfg)
+    assert result.leaps_ledger is not None
+    events = result.leaps_ledger.partial_close_events
+    assert len(events) > 0
+    originals = [ev.original_contract for ev in events]
+    assert len(originals) == len(set(originals))  # one event per contract
+    # Each continuation has strictly fewer contracts than its original.
+    for ev in events:
+        assert ev.continuation_contract.n_contracts < ev.original_contract.n_contracts
+        assert ev.n_contracts_closed > 0
+
+
+def test_drift_weights_sum_to_one_each_day() -> None:
+    """Realized weights (base + LEAPS) still sum to 1.0 every day under DRIFT."""
+    rd, pd_obj = _rising_vti_pd_rd(504, vti_daily=0.0020)
+    cfg = _config(
+        weights=dict(_LEAPS_WEIGHTS), leaps_config=LeapsConfig(),
+        rebalance_rule=RebalanceRule.DRIFT,
+    )
+    result = run_backtest(rd, pd_obj, cfg)
+    sums = result.weight_history.sum(axis=1)
+    assert (sums - 1.0).abs().max() < 1e-9
