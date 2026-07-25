@@ -90,8 +90,8 @@ def pipeline() -> dict[str, object]:
     """Full pipeline result: return data → backtest → vol model → report."""
     rd = _synthetic_return_data()
     cfg = _base_config()
-    result = run_backtest(rd, cfg)
     pd_obj = _synthetic_price_data(rd.returns.index)
+    result = run_backtest(rd, pd_obj, cfg)
     vol_model = build_volatility_model(rd)
     report = build_performance_report(result, pd_obj, rd, vol_model)
     return {"rd": rd, "cfg": cfg, "result": result, "vol_model": vol_model, "report": report}
@@ -177,8 +177,9 @@ class TestFullBacktestPipeline:
 class TestContributionCompounding:
     def test_nav_grows_faster_with_contributions(self) -> None:
         rd = _synthetic_return_data()
-        result_no_contrib = run_backtest(rd, _base_config(contribution=0.0))
-        result_contrib = run_backtest(rd, _base_config(contribution=10_000.0))
+        pd_obj = _synthetic_price_data(rd.returns.index)
+        result_no_contrib = run_backtest(rd, pd_obj, _base_config(contribution=0.0))
+        result_contrib = run_backtest(rd, pd_obj, _base_config(contribution=10_000.0))
         assert result_contrib.nav_series.iloc[-1] > result_no_contrib.nav_series.iloc[-1]
 
 
@@ -213,8 +214,9 @@ class TestMultiPortfolioReport:
             weight_strategy=WeightStrategy.USER_SPECIFIED,
             leaps_config=None,
         )
-        r_equity = run_backtest(rd, cfg_equity)
-        r_bond = run_backtest(rd, cfg_bond)
+        pd_obj = _synthetic_price_data(rd.returns.index)
+        r_equity = run_backtest(rd, pd_obj, cfg_equity)
+        r_bond = run_backtest(rd, pd_obj, cfg_bond)
         # Final NAVs should differ (synthetic data creates return dispersion)
         assert r_equity.nav_series.iloc[-1] != pytest.approx(r_bond.nav_series.iloc[-1], rel=1e-3)
 
@@ -222,8 +224,8 @@ class TestMultiPortfolioReport:
         # Data starts in 2020, GFC (2007-2009) has no overlap → no crisis metrics for GFC
         rd = _synthetic_return_data()
         cfg = _base_config()
-        result = run_backtest(rd, cfg)
         pd_obj = _synthetic_price_data(rd.returns.index)
+        result = run_backtest(rd, pd_obj, cfg)
         vol_model = build_volatility_model(rd)
         crisis = {"GFC": ("2007-10-01", "2009-03-31")}
         report = build_performance_report(result, pd_obj, rd, vol_model, crisis_periods=crisis)

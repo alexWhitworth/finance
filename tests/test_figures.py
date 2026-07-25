@@ -67,7 +67,8 @@ def _make_backtest(rd: ReturnData, seed: int = 0) -> BacktestResult:
         weight_strategy=WeightStrategy.USER_SPECIFIED,
         leaps_config=None,
     )
-    return run_backtest(rd, cfg)
+    pd_obj = _make_price_data(rd.returns.index)
+    return run_backtest(rd, pd_obj, cfg)
 
 
 def _make_price_data(returns_index: pd.DatetimeIndex) -> PriceData:

@@ -1,7 +1,7 @@
 """Portfolio backtest engine — rebalancing, contribution, and NAV loop.
 
-All business logic is pure. Receives ReturnData + PortfolioConfig (+ optional
-LeapsLedger) and produces BacktestResult consumed by metrics.py.
+All business logic is pure. Receives ReturnData + PriceData + PortfolioConfig
+and produces BacktestResult consumed by metrics.py.
 """
 
 from dataclasses import dataclass
@@ -9,6 +9,7 @@ from dataclasses import dataclass
 import pandas as pd
 
 from finance.consts import DEFAULT_IV, DRIFT_BAND_RELATIVE
+from finance.data import PriceData
 from finance.leverage import (
     LeapsConfig,
     LeapsLedger,
@@ -183,8 +184,8 @@ def apply_contribution(
 
 def run_backtest(
     return_data: ReturnData,
+    price_data: PriceData,
     config: PortfolioConfig,
-    leaps_ledger: LeapsLedger | None = None,
 ) -> BacktestResult:
     """Run the core portfolio backtest loop.
 
@@ -193,24 +194,26 @@ def run_backtest(
       b. Compute market return (before contribution, to exclude cash-flow effects).
       c. On month-end: apply monthly_contribution proportional to target weights.
       d. On rebalance date: realign holdings to target weights.
-      e. If leaps_ledger provided: include LEAPS mark-to-market in total NAV.
+      e. If leaps_config present: include LEAPS mark-to-market in total NAV.
 
-    LEAPS mark-to-market requires an absolute VTI spot price for Black-Scholes.
-    When a leaps_ledger is supplied it is reconstructed from the first contract's
-    spot_at_purchase anchored to the VTI return series in return_data.
+    LEAPS overlay (when config.leaps_config is set):
+      - Requires "VTI" in price_data.prices for absolute spot pricing.
+      - run_leaps_simulation is called internally; no external ledger accepted.
 
     Arguments:
         return_data: ReturnData containing daily simple returns for all assets.
+        price_data: PriceData providing absolute asset prices (used for LEAPS spot).
         config: PortfolioConfig specifying weights, contributions, and rebalancing.
-        leaps_ledger: Pre-computed LeapsLedger from leverage.run_leaps_simulation().
-            Pass None to run without a LEAPS overlay.
 
     Returns:
         BacktestResult with NAV series, weight history, return series, and ledger.
 
     Raises:
         ValueError: If any asset in config.target_weights is absent from return_data.
+        ValueError: If leaps_config is set but "VTI" is absent from price_data.prices.
     """
+    from finance.leverage import run_leaps_simulation
+
     returns = return_data.returns
     assets = list(config.target_weights.keys())
 
@@ -233,24 +236,24 @@ def run_backtest(
         for _, grp in returns.groupby(idx.to_period("M"))
     }
 
-    # Reconstruct absolute VTI price series for LEAPS pricing if needed
+    # LEAPS setup — run simulation internally if config requests it
+    leaps_ledger: LeapsLedger | None = None
     vti_prices: pd.Series | None = None
-    if leaps_ledger is not None and leaps_ledger.contracts and "VTI" in returns.columns:
-        first_c = min(leaps_ledger.contracts, key=lambda c: c.purchase_date)
-        anchor_price = first_c.spot_at_purchase
-        anchor_date = first_c.purchase_date
-        cum_ret = (1.0 + returns["VTI"]).cumprod()
-        # Find the index position nearest the anchor date
-        anchor_pos = int(idx.get_indexer(pd.DatetimeIndex([anchor_date]), method="nearest")[0])
-        anchor_cum = float(cum_ret.iloc[anchor_pos])
-        vti_prices = cum_ret * (anchor_price / anchor_cum)
-
-    iv = config.leaps_config.iv if config.leaps_config is not None else DEFAULT_IV
-
-    # Pre-align risk-free rate series to the returns index for fast per-day lookup
+    iv = DEFAULT_IV
     rfr_series: pd.Series | None = None
-    if leaps_ledger is not None and return_data.risk_free_rate is not None:
+
+    if config.leaps_config is not None:
+        if "VTI" not in price_data.prices.columns:
+            raise ValueError("leaps_config requires 'VTI' in price_data.prices")
+        vti_prices = price_data.prices["VTI"].reindex(idx, method="ffill")
+        iv = config.leaps_config.iv
         rfr_series = return_data.risk_free_rate.reindex(idx, method="ffill").fillna(0.0)
+        leaps_ledger = run_leaps_simulation(
+            vti_prices,
+            config.monthly_contribution,
+            config.leaps_config,
+            risk_free_series=return_data.risk_free_rate,
+        )
 
     # Initialize holdings: dollar value per asset
     holdings: dict[str, float] = {

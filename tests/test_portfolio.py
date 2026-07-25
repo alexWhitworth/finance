@@ -43,14 +43,14 @@ def _config(
     )
 
 
-def _make_return_data(
+def _make_price_data(
     n: int = 504,
     daily_ret: float = 0.0003,
     daily_vol: float = 0.01,
     seed: int = 42,
     start: str = "2015-01-02",
-) -> ReturnData:
-    """Synthetic ReturnData for 6 assets."""
+) -> PriceData:
+    """Synthetic PriceData for 6 assets."""
     idx = pd.bdate_range(start, periods=n + 1)
     rng = np.random.default_rng(seed)
     starts = {
@@ -63,7 +63,7 @@ def _make_return_data(
     }
     prices = pd.DataFrame(prices_data, index=idx)
     dividends = pd.DataFrame(0.0, index=idx, columns=list(_TICKERS))
-    pd_obj = PriceData(
+    return PriceData(
         prices=prices,
         dividends=dividends,
         vol_prices=pd.DataFrame(),
@@ -72,7 +72,29 @@ def _make_return_data(
         end_date=str(idx[-1].date()),
         spliced=False,
     )
-    return build_return_data(pd_obj, apply_tey=False)
+
+
+def _make_return_data(
+    n: int = 504,
+    daily_ret: float = 0.0003,
+    daily_vol: float = 0.01,
+    seed: int = 42,
+    start: str = "2015-01-02",
+) -> ReturnData:
+    """Synthetic ReturnData for 6 assets."""
+    return build_return_data(_make_price_data(n, daily_ret, daily_vol, seed, start), apply_tey=False)
+
+
+def _make_rd_and_pd(
+    n: int = 504,
+    daily_ret: float = 0.0003,
+    daily_vol: float = 0.01,
+    seed: int = 42,
+    start: str = "2015-01-02",
+) -> tuple[ReturnData, PriceData]:
+    """Return matching (ReturnData, PriceData) pair from the same synthetic series."""
+    pd_obj = _make_price_data(n, daily_ret, daily_vol, seed, start)
+    return build_return_data(pd_obj, apply_tey=False), pd_obj
 
 
 # ---------------------------------------------------------------------------
@@ -175,8 +197,8 @@ def test_apply_contribution_zero_contribution() -> None:
 
 def test_run_backtest_returns_correct_type() -> None:
     """run_backtest returns a frozen BacktestResult."""
-    rd = _make_return_data(252)
-    result = run_backtest(rd, _config())
+    rd, pd_obj = _make_rd_and_pd(252)
+    result = run_backtest(rd, pd_obj, _config())
     assert isinstance(result, BacktestResult)
     with pytest.raises((AttributeError, TypeError)):
         result.config = _config()  # type: ignore[misc]
@@ -184,29 +206,29 @@ def test_run_backtest_returns_correct_type() -> None:
 
 def test_run_backtest_nav_series_length() -> None:
     """NAV series has same length as return series."""
-    rd = _make_return_data(252)
-    result = run_backtest(rd, _config())
+    rd, pd_obj = _make_rd_and_pd(252)
+    result = run_backtest(rd, pd_obj, _config())
     assert len(result.nav_series) == len(rd.returns)
 
 
 def test_run_backtest_weight_history_shape() -> None:
     """Weight history has shape (n_days, n_assets)."""
-    rd = _make_return_data(252)
-    result = run_backtest(rd, _config())
+    rd, pd_obj = _make_rd_and_pd(252)
+    result = run_backtest(rd, pd_obj, _config())
     assert result.weight_history.shape == (len(rd.returns), len(_TICKERS))
 
 
 def test_run_backtest_return_series_length() -> None:
     """Return series has same length as return data."""
-    rd = _make_return_data(252)
-    result = run_backtest(rd, _config())
+    rd, pd_obj = _make_rd_and_pd(252)
+    result = run_backtest(rd, pd_obj, _config())
     assert len(result.return_series) == len(rd.returns)
 
 
 def test_run_backtest_nav_positive() -> None:
     """NAV stays positive throughout the backtest."""
-    rd = _make_return_data(504)
-    result = run_backtest(rd, _config())
+    rd, pd_obj = _make_rd_and_pd(504)
+    result = run_backtest(rd, pd_obj, _config())
     assert (result.nav_series > 0).all()
 
 
@@ -217,9 +239,9 @@ def test_run_backtest_nav_positive() -> None:
 
 def test_run_backtest_nav_starts_near_initial() -> None:
     """After day 1, NAV is initial_nav * (1 + first_day_return)."""
-    rd = _make_return_data(252)
+    rd, pd_obj = _make_rd_and_pd(252)
     cfg = _config(initial_nav=1_000_000.0, contribution=0.0)
-    result = run_backtest(rd, cfg)
+    result = run_backtest(rd, pd_obj, cfg)
     first_ret = float(rd.returns.iloc[0].mean())  # equal weight
     expected = 1_000_000.0 * (1.0 + first_ret)
     assert result.nav_series.iloc[0] == pytest.approx(expected, rel=1e-6)
@@ -238,18 +260,24 @@ def test_run_backtest_flat_returns_nav_is_constant() -> None:
         marginal_rate=0.0,
         risk_free_rate=pd.Series(0.0, index=returns.index, name="risk_free_rate"),
     )
+    prices = pd.DataFrame(100.0, index=idx, columns=list(_TICKERS))
+    pd_obj = PriceData(
+        prices=prices, dividends=pd.DataFrame(0.0, index=idx, columns=list(_TICKERS)),
+        vol_prices=pd.DataFrame(), tickers=_TICKERS,
+        start_date=str(idx[0].date()), end_date=str(idx[-1].date()), spliced=False,
+    )
     cfg = _config(initial_nav=500_000.0, contribution=0.0)
-    result = run_backtest(rd, cfg)
+    result = run_backtest(rd, pd_obj, cfg)
     assert result.nav_series.iloc[-1] == pytest.approx(500_000.0, rel=1e-9)
 
 
 def test_run_backtest_contribution_grows_nav() -> None:
     """Monthly contributions increase NAV beyond what returns alone would produce."""
-    rd = _make_return_data(504)
+    rd, pd_obj = _make_rd_and_pd(504)
     cfg_no_contrib = _config(initial_nav=1_000_000.0, contribution=0.0)
     cfg_with_contrib = _config(initial_nav=1_000_000.0, contribution=10_000.0)
-    result_no = run_backtest(rd, cfg_no_contrib)
-    result_yes = run_backtest(rd, cfg_with_contrib)
+    result_no = run_backtest(rd, pd_obj, cfg_no_contrib)
+    result_yes = run_backtest(rd, pd_obj, cfg_with_contrib)
     assert result_yes.nav_series.iloc[-1] > result_no.nav_series.iloc[-1]
 
 
@@ -257,7 +285,6 @@ def test_run_backtest_no_contribution_nav_from_returns() -> None:
     """Without contributions, final NAV equals initial_nav * cumulative growth."""
     n = 100
     idx = pd.bdate_range("2015-01-02", periods=n)
-    # All assets have the same constant daily return so we can compute exactly
     r = 0.001
     returns = pd.DataFrame(r, index=idx, columns=list(_TICKERS))
     log_ret = pd.DataFrame(r, index=idx, columns=list(_TICKERS))
@@ -268,8 +295,14 @@ def test_run_backtest_no_contribution_nav_from_returns() -> None:
         marginal_rate=0.0,
         risk_free_rate=pd.Series(0.0, index=returns.index, name="risk_free_rate"),
     )
+    prices = pd.DataFrame(100.0, index=idx, columns=list(_TICKERS))
+    pd_obj = PriceData(
+        prices=prices, dividends=pd.DataFrame(0.0, index=idx, columns=list(_TICKERS)),
+        vol_prices=pd.DataFrame(), tickers=_TICKERS,
+        start_date=str(idx[0].date()), end_date=str(idx[-1].date()), spliced=False,
+    )
     cfg = _config(initial_nav=100_000.0, contribution=0.0)
-    result = run_backtest(rd, cfg)
+    result = run_backtest(rd, pd_obj, cfg)
     expected = 100_000.0 * (1.0 + r) ** n
     assert result.nav_series.iloc[-1] == pytest.approx(expected, rel=1e-6)
 
@@ -281,17 +314,16 @@ def test_run_backtest_no_contribution_nav_from_returns() -> None:
 
 def test_run_backtest_weights_sum_to_one_each_day() -> None:
     """Realized weights sum to 1.0 on every trading day."""
-    rd = _make_return_data(252)
-    result = run_backtest(rd, _config())
+    rd, pd_obj = _make_rd_and_pd(252)
+    result = run_backtest(rd, pd_obj, _config())
     sums = result.weight_history.sum(axis=1)
     assert (sums - 1.0).abs().max() < 1e-9
 
 
 def test_run_backtest_weights_drift_between_rebalances() -> None:
     """Weights are not perfectly equal every day (drift before rebalance)."""
-    rd = _make_return_data(252)
-    result = run_backtest(rd, _config())
-    # Pick the middle of a quarter — weights should have drifted from 1/6
+    rd, pd_obj = _make_rd_and_pd(252)
+    result = run_backtest(rd, pd_obj, _config())
     mid = result.weight_history.iloc[30]
     max_dev = (mid - 1.0 / len(_TICKERS)).abs().max()
     assert max_dev > 1e-6  # some drift has occurred
@@ -299,9 +331,9 @@ def test_run_backtest_weights_drift_between_rebalances() -> None:
 
 def test_run_backtest_weights_snapped_on_rebalance_date() -> None:
     """On each quarterly rebalance date, weights are close to target."""
-    rd = _make_return_data(504)
+    rd, pd_obj = _make_rd_and_pd(504)
     cfg = _config()
-    result = run_backtest(rd, cfg)
+    result = run_backtest(rd, pd_obj, cfg)
     idx = pd.DatetimeIndex(rd.returns.index)
     rdates = get_rebalance_dates(idx, RebalanceRule.QUARTERLY)
     tol = 1e-6
@@ -319,10 +351,10 @@ def test_run_backtest_weights_snapped_on_rebalance_date() -> None:
 
 def test_run_backtest_raises_on_missing_asset() -> None:
     """ValueError if a target_weights asset is absent from return_data."""
-    rd = _make_return_data(100)
+    rd, pd_obj = _make_rd_and_pd(100)
     cfg = _config(weights={"VTI": 0.5, "NONEXISTENT": 0.5})
     with pytest.raises(ValueError, match="missing from return_data"):
-        run_backtest(rd, cfg)
+        run_backtest(rd, pd_obj, cfg)
 
 
 # ---------------------------------------------------------------------------
@@ -331,22 +363,35 @@ def test_run_backtest_raises_on_missing_asset() -> None:
 
 
 def test_run_backtest_with_leaps_returns_ledger() -> None:
-    """BacktestResult.leaps_ledger is not None when a ledger is passed."""
-    from finance.leverage import run_leaps_simulation
-    rd = _make_return_data(504)
-    vti_prices = 200.0 * (1.0 + rd.returns["VTI"]).cumprod()
+    """BacktestResult.leaps_ledger is not None when leaps_config is set."""
+    rd, pd_obj = _make_rd_and_pd(504)
     leaps_cfg = LeapsConfig(account_type=AccountType.TAXABLE)
-    ledger = run_leaps_simulation(vti_prices, 5_000.0, leaps_cfg)
-    cfg = _config(leaps_config=leaps_cfg)
-    result = run_backtest(rd, cfg, leaps_ledger=ledger)
-    assert result.leaps_ledger is ledger
+    cfg = _config(leaps_config=leaps_cfg, contribution=5_000.0)
+    result = run_backtest(rd, pd_obj, cfg)
+    assert result.leaps_ledger is not None
+    assert len(result.leaps_ledger.contracts) > 0
 
 
 def test_run_backtest_no_leaps_ledger_is_none() -> None:
-    """BacktestResult.leaps_ledger is None when no ledger is passed."""
-    rd = _make_return_data(252)
-    result = run_backtest(rd, _config())
+    """BacktestResult.leaps_ledger is None when leaps_config is None."""
+    rd, pd_obj = _make_rd_and_pd(252)
+    result = run_backtest(rd, pd_obj, _config())
     assert result.leaps_ledger is None
+
+
+def test_run_backtest_leaps_missing_vti_raises() -> None:
+    """ValueError if leaps_config is set but 'VTI' is absent from price_data.prices."""
+    rd, pd_obj = _make_rd_and_pd(100)
+    # Build a PriceData without VTI
+    prices_no_vti = pd_obj.prices.drop(columns=["VTI"])
+    pd_no_vti = PriceData(
+        prices=prices_no_vti, dividends=pd_obj.dividends,
+        vol_prices=pd_obj.vol_prices, tickers=tuple(prices_no_vti.columns),
+        start_date=pd_obj.start_date, end_date=pd_obj.end_date, spliced=False,
+    )
+    cfg = _config(leaps_config=LeapsConfig())
+    with pytest.raises(ValueError, match="VTI"):
+        run_backtest(rd, pd_no_vti, cfg)
 
 
 # ---------------------------------------------------------------------------
@@ -356,9 +401,9 @@ def test_run_backtest_no_leaps_ledger_is_none() -> None:
 
 def test_run_backtest_config_stored() -> None:
     """BacktestResult.config is the exact PortfolioConfig that was passed."""
-    rd = _make_return_data(252)
+    rd, pd_obj = _make_rd_and_pd(252)
     cfg = _config()
-    result = run_backtest(rd, cfg)
+    result = run_backtest(rd, pd_obj, cfg)
     assert result.config is cfg
 
 

@@ -954,14 +954,14 @@ Design decisions locked in:
 - [x] Add `iv_series` parameter to `run_leaps_simulation`; pass raw VIX series for contract creation/rolling (3 tests: override, floor, None unchanged)
 - 262 tests pass, 98.28% coverage, ruff clean, mypy clean (as of preparatory tasks above)
 
-#### Step G1 — Signature migration (mechanical, no logic change)
+#### Step G1 — Signature migration (mechanical, no logic change) ✅ DONE
 
-- [ ] Change `run_backtest` signature to `(return_data, price_data, config)` — remove `leaps_ledger`
-- [ ] Replace VTI spot reconstruction hack with `price_data.prices["VTI"]`
-- [ ] If `config.leaps_config` is set and the underlying ticker is in `price_data.prices`, run `run_leaps_simulation` internally at startup — same LEAPS MTM loop behavior as today, just internally initiated
-- [ ] Validate that LEAPS underlying ticker exists in `price_data.prices`; raise `ValueError` if absent
-- [ ] Update all existing `run_backtest` tests: add `price_data` arg, remove `leaps_ledger` arg, build VTI prices as a `PriceData.prices` column
-- [ ] Goal: all existing tests green, identical behavior, new signature in place
+- [x] Change `run_backtest` signature to `(return_data, price_data, config)` — remove `leaps_ledger`
+- [x] Replace VTI spot reconstruction hack with `price_data.prices["VTI"]`
+- [x] If `config.leaps_config` is set and the underlying ticker is in `price_data.prices`, run `run_leaps_simulation` internally at startup — same LEAPS MTM loop behavior as today, just internally initiated
+- [x] Validate that LEAPS underlying ticker exists in `price_data.prices`; raise `ValueError` if absent
+- [x] Update all existing `run_backtest` tests: add `price_data` arg, remove `leaps_ledger` arg, build VTI prices as a `PriceData.prices` column
+- [x] 263 tests pass, 98.41% coverage, ruff clean, mypy clean
 
 #### Step G2 — LEAPS capital routing (Model B) + VIX IV
 
