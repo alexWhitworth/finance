@@ -72,9 +72,9 @@ if __name__ == "__main__":
         print(format_performance_table(crisis_report))
 
     print("\n=== Saving Drawdown Chart ===")
-    Path("figures").mkdir(exist_ok=True)
+    output_path = "outputs/figures/crisis_drawdown.png"
     plot_drawdown(
         {"Portfolio": result},
-        output_path=Path("figures/crisis_drawdown.png"),
+        output_path=Path(output_path),
     )
-    print("Chart saved to figures/crisis_drawdown.png")
+    print(f"Chart saved to {output_path}")

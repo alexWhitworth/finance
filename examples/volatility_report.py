@@ -90,5 +90,7 @@ if __name__ == "__main__":
     report = build_performance_report(result, price_data, return_data, vol_model)
 
     print("=== Saving Vol Contributions Chart ===")
-    plot_vol_contributions(report, output_path=Path("figures/vol_contributions.png"))
-    print("Chart saved to figures/vol_contributions.png")
+    output_path = "outputs/figures/vol_contributions.png"
+    plot_vol_contributions(report, output_path=Path(output_path))
+    print(f"Chart saved to {output_path}")
+    

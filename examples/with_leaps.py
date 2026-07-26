@@ -95,6 +95,6 @@ if __name__ == "__main__":
     print(compare_performance_table([("Taxable", taxable_report), ("Sheltered", sheltered_report)]))
 
     print("\n=== Saving Tax Drag Chart ===")
-    output_path = Path("figures/leaps_tax_drag.png")
+    output_path = Path("outputs/figures/leaps_tax_drag.png")
     plot_leaps_tax_drag(taxable_result, sheltered_result, output_path=output_path)
     print(f"Chart saved to {output_path}")

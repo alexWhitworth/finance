@@ -59,8 +59,9 @@ if __name__ == "__main__":
     print(format_performance_table(report))
 
     print("=== Saving NAV Growth Chart ===")
+    output_path = "outputs/figures/basic_backtest_nav.png"
     plot_nav_growth(
         {"Portfolio": result},
-        output_path=Path("figures/basic_backtest_nav.png"),
+        output_path=Path(output_path),
     )
-    print("Chart saved to figures/basic_backtest_nav.png")
+    print(f"Chart saved to {output_path}")
