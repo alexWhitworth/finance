@@ -224,9 +224,9 @@ unleveraged) becomes ~−52.8% leveraged — a larger absolute loss than B&H in 
 
 --- 
 
-## Appendix: GTT vs Buy and hold
+## Appendix: GTT vs Buy and hold annual breakdown
 
-### Table 5.2: Annual Breakdown (GTT vs B&H, signal activity, cash days)
+### Table 5.2: Annual Breakdown (Strat vs B&H, signal activity, cash days)
 
 | Year | Strat_Return | BH_Return | Pct_Invested | UE_Active_Pct | VIX5D_Pct | Cash_Days | Excess |
 | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
