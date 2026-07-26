@@ -229,7 +229,7 @@ unleveraged) becomes ~−52.8% leveraged — a larger absolute loss than B&H in 
 ### Table 5.2: Annual Breakdown (Strat vs B&H, signal activity, cash days)
 
 | Year | Strat_Return | BH_Return | Pct_Invested | UE_Active_Pct | VIX5D_Pct | Cash_Days | Excess |
-| :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| --- | --- | --- | --- | --- | --- | --- | --- |
 | 1993 | 7.1% | 7.1% | 100.0% | 0.0% | 0.0% | 0 | 0.0% |
 | 1994 | -1.5% | -1.5% | 100.0% | 0.0% | 0.0% | 0 | 0.0% |
 | 1995 | 34.1% | 34.1% | 100.0% | 40.9% | 0.0% | 0 | 0.0% |
