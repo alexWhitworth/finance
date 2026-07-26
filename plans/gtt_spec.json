@@ -1,0 +1,691 @@
+{
+  "spec_version": "1.0.1",
+  "generated_at": "2026-07-26T00:00:00Z",
+  "project": {
+    "name": "GTT Market Timing Strategy — Core Library Integration",
+    "description": "Optional, opt-in Growth Trend Timing (GTT) market-timing overlay for the finance backtest library. Monitors UNRATE (UE_12M) and VIX (VIX_5D) recession-risk signals, gated by a 200-day SMA price-trend filter, and moves VTI + VTI_LEAPS capital into a configurable defensive allocation when defensive. LEAPS are closed (realizing gains/tax) on defensive entry and reopened as fresh 2-year contracts on re-entry.",
+    "overview": "GTT integrates into run_backtest as an optional overlay. Signal computation and FRED/yfinance I/O live in a new pure-core-plus-I/O-edge module src/finance/gtt.py. A GttSignalData frozen dataclass carries a pre-computed, lag-adjusted daily position_mask (1=Long, 0=Defensive) directly consumable by run_backtest. When defensive and price < SMA200, VTI shares are sold and LEAPS contracts closed; proceeds ride a fixed-weight defensive sleeve (R_f cash + KMLM/VGIT/GLD), and on re-entry the parked capital rebuys shares and fresh DITM 2-year LEAPS at prevailing spot/IV. LEAPS lifecycle requires a segmented simulation that runs run_leaps_simulation per Long window seeded with parked capital and force-closes at each Long->Defensive boundary. Backtests with gtt_config=None are byte-for-byte unchanged."
+  },
+  "tech_stack": {
+    "language": "python",
+    "python_version": "3.13",
+    "rust": {
+      "enabled": false,
+      "edition": null,
+      "pyo3_version": null,
+      "build_tool": null
+    },
+    "frameworks": [],
+    "testing": {
+      "unit": "pytest",
+      "coverage_tool": "pytest-cov",
+      "coverage_floor_pct": 80
+    },
+    "key_libraries": [
+      "pandas",
+      "numpy",
+      "scipy",
+      "yfinance",
+      "fredapi",
+      "plotnine"
+    ],
+    "graphics": "plotnine"
+  },
+  "build": {
+    "dev_install_cmd": "uv pip install -e .",
+    "requires_rust_toolchain": false
+  },
+  "data_schemas": [
+    {
+      "id": "S-GTT-CONFIG",
+      "name": "GttConfig",
+      "description": "Frozen configuration for the GTT overlay. Lives in portfolio.py. Opt-in via PortfolioConfig.gtt_config. Extensible for future per-ticker signals (e.g. VXUS).",
+      "immutable": true,
+      "layer": "python",
+      "fields": [
+        {"name": "vix_p90_threshold", "type": "float", "required": true, "description": "Fixed VIX P90 threshold as a decimal (e.g. 0.272 == 27.2%). Caller computes from desired history to avoid look-ahead; library applies no look-ahead protection."},
+        {"name": "sma_window", "type": "int", "required": false, "description": "Rolling window (trading days) for the equity price SMA trend filter. Default 200 (GTT_SMA_WINDOW)."},
+        {"name": "vix_consecutive_days", "type": "int", "required": false, "description": "N consecutive days VIX >= threshold required to fire VIX_5D. Default 5 (GTT_VIX_CONSECUTIVE_DAYS)."},
+        {"name": "unrate_pub_lag_days", "type": "int", "required": false, "description": "Calendar days after the reference date at which the UNRATE print becomes actionable (1st Friday of following month + following Monday ~= 4). Default 4 (GTT_UNRATE_PUB_LAG_DAYS)."},
+        {"name": "defensive_weights", "type": "dict[str, float]", "required": false, "description": "Weights the defensive sleeve holds when defensive. Must sum to 1.0 (abs tol 1e-6). Sentinel key 'R_f' means T-bill cash earning risk_free_rate/252 daily. Non-R_f keys must exist in target_weights. Default {'R_f':0.25,'KMLM':0.25,'VGIT':0.25,'GLD':0.25}."}
+      ]
+    },
+    {
+      "id": "S-GTT-SIGNAL",
+      "name": "GttSignalData",
+      "description": "Frozen container for pre-computed, lag-adjusted GTT signals. Lives in gtt.py. position_mask is directly consumable by run_backtest.",
+      "immutable": true,
+      "layer": "python",
+      "fields": [
+        {"name": "position_mask", "type": "pd.Series[int]", "required": true, "description": "DatetimeIndex -> int, 1=Long / 0=Defensive. Already 1-day lag-adjusted (signal at close t -> position at open t+1)."},
+        {"name": "ue_signal", "type": "pd.Series[int]", "required": true, "description": "DatetimeIndex -> int, 1=UE_12M active (UNRATE >= trailing 12M MA, pub-lag shifted)."},
+        {"name": "vix_signal", "type": "pd.Series[int]", "required": true, "description": "DatetimeIndex -> int, 1=VIX_5D active (VIX >= threshold for N consecutive days)."},
+        {"name": "vix_p90_threshold", "type": "float", "required": true, "description": "Threshold used, stored for reproducibility."},
+        {"name": "unrate_start", "type": "pd.Timestamp", "required": true, "description": "Earliest date in the UNRATE series used."},
+        {"name": "vix_start", "type": "pd.Timestamp", "required": true, "description": "Earliest date in the VIX series used."}
+      ]
+    },
+    {
+      "id": "S-LEAPS-GTT-CLOSE",
+      "name": "LeapsGttCloseEvent",
+      "description": "Frozen record of a forced full LEAPS close triggered by a GTT defensive signal. Lives in leverage.py. Distinct from a roll (no replacement opened) and a partial close (this is a full close and is taxed).",
+      "immutable": true,
+      "layer": "python",
+      "fields": [
+        {"name": "close_date", "type": "pd.Timestamp", "required": true, "description": "Execution date of the forced close (last Long day before a Defensive window)."},
+        {"name": "contract", "type": "LeapsContract", "required": true, "description": "The contract being fully closed."},
+        {"name": "mtm_value", "type": "float", "required": true, "description": "Black-Scholes mark-to-market value at close."},
+        {"name": "gain_realized", "type": "float", "required": true, "description": "mtm_value - cost_basis; may be negative."},
+        {"name": "tax_paid", "type": "float", "required": true, "description": "max(0, gain_realized) * ltcg_rate; 0.0 if TAX_SHELTERED or loss."},
+        {"name": "net_proceeds", "type": "float", "required": true, "description": "mtm_value - tax_paid, parked in the defensive sleeve."}
+      ]
+    },
+    {
+      "id": "S-LEAPS-LEDGER-EXT",
+      "name": "LeapsLedger (extended)",
+      "description": "Existing LeapsLedger gains one field to record GTT-driven forced closes. Backward compatible (defaults to empty tuple).",
+      "immutable": true,
+      "layer": "python",
+      "fields": [
+        {"name": "gtt_close_events", "type": "tuple[LeapsGttCloseEvent, ...]", "required": false, "description": "All GTT-driven forced-close events across all segments. Defaults to () so existing non-GTT ledgers are unchanged."}
+      ]
+    },
+    {
+      "id": "S-PORTFOLIO-CONFIG-EXT",
+      "name": "PortfolioConfig (extended)",
+      "description": "Existing PortfolioConfig gains one optional field to opt into GTT. None preserves existing behavior exactly.",
+      "immutable": true,
+      "layer": "python",
+      "fields": [
+        {"name": "gtt_config", "type": "GttConfig | None", "required": false, "description": "None = GTT disabled (existing behavior unchanged). When set, __post_init__ validates that non-R_f keys in defensive_weights exist in target_weights."}
+      ]
+    }
+  ],
+  "api_contracts": [
+    {
+      "id": "API-UE-SIGNAL",
+      "name": "compute_ue_signal",
+      "description": "Pure. Return a daily int Series (0/1): 1 where UNRATE >= trailing 12-month moving average, shifted forward by the publication lag. Monthly UNRATE is resampled to daily via forward-fill.",
+      "layer": "python",
+      "pure": true,
+      "inputs": [
+        {"name": "unrate", "type": "pd.Series", "description": "Monthly UNRATE series (DatetimeIndex, float)."},
+        {"name": "rolling_window_months", "type": "int", "description": "Trailing MA window in months. Default 12."},
+        {"name": "pub_lag_days", "type": "int", "description": "Calendar days to shift the actionable signal forward. Default GTT_UNRATE_PUB_LAG_DAYS (4)."}
+      ],
+      "outputs": [
+        {"name": "return", "type": "pd.Series[int]", "description": "Daily 0/1 series, lag-shifted; DatetimeIndex."}
+      ],
+      "raises": ["ValueError: if unrate is empty or has fewer than rolling_window_months observations"],
+      "ffi_notes": null
+    },
+    {
+      "id": "API-VIX-SIGNAL",
+      "name": "compute_vix_signal",
+      "description": "Pure. Return a daily int Series (0/1): 1 where VIX >= threshold for exactly N consecutive days (rolling window of daily >= flags summing to N).",
+      "layer": "python",
+      "pure": true,
+      "inputs": [
+        {"name": "vix", "type": "pd.Series", "description": "Daily VIX series as a decimal (e.g. 0.20), DatetimeIndex."},
+        {"name": "threshold", "type": "float", "description": "P90 threshold decimal (e.g. 0.272)."},
+        {"name": "consecutive_days", "type": "int", "description": "Number of consecutive days at/above threshold to fire. Default GTT_VIX_CONSECUTIVE_DAYS (5)."}
+      ],
+      "outputs": [
+        {"name": "return", "type": "pd.Series[int]", "description": "Daily 0/1 series; DatetimeIndex aligned to vix."}
+      ],
+      "raises": ["ValueError: if consecutive_days < 1", "ValueError: if vix is empty"],
+      "ffi_notes": null
+    },
+    {
+      "id": "API-POSITION-MASK",
+      "name": "compute_position_mask",
+      "description": "Pure. Combine ue_signal OR vix_signal with the 200d SMA price-trend filter, then apply a 1-day lag. Returns 1 (Long) when no recession risk, or recession risk but price >= SMA; 0 (Defensive) when recession risk and price < SMA. During SMA warm-up (NaN SMA) treat as above-SMA (stay Long).",
+      "layer": "python",
+      "pure": true,
+      "inputs": [
+        {"name": "ue_signal", "type": "pd.Series[int]", "description": "Daily 0/1 UE_12M signal."},
+        {"name": "vix_signal", "type": "pd.Series[int]", "description": "Daily 0/1 VIX_5D signal."},
+        {"name": "equity_prices", "type": "pd.Series", "description": "Daily equity (VTI) price series for the SMA filter."},
+        {"name": "sma_window", "type": "int", "description": "SMA window in trading days. Default GTT_SMA_WINDOW (200)."}
+      ],
+      "outputs": [
+        {"name": "return", "type": "pd.Series[int]", "description": "Daily 0/1 position mask, 1-day lag-adjusted; DatetimeIndex."}
+      ],
+      "raises": ["ValueError: if input series indexes cannot be aligned"],
+      "ffi_notes": null
+    },
+    {
+      "id": "API-FETCH-GTT",
+      "name": "fetch_gtt_signal_data",
+      "description": "I/O boundary. Fetch UNRATE from FRED and VIX from yfinance, compute all signals via the pure functions, apply publication lags, and return a lag-adjusted GttSignalData. Marked '# pragma: no cover'.",
+      "layer": "python",
+      "pure": false,
+      "inputs": [
+        {"name": "start_date", "type": "str", "description": "ISO start date."},
+        {"name": "end_date", "type": "str", "description": "ISO end date."},
+        {"name": "vix_p90_threshold", "type": "float", "description": "Fixed P90 threshold decimal supplied by caller."},
+        {"name": "vix_consecutive_days", "type": "int", "description": "Default GTT_VIX_CONSECUTIVE_DAYS (5)."},
+        {"name": "unrate_pub_lag_days", "type": "int", "description": "Default GTT_UNRATE_PUB_LAG_DAYS (4)."},
+        {"name": "sma_window", "type": "int", "description": "Default GTT_SMA_WINDOW (200)."},
+        {"name": "equity_prices", "type": "pd.Series | None", "description": "VTI price series for the SMA; if None, fetched internally via yfinance."}
+      ],
+      "outputs": [
+        {"name": "return", "type": "GttSignalData", "description": "Fully computed, lag-adjusted signal container."}
+      ],
+      "raises": [
+        "ValueError: if start_date < 1993-01-01 (VIX unavailable pre-1993)",
+        "ValueError: if UNRATE or VIX fetch returns empty / FRED API is unreachable"
+      ],
+      "ffi_notes": null
+    },
+    {
+      "id": "API-CLOSE-LEAPS",
+      "name": "close_leaps_contract",
+      "description": "Pure. Mark a LEAPS contract to market and fully close it (no replacement opened). Computes realized gain, LTCG tax on positive gains (0 if TAX_SHELTERED or loss), and net proceeds. Mirrors roll_contract minus the reopen.",
+      "layer": "python",
+      "pure": true,
+      "inputs": [
+        {"name": "contract", "type": "LeapsContract", "description": "Contract to close."},
+        {"name": "date", "type": "pd.Timestamp", "description": "Close date."},
+        {"name": "spot", "type": "float", "description": "Underlying spot at close."},
+        {"name": "iv", "type": "float", "description": "Implied volatility for Black-Scholes pricing at close."},
+        {"name": "ltcg_rate", "type": "float", "description": "Combined LTCG+NIIT rate applied to positive gains."},
+        {"name": "rfr", "type": "float", "description": "Continuously compounded risk-free rate for BS pricing."}
+      ],
+      "outputs": [
+        {"name": "return", "type": "LeapsGttCloseEvent", "description": "Full close record with mtm_value, gain_realized, tax_paid, net_proceeds."}
+      ],
+      "raises": [],
+      "ffi_notes": null
+    },
+    {
+      "id": "API-SEGMENTED-LEAPS",
+      "name": "run_segmented_leaps_simulation",
+      "description": "Pure. Walk the timeline as alternating Long/Defensive windows defined by position_mask. Per Long window, call run_leaps_simulation seeded with initial_capital = parked pool, then force-close every live contract on the window's final day. Through Defensive windows, compound the parked pool by defensive_gross_return and add diverted LEAPS contributions. Assemble a combined LeapsLedger including gtt_close_events.",
+      "layer": "python",
+      "pure": true,
+      "inputs": [
+        {"name": "price_series", "type": "pd.Series", "description": "Daily underlying (VTI) price series."},
+        {"name": "position_mask", "type": "pd.Series[int]", "description": "Daily 0/1 mask reindexed to price_series.index."},
+        {"name": "defensive_gross_return", "type": "pd.Series", "description": "Daily gross return of the defensive sleeve (defensive_weights . asset_returns, R_f -> rfr/252)."},
+        {"name": "leaps_monthly", "type": "float", "description": "Monthly contribution allocated to LEAPS."},
+        {"name": "config", "type": "LeapsConfig", "description": "LEAPS config (iv, ltcg_rate, account_type, rfr, dividend_yield)."},
+        {"name": "risk_free_series", "type": "pd.Series | None", "description": "Optional daily annualized rfr series for BS pricing."},
+        {"name": "iv_series", "type": "pd.Series | None", "description": "Optional daily VIX series; config.iv is the floor."},
+        {"name": "initial_capital", "type": "float", "description": "Carved-out starting LEAPS capital deployed on the first Long day. Default 0.0."}
+      ],
+      "outputs": [
+        {"name": "return", "type": "LeapsLedger", "description": "Combined ledger across all segments with contracts, roll_events, partial_close_events, and gtt_close_events populated."}
+      ],
+      "raises": ["ValueError: if price_series and position_mask indexes cannot be aligned"],
+      "ffi_notes": null
+    },
+    {
+      "id": "API-RUN-BACKTEST-GTT",
+      "name": "run_backtest (GTT branch)",
+      "description": "Deterministic (no I/O). Adds an optional gtt_signal parameter. Pre-computes GTT-governed tickers, reindexes position_mask, computes the defensive-sleeve gross return, and (if LEAPS present) builds the segmented ledger. In the daily loop, on defensive days base-equity holdings ride the defensive sleeve and LEAPS MTM is naturally 0 (no live contracts). Rebalance runs first (Option C) then GTT override is applied. Monthly LEAPS/VTI contribution shares divert to the defensive sleeve when defensive. gtt_signal=None preserves existing behavior exactly.",
+      "layer": "python",
+      "pure": true,
+      "inputs": [
+        {"name": "return_data", "type": "ReturnData", "description": "Existing daily returns container."},
+        {"name": "price_data", "type": "PriceData", "description": "Existing absolute-price container (LEAPS spot)."},
+        {"name": "config", "type": "PortfolioConfig", "description": "Extended with optional gtt_config."},
+        {"name": "gtt_signal", "type": "GttSignalData | None", "description": "Pre-computed GTT signal. None = GTT disabled. Default None."}
+      ],
+      "outputs": [
+        {"name": "return", "type": "BacktestResult", "description": "Unchanged shape. weight_history shows 0 VTI weight and non-zero defensive weights during GTT-defensive periods."}
+      ],
+      "raises": [
+        "ValueError: if gtt_signal provided but config.gtt_config is None (or vice versa)",
+        "ValueError: if a defensive_weights ticker is absent from return_data"
+      ],
+      "ffi_notes": null
+    }
+  ],
+  "features": [
+    {
+      "id": "F-01-CONSTS-CONFIG",
+      "name": "GTT constants and GttConfig dataclass",
+      "description": "Add GTT_EQUITY_TICKERS, GTT_UNRATE_PUB_LAG_DAYS, GTT_VIX_CONSECUTIVE_DAYS, GTT_SMA_WINDOW, GTT_DEFENSIVE_WEIGHTS_DEFAULT to consts.py. Add frozen GttConfig to portfolio.py with __post_init__ validating defensive_weights sums to 1.0 (abs tol 1e-6).",
+      "phase": 1,
+      "priority": 1,
+      "status": "not_started",
+      "layer": "python",
+      "dependencies": [],
+      "linked_schemas": ["S-GTT-CONFIG"],
+      "linked_apis": [],
+      "performance_requirements": {"complexity_budget": "O(1)", "notes": "Config construction and validation are constant-time in the number of defensive weights (bounded, tiny)."},
+      "property_based_testing": {"enabled": false, "strategies": [], "layers": [], "rationale_if_disabled": "Project uses pytest only; no hypothesis. Coverage via tabulated example-based unit tests."},
+      "mutation_testing": {"enabled": false, "rationale_if_disabled": "Project uses pytest only; no mutmut in the toolchain."},
+      "acceptance_criteria": [
+        "GttConfig(vix_p90_threshold=0.272) constructs with the documented default defensive_weights {'R_f':0.25,'KMLM':0.25,'VGIT':0.25,'GLD':0.25}.",
+        "GttConfig with defensive_weights summing to 0.9 raises ValueError; summing to 1.0 +/- 1e-6 succeeds.",
+        "All five constants are importable from finance.consts with the exact documented values (GTT_SMA_WINDOW==200, GTT_VIX_CONSECUTIVE_DAYS==5, GTT_UNRATE_PUB_LAG_DAYS==4)."
+      ],
+      "test_requirements": [
+        {"type": "unit", "description": "Construct valid/invalid GttConfig; assert ValueError on non-unit-sum weights."},
+        {"type": "unit", "description": "Assert constant values and types (frozenset for GTT_EQUITY_TICKERS)."}
+      ],
+      "edge_cases": [
+        "defensive_weights sum drifts by floating point -> accept within 1e-6.",
+        "defensive_weights containing only {'R_f':1.0} (all-cash defensive) is valid."
+      ],
+      "clarification_needed": false,
+      "clarification_notes": null
+    },
+    {
+      "id": "F-02-PORTFOLIO-CONFIG",
+      "name": "PortfolioConfig gtt_config field and validation",
+      "description": "Add optional gtt_config: GttConfig | None = None to PortfolioConfig. Extend __post_init__: if gtt_config is not None, every non-R_f key in defensive_weights must exist in target_weights.",
+      "phase": 1,
+      "priority": 1,
+      "status": "not_started",
+      "layer": "python",
+      "dependencies": ["F-01-CONSTS-CONFIG"],
+      "linked_schemas": ["S-PORTFOLIO-CONFIG-EXT", "S-GTT-CONFIG"],
+      "linked_apis": [],
+      "performance_requirements": {"complexity_budget": "O(k)", "notes": "k = number of defensive weight keys (bounded, tiny)."},
+      "property_based_testing": {"enabled": false, "strategies": [], "layers": [], "rationale_if_disabled": "Project uses pytest only; no hypothesis."},
+      "mutation_testing": {"enabled": false, "rationale_if_disabled": "Project uses pytest only; no mutmut in the toolchain."},
+      "acceptance_criteria": [
+        "PortfolioConfig with gtt_config=None constructs identically to pre-change behavior (existing tests unchanged).",
+        "PortfolioConfig with gtt_config whose defensive_weights references a ticker absent from target_weights raises ValueError.",
+        "'R_f' sentinel key is exempt from the target_weights membership check."
+      ],
+      "test_requirements": [
+        {"type": "unit", "description": "gtt_config=None path unchanged; existing suite passes."},
+        {"type": "unit", "description": "Unknown defensive ticker raises; R_f-only defensive sleeve validates."}
+      ],
+      "edge_cases": [
+        "defensive_weights key present in target_weights but with 0 target weight -> still valid.",
+        "gtt_config set but target_weights has no VTI/LEAPS -> GTT governs nothing; must not crash."
+      ],
+      "clarification_needed": false,
+      "clarification_notes": null
+    },
+    {
+      "id": "F-03-UE-SIGNAL",
+      "name": "compute_ue_signal (pure)",
+      "description": "UNRATE monthly -> daily ffill, trailing 12-month MA, 0/1 flag where UNRATE >= MA, shifted forward by publication lag.",
+      "phase": 2,
+      "priority": 1,
+      "status": "not_started",
+      "layer": "python",
+      "dependencies": ["F-01-CONSTS-CONFIG"],
+      "linked_schemas": [],
+      "linked_apis": ["API-UE-SIGNAL"],
+      "performance_requirements": {"complexity_budget": "O(n)", "notes": "n = number of daily observations; rolling mean and shift are linear."},
+      "property_based_testing": {"enabled": false, "strategies": [], "layers": [], "rationale_if_disabled": "Project uses pytest only; no hypothesis. Domain and monotonicity invariants asserted via tabulated example fixtures."},
+      "mutation_testing": {"enabled": false, "rationale_if_disabled": "Project uses pytest only; no mutmut in the toolchain."},
+      "acceptance_criteria": [
+        "For a synthetic UNRATE that steps above its 12M MA on a known month, the daily signal turns 1 exactly pub_lag_days after the actionable reference date (tolerance 0 days).",
+        "Output Series contains only integer values in {0,1} with no NaN after warm-up.",
+        "Signal is 0 throughout a strictly-declining UNRATE series."
+      ],
+      "test_requirements": [
+        {"type": "unit", "description": "Synthetic step-up UNRATE; assert trigger date and lag offset."},
+        {"type": "unit", "description": "Assert output values are a subset of {0,1} with no NaN post-warm-up across several hand-built series (monotone-up, constant, declining)."}
+      ],
+      "edge_cases": [
+        "Series shorter than 12 months -> warm-up region has no signal (0), no exception.",
+        "Equality UNRATE == MA -> defined as signal=1 (>=)."
+      ],
+      "clarification_needed": false,
+      "clarification_notes": null
+    },
+    {
+      "id": "F-04-VIX-SIGNAL",
+      "name": "compute_vix_signal (pure)",
+      "description": "0/1 flag where VIX >= threshold for N consecutive days (rolling sum of daily >= flags equals N).",
+      "phase": 2,
+      "priority": 1,
+      "status": "not_started",
+      "layer": "python",
+      "dependencies": ["F-01-CONSTS-CONFIG"],
+      "linked_schemas": [],
+      "linked_apis": ["API-VIX-SIGNAL"],
+      "performance_requirements": {"complexity_budget": "O(n)", "notes": "Rolling window sum is linear in the series length."},
+      "property_based_testing": {"enabled": false, "strategies": [], "layers": [], "rationale_if_disabled": "Project uses pytest only; no hypothesis. Boundary and monotonicity behavior asserted via example fixtures."},
+      "mutation_testing": {"enabled": false, "rationale_if_disabled": "Project uses pytest only; no mutmut in the toolchain."},
+      "acceptance_criteria": [
+        "A synthetic VIX series above threshold for exactly 5 consecutive days fires 1 on day 5 (not day 4) with consecutive_days=5.",
+        "A series with only 4 consecutive days above threshold never fires (all 0) with consecutive_days=5.",
+        "consecutive_days < 1 raises ValueError."
+      ],
+      "test_requirements": [
+        {"type": "unit", "description": "Exact 5-day run fires on day 5; 4-day run never fires."},
+        {"type": "unit", "description": "Assert output subset of {0,1}; lowering the threshold on a fixed series never reduces the count of 1s (two-threshold example)."}
+      ],
+      "edge_cases": [
+        "VIX exactly equal to threshold counts as >= (fires).",
+        "Series shorter than consecutive_days -> all 0."
+      ],
+      "clarification_needed": false,
+      "clarification_notes": null
+    },
+    {
+      "id": "F-05-POSITION-MASK",
+      "name": "compute_position_mask (pure)",
+      "description": "OR the UE and VIX signals, gate with the 200d SMA price filter, apply 1-day lag. 1=Long, 0=Defensive. SMA warm-up (NaN) treated as above-SMA.",
+      "phase": 2,
+      "priority": 1,
+      "status": "not_started",
+      "layer": "python",
+      "dependencies": ["F-03-UE-SIGNAL", "F-04-VIX-SIGNAL"],
+      "linked_schemas": [],
+      "linked_apis": ["API-POSITION-MASK"],
+      "performance_requirements": {"complexity_budget": "O(n)", "notes": "SMA, boolean combine, and shift are all linear."},
+      "property_based_testing": {"enabled": false, "strategies": [], "layers": [], "rationale_if_disabled": "Project uses pytest only; no hypothesis. Branch coverage via a hand-built fixture spanning all four decision-rule branches."},
+      "mutation_testing": {"enabled": false, "rationale_if_disabled": "Project uses pytest only; no mutmut in the toolchain."},
+      "acceptance_criteria": [
+        "Defensive (0) occurs iff (ue OR vix) AND price < SMA, evaluated at t and observed at t+1 (1-day lag verified against a hand-computed fixture).",
+        "During the SMA warm-up region the mask is 1 (Long) even when a signal is active.",
+        "Output Series contains only values in {0,1} and is index-aligned to equity_prices."
+      ],
+      "test_requirements": [
+        {"type": "unit", "description": "Hand-built fixture covering all four decision-rule branches; assert exact mask incl. lag."},
+        {"type": "unit", "description": "Assert domain {0,1}; both-signals-off fixture => all Long; price>=SMA fixture => all Long regardless of signals."}
+      ],
+      "edge_cases": [
+        "Signal active on the very first day before SMA is computable -> stays Long (warm-up rule).",
+        "Misaligned indexes between signals and prices -> raise ValueError, do not silently drop rows."
+      ],
+      "clarification_needed": false,
+      "clarification_notes": null
+    },
+    {
+      "id": "F-06-SIGNAL-DATA",
+      "name": "GttSignalData dataclass",
+      "description": "Frozen container carrying position_mask, ue_signal, vix_signal, threshold, and start dates. Assembled by fetch_gtt_signal_data; consumed by run_backtest.",
+      "phase": 2,
+      "priority": 2,
+      "status": "not_started",
+      "layer": "python",
+      "dependencies": ["F-05-POSITION-MASK"],
+      "linked_schemas": ["S-GTT-SIGNAL"],
+      "linked_apis": [],
+      "performance_requirements": {"complexity_budget": "O(1)", "notes": "Pure container; no computation."},
+      "property_based_testing": {"enabled": false, "strategies": [], "layers": [], "rationale_if_disabled": "Project uses pytest only; no hypothesis."},
+      "mutation_testing": {"enabled": false, "rationale_if_disabled": "Project uses pytest only; no mutmut in the toolchain."},
+      "acceptance_criteria": [
+        "GttSignalData is frozen: attribute assignment after construction raises FrozenInstanceError.",
+        "All six documented fields are present and carry the constructed values verbatim."
+      ],
+      "test_requirements": [
+        {"type": "unit", "description": "Construct with synthetic series; assert immutability and field round-trip."}
+      ],
+      "edge_cases": [
+        "Empty signal series still constructs (validation deferred to callers)."
+      ],
+      "clarification_needed": false,
+      "clarification_notes": null
+    },
+    {
+      "id": "F-07-FETCH-GTT",
+      "name": "fetch_gtt_signal_data (I/O boundary)",
+      "description": "Fetch UNRATE (fredapi) and VIX (yfinance), invoke the pure signal functions, and return GttSignalData. Marked '# pragma: no cover'. Raises on pre-1993 start and empty/failed fetches.",
+      "phase": 3,
+      "priority": 2,
+      "status": "not_started",
+      "layer": "python",
+      "dependencies": ["F-06-SIGNAL-DATA"],
+      "linked_schemas": ["S-GTT-SIGNAL"],
+      "linked_apis": ["API-FETCH-GTT"],
+      "performance_requirements": {"complexity_budget": "O(n)", "notes": "Dominated by network I/O; local processing linear in series length."},
+      "property_based_testing": {"enabled": false, "strategies": [], "layers": [], "rationale_if_disabled": "Project uses pytest only; no hypothesis. I/O boundary anyway; logic delegated to pure functions tested elsewhere."},
+      "mutation_testing": {"enabled": false, "rationale_if_disabled": "Project uses pytest only; no mutmut. Also a pure I/O boundary marked '# pragma: no cover'."},
+      "acceptance_criteria": [
+        "start_date < 1993-01-01 raises ValueError before any network call.",
+        "An empty UNRATE or VIX fetch raises ValueError with an actionable message (never silently returns an all-Long mask).",
+        "On a mocked successful fetch, the returned GttSignalData.position_mask equals compute_position_mask applied to the mocked inputs."
+      ],
+      "test_requirements": [
+        {"type": "unit", "description": "Mock fredapi + yfinance; assert delegation to pure functions and returned container equality."},
+        {"type": "unit", "description": "Assert ValueError on pre-1993 start and on empty fetch."},
+        {"type": "integration", "description": "Optional, marked slow: live short-range fetch smoke test."}
+      ],
+      "edge_cases": [
+        "FRED reachable but returns a gap in UNRATE -> raise, do not interpolate silently.",
+        "equity_prices supplied by caller -> skip internal VTI fetch."
+      ],
+      "clarification_needed": false,
+      "clarification_notes": null
+    },
+    {
+      "id": "F-08-LEAPS-CLOSE",
+      "name": "LeapsGttCloseEvent, LeapsLedger extension, close_leaps_contract",
+      "description": "Add the LeapsGttCloseEvent dataclass and a gtt_close_events tuple field (default ()) to LeapsLedger. Add pure close_leaps_contract that marks-to-market, taxes positive gains at ltcg_rate (0 if TAX_SHELTERED/loss), and returns the event.",
+      "phase": 4,
+      "priority": 1,
+      "status": "not_started",
+      "layer": "python",
+      "dependencies": ["F-01-CONSTS-CONFIG"],
+      "linked_schemas": ["S-LEAPS-GTT-CLOSE", "S-LEAPS-LEDGER-EXT"],
+      "linked_apis": ["API-CLOSE-LEAPS"],
+      "performance_requirements": {"complexity_budget": "O(1)", "notes": "Single Black-Scholes valuation and arithmetic per contract."},
+      "property_based_testing": {"enabled": false, "strategies": [], "layers": [], "rationale_if_disabled": "Project uses pytest only; no hypothesis. Accounting invariants asserted via gain/loss/sheltered example fixtures."},
+      "mutation_testing": {"enabled": false, "rationale_if_disabled": "Project uses pytest only; no mutmut in the toolchain."},
+      "acceptance_criteria": [
+        "close_leaps_contract on a gain in a TAXABLE account produces tax_paid == max(0, gain_realized) * ltcg_rate within 1e-9.",
+        "close_leaps_contract on a loss produces tax_paid == 0.0 exactly and net_proceeds == mtm_value.",
+        "TAX_SHELTERED account produces tax_paid == 0.0 regardless of gain.",
+        "net_proceeds == mtm_value - tax_paid holds across all tested cases (within 1e-9).",
+        "Existing LeapsLedger constructions without gtt_close_events remain valid (defaults to empty tuple)."
+      ],
+      "test_requirements": [
+        {"type": "unit", "description": "Gain/loss/TAX_SHELTERED close cases; assert tax and net_proceeds with 1e-9 tolerance and the net_proceeds==mtm-tax identity."},
+        {"type": "unit", "description": "LeapsLedger backward-compat: construct without gtt_close_events."}
+      ],
+      "edge_cases": [
+        "Contract with n_contracts == 0 (floored premium) -> mtm_value 0, tax 0, net_proceeds 0.",
+        "gain_realized exactly 0 -> tax 0 (max(0,0))."
+      ],
+      "clarification_needed": false,
+      "clarification_notes": null
+    },
+    {
+      "id": "F-09-SEGMENTED-LEAPS",
+      "name": "run_segmented_leaps_simulation (pure)",
+      "description": "Segment the timeline by position_mask into Long/Defensive windows. Per Long window run run_leaps_simulation seeded with the parked pool as initial_capital, then force-close all live contracts on the window's last day. Compound the parked pool through Defensive windows via defensive_gross_return and add diverted contributions. Assemble a combined LeapsLedger with gtt_close_events.",
+      "phase": 4,
+      "priority": 1,
+      "status": "not_started",
+      "layer": "python",
+      "dependencies": ["F-08-LEAPS-CLOSE"],
+      "linked_schemas": ["S-LEAPS-LEDGER-EXT", "S-LEAPS-GTT-CLOSE"],
+      "linked_apis": ["API-SEGMENTED-LEAPS", "API-CLOSE-LEAPS"],
+      "performance_requirements": {"complexity_budget": "O(n)", "notes": "Single chronological pass; each date processed once across all segments. Per-window run_leaps_simulation is itself linear; windows partition the timeline."},
+      "property_based_testing": {"enabled": false, "strategies": [], "layers": [], "rationale_if_disabled": "Project uses pytest only; no hypothesis. Segment invariants asserted via all-Long and L->D->L example fixtures."},
+      "mutation_testing": {"enabled": false, "rationale_if_disabled": "Project uses pytest only; no mutmut in the toolchain."},
+      "acceptance_criteria": [
+        "All-Long position_mask produces a LeapsLedger byte-equal (contracts, roll_events) to run_leaps_simulation called directly, with gtt_close_events == ().",
+        "A Long->Defensive->Long fixture closes every live contract at the first boundary (recorded in gtt_close_events) and reopens a fresh contract on the first re-entry day with capital == parked pool grown by defensive_gross_return over the defensive window (within 1e-9).",
+        "During a Defensive window _live_contracts(ledger, date) returns empty for every date in that window.",
+        "TAX_SHELTERED config produces zero close tax across all gtt_close_events."
+      ],
+      "test_requirements": [
+        {"type": "unit", "description": "All-Long equivalence to run_leaps_simulation."},
+        {"type": "unit", "description": "L->D->L fixture: assert close events, parked-pool growth, and fresh re-entry contract sizing (1e-9)."},
+        {"type": "unit", "description": "Assert no live contracts during defensive windows and that gtt_close_events count matches the number of Long->Defensive boundaries in a multi-window fixture."}
+      ],
+      "edge_cases": [
+        "Defensive window with zero live contracts (entered while already flat) -> no close events; pool still compounds.",
+        "Re-entry pool too small -> create_leaps_contract floors n_contracts to 0; pool remains for next month-end purchase.",
+        "Timeline ends inside a Defensive window -> parked pool reported, no dangling open contracts.",
+        "Whipsaw: many short Long/Defensive flips produce one close event set per boundary; realized tax accumulates in gtt_close_events."
+      ],
+      "clarification_needed": false,
+      "clarification_notes": null
+    },
+    {
+      "id": "F-10-RUN-BACKTEST",
+      "name": "run_backtest GTT branch",
+      "description": "Add gtt_signal parameter. Pre-compute GTT-governed tickers, reindexed position_mask, and defensive-sleeve gross return; build the segmented ledger when LEAPS present. In the loop, defensive days route base-equity capital to the defensive sleeve while LEAPS MTM is 0 (no live contracts). Rebalance first, then GTT override (Option C). Divert VTI/LEAPS contribution shares to the defensive sleeve when defensive. gtt_signal=None is a no-op.",
+      "phase": 5,
+      "priority": 1,
+      "status": "not_started",
+      "layer": "python",
+      "dependencies": ["F-02-PORTFOLIO-CONFIG", "F-06-SIGNAL-DATA", "F-09-SEGMENTED-LEAPS"],
+      "linked_schemas": ["S-PORTFOLIO-CONFIG-EXT", "S-GTT-SIGNAL", "S-LEAPS-LEDGER-EXT"],
+      "linked_apis": ["API-RUN-BACKTEST-GTT", "API-SEGMENTED-LEAPS"],
+      "performance_requirements": {"complexity_budget": "O(n*m)", "notes": "n = trading days, m = number of assets, matching the existing daily loop; GTT pre-compute and reindex add O(n) work. No new nested growth over the current backtest complexity."},
+      "property_based_testing": {"enabled": false, "strategies": [], "layers": [], "rationale_if_disabled": "Project uses pytest only; no hypothesis. Regression and override behavior asserted via existing-corpus equality and synthetic defensive-window fixtures."},
+      "mutation_testing": {"enabled": false, "rationale_if_disabled": "Project uses pytest only; no mutmut in the toolchain."},
+      "acceptance_criteria": [
+        "With gtt_signal=None, BacktestResult (nav, return_series, weight_history, leaps_ledger) is identical to the pre-change implementation on the existing test corpus (exact equality).",
+        "With an all-Long position_mask, results equal the no-GTT run within 1e-9 on terminal NAV.",
+        "On a synthetic defensive window, VTI (and VTI_LEAPS) weight in weight_history is exactly 0 and defensive_weights assets carry the redistributed capital.",
+        "Providing gtt_signal while config.gtt_config is None (or the reverse) raises ValueError.",
+        "A no-LEAPS GTT backtest and a no-GTT LEAPS backtest both match their respective baselines."
+      ],
+      "test_requirements": [
+        {"type": "unit", "description": "gtt_signal=None regression against existing fixtures (exact equality)."},
+        {"type": "unit", "description": "All-Long position_mask reproduces the no-GTT run within 1e-9 terminal NAV."},
+        {"type": "unit", "description": "Synthetic defensive window: assert 0 VTI weight, defensive redistribution, R_f earns rfr/252."},
+        {"type": "unit", "description": "Rebalance-then-override ordering (Option C) on a rebalance date that is also defensive."}
+      ],
+      "edge_cases": [
+        "Rebalance date coincides with a defensive day -> rebalance runs first, then GTT zeroes VTI/LEAPS.",
+        "position_mask holiday misalignment with returns.index -> reindex with ffill.",
+        "gtt_config set but target_weights hold no VTI/LEAPS -> GTT is a no-op, no crash.",
+        "Re-entry mid-quarter -> parked pools return to VTI shares and a fresh LEAPS contract that day."
+      ],
+      "clarification_needed": false,
+      "clarification_notes": null
+    },
+    {
+      "id": "F-11-MULTIASSET-VALIDATION",
+      "name": "Directional validation of the multi-asset GTT portfolio",
+      "description": "analyses/gtt_library_validation.py runs the full multi-asset GTT backtest (LEAPS overlay + the 4-asset {R_f,KMLM,VGIT,GLD} defensive sleeve) and asserts directional, risk-reduction behavior vs. an equivalent GTT-off buy-and-hold portfolio. The EDA (outputs/gtt_findings.md, Table 5.1) was a 100%-equity long/cash simplification and is used ONLY as a qualitative reference, not a numeric reproduction target. The goal of the library is a multi-asset portfolio, so the defensive sleeve materially changes the numbers by design.",
+      "phase": 6,
+      "priority": 3,
+      "status": "not_started",
+      "layer": "python",
+      "dependencies": ["F-07-FETCH-GTT", "F-10-RUN-BACKTEST"],
+      "linked_schemas": [],
+      "linked_apis": ["API-FETCH-GTT", "API-RUN-BACKTEST-GTT"],
+      "performance_requirements": {"complexity_budget": "O(n)", "notes": "One backtest pass plus metric computation."},
+      "property_based_testing": {"enabled": false, "strategies": [], "layers": [], "rationale_if_disabled": "Project uses pytest only; no hypothesis. One-off analytical script."},
+      "mutation_testing": {"enabled": false, "rationale_if_disabled": "Project uses pytest only; no mutmut. Also a one-off analytical/validation script exempt from coverage gates per project policy."},
+      "acceptance_criteria": [
+        "GTT-on max drawdown is strictly less severe (closer to zero) than the GTT-off buy-and-hold portfolio over the 1993-2026 window.",
+        "GTT-on Sharpe (and Sortino) is >= the GTT-off buy-and-hold portfolio; any metric that regresses is printed as a FAIL row.",
+        "During each of the 2001, 2008 employment-driven recession windows, GTT-on realized return exceeds GTT-off (the sign of the excess is positive), consistent with the EDA's qualitative finding that the signal earns its keep in those episodes.",
+        "The script exits non-zero if any tracked directional assertion fails."
+      ],
+      "test_requirements": [
+        {"type": "integration", "description": "Marked slow; run the multi-asset GTT-on vs GTT-off backtests on live data and assert the directional risk-reduction bands (drawdown, Sharpe/Sortino, recession-window excess)."}
+      ],
+      "edge_cases": [
+        "Defensive sleeve (KMLM/VGIT/GLD) can gain during a defensive window, so multi-asset CAGR may EXCEED the EDA's all-cash reference — this is expected, not a failure.",
+        "2022 rate-driven bear is a known weak spot (UE blind, VIX late); the directional recession-window assertion is scoped to employment-driven recessions (2001, 2008), not 2022.",
+        "Use total-return series where available; document any residual price-vs-total-return gap as a known deviation."
+      ],
+      "clarification_needed": false,
+      "clarification_notes": "Resolved: the EDA was a simplification; the library target is a multi-asset portfolio. Validation is directional (risk reduction vs. buy-and-hold using the real LEAPS + 4-asset defensive config), not a numeric reproduction of Table 5.1."
+    }
+  ],
+  "risks": [
+    {
+      "id": "R-01-SMA-WARMUP",
+      "description": "GTT signal fires before the 200d SMA is computable (first sma_window days), so no trend gate exists.",
+      "severity": "medium",
+      "mitigation": "During SMA warm-up (NaN SMA) treat price as above-SMA and stay Long. Covered by F-05 warm-up acceptance criterion and edge-case test.",
+      "linked_features": ["F-05-POSITION-MASK"]
+    },
+    {
+      "id": "R-02-FRED-GAP",
+      "description": "UNRATE gap or FRED/yfinance outage could silently produce an all-Long mask, masking recession risk.",
+      "severity": "medium",
+      "mitigation": "fetch_gtt_signal_data raises ValueError on empty/failed fetch and never defaults to no-recession. Covered by F-07 acceptance criteria.",
+      "linked_features": ["F-07-FETCH-GTT"]
+    },
+    {
+      "id": "R-03-INDEX-MISALIGN",
+      "description": "position_mask index may not align with returns.index due to holiday/exchange calendar mismatches.",
+      "severity": "medium",
+      "mitigation": "Reindex position_mask to returns.index with ffill inside run_backtest; document max acceptable gap. Covered by F-10 edge case.",
+      "linked_features": ["F-10-RUN-BACKTEST"]
+    },
+    {
+      "id": "R-04-LEAPS-WHIPSAW",
+      "description": "Rapid Long/Defensive flips churn LEAPS, incurring close tax plus fresh premium each cycle, dragging returns.",
+      "severity": "medium",
+      "mitigation": "Real economic cost, not a bug: surfaced via gtt_close_events count and realized tax so it is measurable. VIX_5D's 5-consecutive-day rule damps flip frequency. Covered by F-09 whipsaw edge case.",
+      "linked_features": ["F-09-SEGMENTED-LEAPS"]
+    },
+    {
+      "id": "R-05-LOOKAHEAD-THRESHOLD",
+      "description": "Caller may pass a full-sample VIX P90, introducing look-ahead bias into the backtest.",
+      "severity": "low",
+      "mitigation": "Documented explicitly in GttConfig as the caller's responsibility; library applies no look-ahead protection by design. Threshold is stored on GttSignalData for reproducibility.",
+      "linked_features": ["F-01-CONSTS-CONFIG", "F-07-FETCH-GTT"]
+    },
+    {
+      "id": "R-06-PRE-1993",
+      "description": "Backtests starting before 1993 have no VIX data; GTT would be undefined.",
+      "severity": "medium",
+      "mitigation": "fetch_gtt_signal_data raises ValueError if start_date < 1993-01-01. Covered by F-07 acceptance criterion.",
+      "linked_features": ["F-07-FETCH-GTT"]
+    },
+    {
+      "id": "R-07-SHORT-HOLD-TAX",
+      "description": "A forced GTT close taxes gains at ltcg_rate even for contracts held < 366 days, understating tax vs. true short-term capital gains rates.",
+      "severity": "low",
+      "mitigation": "Documented simplification (assumption A4a). ltcg_rate is applied uniformly; a future enhancement can distinguish STCG. Realized tax is recorded per event for auditability.",
+      "linked_features": ["F-08-LEAPS-CLOSE", "F-09-SEGMENTED-LEAPS"]
+    },
+    {
+      "id": "R-08-REGRESSION-NONE-PATH",
+      "description": "Changes to run_backtest could inadvertently alter behavior when gtt_config/gtt_signal are None, breaking every existing backtest.",
+      "severity": "high",
+      "mitigation": "F-10 acceptance criterion requires exact equality to the pre-change BacktestResult on the existing test corpus when gtt_signal=None; enforced as a regression gate before merge.",
+      "linked_features": ["F-10-RUN-BACKTEST", "F-02-PORTFOLIO-CONFIG"]
+    },
+    {
+      "id": "R-09-EDA-REFERENCE-MISREAD",
+      "description": "The EDA (Table 5.1) is a 100%-equity long/cash simplification. Treating it as a numeric reproduction target for the multi-asset library (LEAPS + 4-asset defensive sleeve) would falsely flag the by-design differences (e.g. defensive sleeve gains lifting CAGR above the all-cash reference) as regressions.",
+      "severity": "medium",
+      "mitigation": "F-11 validates DIRECTIONALLY (drawdown reduction, Sharpe/Sortino improvement, positive recession-window excess in 2001/2008) against a GTT-off buy-and-hold run of the SAME multi-asset config — not against EDA numbers. The EDA is documented as a qualitative reference only.",
+      "linked_features": ["F-11-MULTIASSET-VALIDATION"]
+    }
+  ],
+  "implementation_phases": [
+    {
+      "phase": 1,
+      "name": "Constants & Config",
+      "description": "Low-risk additive changes: GTT constants in consts.py, GttConfig dataclass, and the optional gtt_config field on PortfolioConfig with validation. No behavior change when unused.",
+      "feature_ids": ["F-01-CONSTS-CONFIG", "F-02-PORTFOLIO-CONFIG"]
+    },
+    {
+      "phase": 2,
+      "name": "Pure Signal Functions",
+      "description": "Create src/finance/gtt.py with pure, testable signal functions (UE, VIX, position mask) and the GttSignalData container. Unit + Hypothesis property tests, no I/O.",
+      "feature_ids": ["F-03-UE-SIGNAL", "F-04-VIX-SIGNAL", "F-05-POSITION-MASK", "F-06-SIGNAL-DATA"]
+    },
+    {
+      "phase": 3,
+      "name": "I/O Boundary",
+      "description": "Implement fetch_gtt_signal_data (FRED + yfinance), delegating computation to the pure functions. Marked '# pragma: no cover'; mocked unit tests plus optional slow live integration test.",
+      "feature_ids": ["F-07-FETCH-GTT"]
+    },
+    {
+      "phase": 4,
+      "name": "Segmented LEAPS Simulation",
+      "description": "Add LeapsGttCloseEvent + LeapsLedger.gtt_close_events, the pure close_leaps_contract helper, and run_segmented_leaps_simulation implementing close-and-reopen with fresh contracts across Long/Defensive windows.",
+      "feature_ids": ["F-08-LEAPS-CLOSE", "F-09-SEGMENTED-LEAPS"]
+    },
+    {
+      "phase": 5,
+      "name": "run_backtest GTT Branch",
+      "description": "Wire the GTT overlay into run_backtest: pre-compute governed tickers/mask/defensive return and segmented ledger; apply the defensive override (rebalance-first, Option C) and contribution diversion. Preserve the gtt_signal=None path exactly.",
+      "feature_ids": ["F-10-RUN-BACKTEST"]
+    },
+    {
+      "phase": 6,
+      "name": "Multi-Asset Directional Validation",
+      "description": "analyses/gtt_library_validation.py runs the full multi-asset GTT portfolio (LEAPS + 4-asset defensive sleeve) and asserts directional risk-reduction behavior vs. a GTT-off buy-and-hold run of the same config. The EDA is a qualitative reference only, not a numeric reproduction target.",
+      "feature_ids": ["F-11-MULTIASSET-VALIDATION"]
+    }
+  ]
+}

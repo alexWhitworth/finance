@@ -95,3 +95,24 @@ uv run examples/with_leaps.py          # LEAPS overlay, taxable vs. tax-sheltere
 uv run examples/volatility_report.py   # vol contribution table + forward vol forecast
 uv run examples/crisis_analysis.py     # GFC / COVID / 2022 per-period metrics
 ```
+
+## Growth and Trend Timing
+
+- **to-write**
+- Requres a FRED API Key. [Request one here](https://fred.stlouisfed.org/docs/api/api_key.html).
+    - Save in a `.env` file `FRED_API_KEY=<your key>` so that `dotenv` can load it
+
+#### Reference:
+
+```bibtex
+@online{philosophicalecon2016uetrend,
+    author       = {{Philosophical Economics}},
+    title        = {In Search of the Perfect Recession Indicator},
+    year         = {2016},
+    month        = {February},
+    day          = {21},
+    url          = {https://www.philosophicaleconomics.com/2016/02/uetrend/},
+    urldate      = {2026-07-26},
+    note         = {Blog post}
+}
+```

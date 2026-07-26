@@ -11,7 +11,8 @@ __pycache__/
 .env.*
 
 # outputs
-outputs/
+outputs/figures/*
+!outputs/figures/fig5_1_strategy_equity_curve.png
 analyses/
 
 # code-cov
