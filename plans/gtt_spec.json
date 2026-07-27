@@ -46,8 +46,8 @@
         {"name": "vix_p90_threshold", "type": "float", "required": true, "description": "Fixed VIX P90 threshold as a decimal (e.g. 0.272 == 27.2%). Caller computes from desired history to avoid look-ahead; library applies no look-ahead protection."},
         {"name": "sma_window", "type": "int", "required": false, "description": "Rolling window (trading days) for the equity price SMA trend filter. Default 200 (GTT_SMA_WINDOW)."},
         {"name": "vix_consecutive_days", "type": "int", "required": false, "description": "N consecutive days VIX >= threshold required to fire VIX_5D. Default 5 (GTT_VIX_CONSECUTIVE_DAYS)."},
-        {"name": "unrate_pub_lag_days", "type": "int", "required": false, "description": "Calendar days after the reference date at which the UNRATE print becomes actionable (1st Friday of following month + following Monday ~= 4). Default 4 (GTT_UNRATE_PUB_LAG_DAYS)."},
-        {"name": "defensive_weights", "type": "dict[str, float]", "required": false, "description": "Weights the defensive sleeve holds when defensive. Must sum to 1.0 (abs tol 1e-6). Sentinel key 'R_f' means T-bill cash earning risk_free_rate/252 daily. Non-R_f keys must exist in target_weights. Default {'R_f':0.25,'KMLM':0.25,'VGIT':0.25,'GLD':0.25}."}
+        {"name": "unrate_trade_lag_days", "type": "int", "required": false, "description": "Trading-day execution lag from the UNRATE PUBLICATION date (1st Friday of the month FOLLOWING the reference month) to the trade. 1 = trade the next trading day. The ~1-month reference->publication lag is NOT handled here; compute_ue_signal re-stamps each observation to its first-Friday publication date (Option B). Default 1 (GTT_UNRATE_TRADE_LAG_DAYS)."},
+        {"name": "defensive_weights", "type": "dict[str, float]", "required": false, "description": "Weights the defensive sleeve holds when defensive. Must sum to 1.0 (abs tol 1e-6). Sentinel key 'R_f' means T-bill cash; its daily gross return is return_data.risk_free_rate[t]/252 drawn per-date from the risk_free_rate Series (data.fetch_risk_free_rate, daily annualized decimal) -- NOT a scalar. Non-R_f keys must exist in target_weights. Default {'R_f':0.25,'KMLM':0.25,'VGIT':0.25,'GLD':0.25}."}
       ]
     },
     {
@@ -105,16 +105,15 @@
     {
       "id": "API-UE-SIGNAL",
       "name": "compute_ue_signal",
-      "description": "Pure. Return a daily int Series (0/1): 1 where UNRATE >= trailing 12-month moving average, shifted forward by the publication lag. Monthly UNRATE is resampled to daily via forward-fill.",
+      "description": "Pure. Return a daily int Series (0/1): 1 where UNRATE >= trailing 12-month moving average. Option B publication-date alignment: FRED indexes UNRATE at the reference-month start, but the print is not public until the BLS Employment Situation release on the first Friday of the FOLLOWING month. Each monthly observation is re-stamped from its reference-month index to that first Friday (its true publication date) BEFORE the daily forward-fill, 12M MA, and 0/1 flag. This eliminates the ~1-month reference-month look-ahead. NO day-count shift is applied here; the single close->open execution lag lives in compute_position_mask (shared with VIX_5D).",
       "layer": "python",
       "pure": true,
       "inputs": [
-        {"name": "unrate", "type": "pd.Series", "description": "Monthly UNRATE series (DatetimeIndex, float)."},
-        {"name": "rolling_window_months", "type": "int", "description": "Trailing MA window in months. Default 12."},
-        {"name": "pub_lag_days", "type": "int", "description": "Calendar days to shift the actionable signal forward. Default GTT_UNRATE_PUB_LAG_DAYS (4)."}
+        {"name": "unrate", "type": "pd.Series", "description": "Monthly UNRATE series (DatetimeIndex at reference-month start, float)."},
+        {"name": "rolling_window_months", "type": "int", "description": "Trailing MA window in months. Default 12."}
       ],
       "outputs": [
-        {"name": "return", "type": "pd.Series[int]", "description": "Daily 0/1 series, lag-shifted; DatetimeIndex."}
+        {"name": "return", "type": "pd.Series[int]", "description": "Daily 0/1 series, publication-dated (each month's value first visible on the 1st Friday of the following month); DatetimeIndex. No execution shift applied here."}
       ],
       "raises": ["ValueError: if unrate is empty or has fewer than rolling_window_months observations"],
       "ffi_notes": null
@@ -139,7 +138,7 @@
     {
       "id": "API-POSITION-MASK",
       "name": "compute_position_mask",
-      "description": "Pure. Combine ue_signal OR vix_signal with the 200d SMA price-trend filter, then apply a 1-day lag. Returns 1 (Long) when no recession risk, or recession risk but price >= SMA; 0 (Defensive) when recession risk and price < SMA. During SMA warm-up (NaN SMA) treat as above-SMA (stay Long).",
+      "description": "Pure. Combine ue_signal OR vix_signal with the 200d SMA price-trend filter, then apply a single 1-trading-day lag. This lag is the SHARED execution lag for both signals: ue_signal is already publication-dated (1st Friday of the following month), so the shift maps its Friday publication close -> the next trading day (Monday); vix_signal is known at close t, so the same shift maps close t -> t+1. Both operate on daily indices, so the shift is 1 trading day. Returns 1 (Long) when no recession risk, or recession risk but price >= SMA; 0 (Defensive) when recession risk and price < SMA. During SMA warm-up (NaN SMA) treat as above-SMA (stay Long).",
       "layer": "python",
       "pure": true,
       "inputs": [
@@ -165,7 +164,7 @@
         {"name": "end_date", "type": "str", "description": "ISO end date."},
         {"name": "vix_p90_threshold", "type": "float", "description": "Fixed P90 threshold decimal supplied by caller."},
         {"name": "vix_consecutive_days", "type": "int", "description": "Default GTT_VIX_CONSECUTIVE_DAYS (5)."},
-        {"name": "unrate_pub_lag_days", "type": "int", "description": "Default GTT_UNRATE_PUB_LAG_DAYS (4)."},
+        {"name": "unrate_trade_lag_days", "type": "int", "description": "Trading-day execution lag from the UNRATE publication date to the trade. Default GTT_UNRATE_TRADE_LAG_DAYS (1)."},
         {"name": "sma_window", "type": "int", "description": "Default GTT_SMA_WINDOW (200)."},
         {"name": "equity_prices", "type": "pd.Series | None", "description": "VTI price series for the SMA; if None, fetched internally via yfinance."}
       ],
@@ -246,7 +245,7 @@
     {
       "id": "F-01-CONSTS-CONFIG",
       "name": "GTT constants and GttConfig dataclass",
-      "description": "Add GTT_EQUITY_TICKERS, GTT_UNRATE_PUB_LAG_DAYS, GTT_VIX_CONSECUTIVE_DAYS, GTT_SMA_WINDOW, GTT_DEFENSIVE_WEIGHTS_DEFAULT to consts.py. Add frozen GttConfig to portfolio.py with __post_init__ validating defensive_weights sums to 1.0 (abs tol 1e-6).",
+      "description": "Add GTT_EQUITY_TICKERS, GTT_UNRATE_TRADE_LAG_DAYS, GTT_VIX_CONSECUTIVE_DAYS, GTT_SMA_WINDOW, GTT_DEFENSIVE_WEIGHTS_DEFAULT to consts.py. Add frozen GttConfig to portfolio.py with __post_init__ validating defensive_weights sums to 1.0 (abs tol 1e-6).",
       "phase": 1,
       "priority": 1,
       "status": "not_started",
@@ -260,7 +259,7 @@
       "acceptance_criteria": [
         "GttConfig(vix_p90_threshold=0.272) constructs with the documented default defensive_weights {'R_f':0.25,'KMLM':0.25,'VGIT':0.25,'GLD':0.25}.",
         "GttConfig with defensive_weights summing to 0.9 raises ValueError; summing to 1.0 +/- 1e-6 succeeds.",
-        "All five constants are importable from finance.consts with the exact documented values (GTT_SMA_WINDOW==200, GTT_VIX_CONSECUTIVE_DAYS==5, GTT_UNRATE_PUB_LAG_DAYS==4)."
+        "All five constants are importable from finance.consts with the exact documented values (GTT_SMA_WINDOW==200, GTT_VIX_CONSECUTIVE_DAYS==5, GTT_UNRATE_TRADE_LAG_DAYS==1)."
       ],
       "test_requirements": [
         {"type": "unit", "description": "Construct valid/invalid GttConfig; assert ValueError on non-unit-sum weights."},
@@ -306,7 +305,7 @@
     {
       "id": "F-03-UE-SIGNAL",
       "name": "compute_ue_signal (pure)",
-      "description": "UNRATE monthly -> daily ffill, trailing 12-month MA, 0/1 flag where UNRATE >= MA, shifted forward by publication lag.",
+      "description": "UNRATE monthly obs re-stamped to their publication date (1st Friday of the FOLLOWING month, Option B) -> daily ffill -> trailing 12-month MA -> 0/1 flag where UNRATE >= MA. No day-count shift here; the close->open execution lag is applied downstream in compute_position_mask. Eliminates the ~1-month reference-month look-ahead.",
       "phase": 2,
       "priority": 1,
       "status": "not_started",
@@ -318,17 +317,20 @@
       "property_based_testing": {"enabled": false, "strategies": [], "layers": [], "rationale_if_disabled": "Project uses pytest only; no hypothesis. Domain and monotonicity invariants asserted via tabulated example fixtures."},
       "mutation_testing": {"enabled": false, "rationale_if_disabled": "Project uses pytest only; no mutmut in the toolchain."},
       "acceptance_criteria": [
-        "For a synthetic UNRATE that steps above its 12M MA on a known month, the daily signal turns 1 exactly pub_lag_days after the actionable reference date (tolerance 0 days).",
+        "ANTI-LOOK-AHEAD (critical): for a synthetic UNRATE observation for reference month M (FRED-indexed at M-01) that steps above its 12M MA, the daily signal is 0 on EVERY date before the 1st Friday of month M+1, and becomes 1 no earlier than that 1st Friday (before the downstream execution shift). The signal must NOT fire within reference month M itself.",
+        "A dedicated regression fixture at a known historical crossover (e.g. the 2008 UNRATE turn) asserts the signal does not fire in the reference month.",
         "Output Series contains only integer values in {0,1} with no NaN after warm-up.",
         "Signal is 0 throughout a strictly-declining UNRATE series."
       ],
       "test_requirements": [
-        {"type": "unit", "description": "Synthetic step-up UNRATE; assert trigger date and lag offset."},
+        {"type": "unit", "description": "Synthetic step-up UNRATE for reference month M; assert signal==0 for all dates < 1st Friday of M+1 and ==1 on/after it (publication-date alignment, before execution shift)."},
+        {"type": "unit", "description": "Look-ahead regression fixture at a known turning point; assert no fire inside the reference month."},
         {"type": "unit", "description": "Assert output values are a subset of {0,1} with no NaN post-warm-up across several hand-built series (monotone-up, constant, declining)."}
       ],
       "edge_cases": [
         "Series shorter than 12 months -> warm-up region has no signal (0), no exception.",
-        "Equality UNRATE == MA -> defined as signal=1 (>=)."
+        "Equality UNRATE == MA -> defined as signal=1 (>=).",
+        "Reference month whose following-month 1st Friday falls on a market holiday -> publication-date re-stamp still lands on the calendar first Friday; the downstream trading-day execution shift advances to the next open trading day."
       ],
       "clarification_needed": false,
       "clarification_notes": null
@@ -378,7 +380,7 @@
       "property_based_testing": {"enabled": false, "strategies": [], "layers": [], "rationale_if_disabled": "Project uses pytest only; no hypothesis. Branch coverage via a hand-built fixture spanning all four decision-rule branches."},
       "mutation_testing": {"enabled": false, "rationale_if_disabled": "Project uses pytest only; no mutmut in the toolchain."},
       "acceptance_criteria": [
-        "Defensive (0) occurs iff (ue OR vix) AND price < SMA, evaluated at t and observed at t+1 (1-day lag verified against a hand-computed fixture).",
+        "Defensive (0) occurs iff (ue OR vix) AND price < SMA, evaluated at t and observed at t+1 via a single shared 1-trading-day execution lag (verified against a hand-computed fixture). The same shift applies to both the publication-dated ue_signal and the close-t vix_signal; no separate per-signal shift exists.",
         "During the SMA warm-up region the mask is 1 (Long) even when a signal is active.",
         "Output Series contains only values in {0,1} and is index-aligned to equity_prices."
       ],
@@ -437,12 +439,13 @@
       "acceptance_criteria": [
         "start_date < 1993-01-01 raises ValueError before any network call.",
         "An empty UNRATE or VIX fetch raises ValueError with an actionable message (never silently returns an all-Long mask).",
-        "On a mocked successful fetch, the returned GttSignalData.position_mask equals compute_position_mask applied to the mocked inputs."
+        "On a mocked successful fetch, the returned GttSignalData.position_mask equals compute_position_mask applied to the mocked inputs.",
+        "EMPIRICAL FRED-INDEXING CHECK (blocking, one-time): a live-data check confirms Fred.get_series('UNRATE') indexes each observation at the reference-month start (all index dates have day==1) and that the Option B first-Friday-of-following-month re-stamp lands on/after the true BLS release date. If FRED's convention differs, the re-stamp offset in compute_ue_signal must be corrected before proceeding."
       ],
       "test_requirements": [
         {"type": "unit", "description": "Mock fredapi + yfinance; assert delegation to pure functions and returned container equality."},
         {"type": "unit", "description": "Assert ValueError on pre-1993 start and on empty fetch."},
-        {"type": "integration", "description": "Optional, marked slow: live short-range fetch smoke test."}
+        {"type": "integration", "description": "Marked slow: live short-range fetch smoke test AND the empirical FRED-indexing check (assert UNRATE index is month-start; print last ~6 index dates vs known Employment Situation release dates)."}
       ],
       "edge_cases": [
         "FRED reachable but returns a gap in UNRATE -> raise, do not interpolate silently.",
@@ -613,6 +616,13 @@
       "severity": "medium",
       "mitigation": "Real economic cost, not a bug: surfaced via gtt_close_events count and realized tax so it is measurable. VIX_5D's 5-consecutive-day rule damps flip frequency. Covered by F-09 whipsaw edge case.",
       "linked_features": ["F-09-SEGMENTED-LEAPS"]
+    },
+    {
+      "id": "R-10-UNRATE-REFMONTH-LOOKAHEAD",
+      "description": "FRED indexes UNRATE at the reference-month start, but the print is not public until the 1st Friday of the following month (~5 weeks later). A naive monthly->daily ffill would let the daily loop act on a month's rate ~1 month before publication. The leak is concentrated exactly at recession-onset MA crossings and would inflate F-11's 2001/2008 recession-window excess, letting the directional validation pass for the wrong reason.",
+      "severity": "high",
+      "mitigation": "compute_ue_signal re-stamps each observation to the 1st Friday of the following month (Option B) BEFORE the ffill; the single close->open execution lag is applied downstream in compute_position_mask. F-03 acceptance test asserts the signal does not fire within the reference month. FRED month-start indexing verified empirically in Phase 3 (F-07). F-11 results are only trustworthy once this leak is closed.",
+      "linked_features": ["F-03-UE-SIGNAL", "F-07-FETCH-GTT", "F-11-MULTIASSET-VALIDATION"]
     },
     {
       "id": "R-05-LOOKAHEAD-THRESHOLD",

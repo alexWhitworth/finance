@@ -11,7 +11,7 @@ VTI shares are sold and LEAPS contracts are **closed** (realizing gains/tax); on
 capital re-buys VTI shares and **fresh** 2-year LEAPS contracts at prevailing prices. All other
 assets are unaffected. Existing backtests with no GTT config are completely unchanged.
 
-### Decision Rule (1-day publication lag applied throughout)
+### Decision Rule (uniform t+1 execution lag on all signals)
 
 ```
 recession_risk_t = UE_12M_t OR VIX_5D_t
@@ -21,6 +21,22 @@ position_t+1 =
     if recession_risk_t AND price_t >= SMA200_t  → Long (normal target weights)
     if recession_risk_t AND price_t <  SMA200_t  → Defensive (defensive_weights)
 ```
+
+**Signal timing (both signals are stamped at the date the information is available
+at close t, then executed uniformly at open t+1):**
+
+- **UE_12M:** The monthly UNRATE print is published by the BLS Employment Situation
+  release on the **first Friday of the month *following* the reference month** (e.g. the
+  Jan-2026 rate prints Fri 2026-02-06). FRED indexes UNRATE at the *reference-month start*
+  (`2026-01-01`), which is ~5 weeks before the print exists. `compute_ue_signal` therefore
+  **re-stamps each observation to its true publication date (first Friday of the following
+  month)** before the daily forward-fill, so the January value is never visible before early
+  February. This closes a ~1-month look-ahead leak.
+- **VIX_5D:** Uses the window `[t-4, t]`; the signal is known at close t.
+- **Execution:** the shared **1-day lag inside `compute_position_mask`** carries *both*
+  signals from close t → open t+1. For UE this maps the Friday publication close → the next
+  trading day (Monday); for VIX it maps close t → t+1. There is a single execution lag, not a
+  separate per-signal shift.
 
 ### Component Flow
 
@@ -63,8 +79,11 @@ class GttConfig:
                                       # to compute from desired history to avoid look-ahead.
     sma_window: int = 200             # Rolling window for equity price SMA (trading days)
     vix_consecutive_days: int = 5     # N consecutive days VIX >= threshold to fire VIX_5D
-    unrate_pub_lag_days: int = 4      # Days after 1st Friday of release month to use signal
-                                      # (1st Friday + following Monday ≈ 4 calendar days)
+    unrate_trade_lag_days: int = 1    # Trading-day execution lag from the UNRATE publication
+                                      # date (1st Friday of the month AFTER the reference month)
+                                      # to the trade. 1 = trade the next trading day (Mon after
+                                      # the Fri print). The ~1-month reference→publication lag is
+                                      # handled inside compute_ue_signal, NOT by this field.
     defensive_weights: dict[str, float] = field(
         default_factory=lambda: {
             "R_f": 0.25,
@@ -80,7 +99,11 @@ class GttConfig:
 
 **Notes:**
 - `defensive_weights` must sum to 1.0; validated in `__post_init__`
-- `"R_f"` is a sentinel key meaning T-bill cash (earns `risk_free_rate / 252` per day)
+- `"R_f"` is a sentinel key meaning T-bill cash. Its daily gross return is drawn from the
+  existing **`return_data.risk_free_rate` Series** (the daily annualized decimal from
+  `data.fetch_risk_free_rate`), converted per-date: `daily_R_f_return_t = rfr_series[t] / 252`.
+  It is **not** a scalar — the same date-varying series already used elsewhere in the backtest
+  and by `run_leaps_simulation` (reindexed to the return index with `ffill`, `fillna(0.0)`).
 - Other keys must be valid tickers present in `return_data`
 - `vix_p90_threshold` is a decimal (e.g. `0.272`), not a percentage
 
@@ -117,7 +140,10 @@ contains non-R_f keys, those keys must exist in `target_weights`.
 # Extend this set when a VXUS GTT signal is designed and validated.
 GTT_EQUITY_TICKERS: frozenset[str] = frozenset({"VTI"})
 
-GTT_UNRATE_PUB_LAG_DAYS: int = 4        # 1st Friday of release month + following Monday
+GTT_UNRATE_TRADE_LAG_DAYS: int = 1      # Trading-day execution lag from the UNRATE publication
+                                        # date to the trade. The reference→publication (~1-month)
+                                        # lag is handled inside compute_ue_signal via first-Friday
+                                        # re-stamping, NOT by this constant.
 GTT_VIX_CONSECUTIVE_DAYS: int = 5       # Default persistence window
 GTT_SMA_WINDOW: int = 200               # Default equity price SMA window
 
@@ -147,12 +173,14 @@ def fetch_gtt_signal_data(
     end_date: str,
     vix_p90_threshold: float,
     vix_consecutive_days: int = GTT_VIX_CONSECUTIVE_DAYS,
-    unrate_pub_lag_days: int = GTT_UNRATE_PUB_LAG_DAYS,
+    unrate_trade_lag_days: int = GTT_UNRATE_TRADE_LAG_DAYS,
     sma_window: int = GTT_SMA_WINDOW,
     equity_prices: pd.Series | None = None,   # VTI price series for SMA; if None, fetched internally
 ) -> GttSignalData:
-    """Fetch UNRATE from FRED and VIX from yfinance, compute all signals,
-    apply publication lags, and return a lag-adjusted daily position mask.
+    """Fetch UNRATE from FRED and VIX from yfinance, compute all signals, and
+    return a lag-adjusted daily position mask. UNRATE is publication-dated inside
+    compute_ue_signal (1st Friday of the following month); the single close→open
+    execution lag is applied in compute_position_mask.
     pragma: no cover (I/O boundary)
     """
 
@@ -160,9 +188,28 @@ def fetch_gtt_signal_data(
 def compute_ue_signal(
     unrate: pd.Series,
     rolling_window_months: int = 12,
-    pub_lag_days: int = GTT_UNRATE_PUB_LAG_DAYS,
 ) -> pd.Series:
-    """Return daily int Series (0/1): UNRATE >= 12-month MA, shifted by pub lag."""
+    """Return daily int Series (0/1): 1 where UNRATE >= trailing 12-month MA.
+
+    Publication-date alignment (Option B — deterministic BLS cadence):
+      1. FRED indexes UNRATE at the reference-month start (e.g. 2026-01-01 for the
+         January rate). That value is NOT public until the Employment Situation
+         release on the first Friday of the FOLLOWING month.
+      2. Re-stamp each monthly observation from its reference-month index to the
+         first Friday of the following month (its true publication date).
+      3. Resample publication-dated series to daily via forward-fill.
+      4. Compute the trailing 12-month MA and the 0/1 flag on the publication-dated
+         series.
+
+    The result is a daily series that only "knows" a month's UNRATE from its actual
+    publication date onward. The final close t → open t+1 execution lag is applied
+    once, downstream, in compute_position_mask (shared with VIX_5D). No per-signal
+    day-count shift is applied here.
+
+    Note: on the rare month the BLS deviates from the first-Friday cadence (holiday
+    weeks, shutdowns) this is an approximation of ≤ a few days; documented, not
+    corrected. Empirically checked against live FRED release dates in Phase 3.
+    """
 
 def compute_vix_signal(
     vix: pd.Series,
@@ -179,6 +226,12 @@ def compute_position_mask(
 ) -> pd.Series:
     """Combine signals with 200d SMA filter. Returns 1 (Long) or 0 (Defensive).
     Output is already 1-day lagged (signal at close t → position at open t+1).
+
+    This 1-day shift is the SINGLE execution lag for both signals: UE_12M is already
+    publication-dated (first Friday of the following month) by compute_ue_signal, so
+    the shift maps the Friday publication close → the next trading day (Monday); VIX_5D
+    is known at close t, so the same shift maps close t → t+1. Both are computed on
+    daily indices, so the shift is 1 *trading* day, not 1 calendar day.
     """
 ```
 
@@ -302,7 +355,7 @@ Add the five constants listed in §3.4.
 
 ### Phase 1 — Constants & Config (low risk, no behavior change)
 
-1. Add `GTT_EQUITY_TICKERS`, `GTT_UNRATE_PUB_LAG_DAYS`, `GTT_VIX_CONSECUTIVE_DAYS`,
+1. Add `GTT_EQUITY_TICKERS`, `GTT_UNRATE_TRADE_LAG_DAYS`, `GTT_VIX_CONSECUTIVE_DAYS`,
    `GTT_SMA_WINDOW`, `GTT_DEFENSIVE_WEIGHTS_DEFAULT` to `consts.py`
 2. Add `GttConfig` dataclass to `portfolio.py` (with `__post_init__` validation)
 3. Add `gtt_config: GttConfig | None = None` to `PortfolioConfig`
@@ -312,7 +365,9 @@ Add the five constants listed in §3.4.
 ### Phase 2 — `gtt.py` Pure Signal Functions
 
 1. Create `src/finance/gtt.py`
-2. Implement `compute_ue_signal` — UNRATE weekly resample, 12M rolling mean, pub lag shift
+2. Implement `compute_ue_signal` — re-stamp each monthly UNRATE obs to the first Friday of the
+   *following* month (publication date), daily ffill, 12M rolling mean, 0/1 flag. No day-count
+   shift here; the execution lag lives in `compute_position_mask`.
 3. Implement `compute_vix_signal` — rolling N-day sum >= N (consecutive days logic)
 4. Implement `compute_position_mask` — OR logic, 200d SMA filter, 1-day lag
 5. Add `GttSignalData` dataclass
@@ -323,9 +378,16 @@ Add the five constants listed in §3.4.
 
 1. Implement `fetch_gtt_signal_data` in `gtt.py` (`# pragma: no cover`)
 2. Fetch UNRATE via `fredapi.Fred.get_series('UNRATE')`
-3. Fetch VIX via existing `fetch_prices` (yfinance) or `fetch_volatility_index`
-4. Wire through to pure functions; return `GttSignalData`
-5. Integration test (optional, marked slow): live fetch for a short date range
+3. **Empirical FRED-indexing check (blocking, one-time):** confirm the assumption that
+   `Fred.get_series('UNRATE')` indexes each observation at the *reference-month start*
+   (e.g. `2026-01-01` for the January rate). Print the last ~6 index dates and eyeball
+   against known Employment Situation release dates; assert the index is month-start
+   (`idx.day == 1` for all observations) and that the first-Friday-of-following-month
+   re-stamp lands on or after the true release date. If FRED's convention differs, the
+   Option B re-stamp offset in `compute_ue_signal` must be corrected before proceeding.
+4. Fetch VIX via existing `fetch_prices` (yfinance) or `fetch_volatility_index`
+5. Wire through to pure functions; return `GttSignalData`
+6. Integration test (optional, marked slow): live fetch for a short date range
 
 ### Phase 4 — Segmented LEAPS Simulation (close-and-reopen)
 
@@ -372,12 +434,12 @@ Add the five constants listed in §3.4.
 | # | Assumption | Implication |
 |---|-----------|-------------|
 | A1 | `vix_p90_threshold` is caller-supplied; no look-ahead protection in library | Caller must compute threshold from appropriate history window |
-| A2 | UNRATE publication lag = 1st Friday of following month + following Monday (~4 days) | If FRED changes release schedule, caller adjusts `unrate_pub_lag_days` |
+| A2 | FRED indexes UNRATE at the reference-month start; the print is public on the 1st Friday of the *following* month. `compute_ue_signal` re-stamps each obs to that first Friday (Option B) so no reference-month look-ahead exists. The final close→open execution lag is a single trading-day shift in `compute_position_mask` | If FRED changes its indexing convention or BLS shifts off the first-Friday cadence, the re-stamp offset must be revised (empirically checked in Phase 3, step 3) |
 | A3 | VIX_5D = 5 *consecutive* days (rolling sum == N, not just >= N in window) | Matches EDA; stricter than sliding-window variants |
 | A4 | LEAPS are **closed** (marked to market, taxed on gains) when GTT goes defensive and **reopened as fresh 2-year contracts** on re-entry | Accurate treatment: delta exposure ceases during defensive windows and re-entry pays prevailing IV. Requires segmented `run_leaps_simulation` and a new `LeapsGttCloseEvent` |
 | A4a | A GTT close realizes LTCG tax on gains in taxable accounts (like a roll), even if the contract has been held < 366 days | Conservative/correct: a forced close is a real disposal. Short-hold closes would be taxed at the same `ltcg_rate` — a known simplification vs. true STCG rates |
 | A5 | GTT governs only `GTT_EQUITY_TICKERS` (VTI) and their `_LEAPS` variants | VXUS held through all regimes until a VXUS-specific signal is designed |
-| A6 | `R_f` sentinel in `defensive_weights` earns `risk_free_rate / 252` daily | Uses same `return_data.risk_free_rate` series as rest of backtest |
+| A6 | `R_f` sentinel in `defensive_weights` earns `return_data.risk_free_rate[t] / 252` on each date t (a date-varying Series, not a scalar) | Uses the same `return_data.risk_free_rate` Series (`data.fetch_risk_free_rate`, daily annualized decimal) as the rest of the backtest; `defensive_gross_return` is computed per-date |
 | A7 | Defensive allocation is held at fixed weights; not rebalanced within a GTT-active period | Simplest correct behavior; drift within a defensive period is acceptable |
 | A8 | `fredapi` is a hard dep (already in `pyproject.toml`); no optional-extra needed | Confirmed from `pyproject.toml` inspection |
 
@@ -397,4 +459,5 @@ Add the five constants listed in §3.4.
 | `position_mask` index does not align with `returns.index` (holiday mismatches) | Medium | Reindex with `ffill` in the backtest loop; document max acceptable gap |
 | Backtests starting before 1993 (pre-VIX availability) | Medium | `fetch_gtt_signal_data` raises `ValueError` if `start_date < 1993-01-01`; VIX is the binding constraint |
 | Look-ahead in `vix_p90_threshold` when caller passes a full-sample P90 | Low | Documented in `GttConfig` docstring; responsibility is explicitly caller's |
+| UNRATE reference-month look-ahead: using the Jan rate before its early-Feb publication would leak ~1 month, concentrated exactly at recession-onset crossings and inflating F-11's 2001/2008 excess | High | `compute_ue_signal` re-stamps each obs to the 1st Friday of the following month before ffill (Option B); F-03 acceptance test asserts the signal does NOT fire in the reference month; FRED indexing verified empirically in Phase 3 |
 | `defensive_weights` sum validation with floating-point | Low | Use `abs(sum - 1.0) > 1e-6` tolerance, same pattern as `PortfolioConfig` |
