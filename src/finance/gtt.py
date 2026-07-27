@@ -19,7 +19,11 @@ from dataclasses import dataclass
 
 import pandas as pd
 
-from finance.consts import GTT_SMA_WINDOW, GTT_VIX_CONSECUTIVE_DAYS
+from finance.consts import (
+    GTT_SMA_WINDOW,
+    GTT_UNRATE_TRADE_LAG_DAYS,
+    GTT_VIX_CONSECUTIVE_DAYS,
+)
 
 # ---------------------------------------------------------------------------
 # Dataclass
@@ -213,3 +217,112 @@ def compute_position_mask(
     position_mask = position_today.shift(1).fillna(1).astype(int)
     position_mask.name = "position_mask"
     return position_mask
+
+
+# ---------------------------------------------------------------------------
+# I/O boundary — network calls isolated here
+# ---------------------------------------------------------------------------
+
+
+def fetch_gtt_signal_data(  # pragma: no cover
+    start_date: str,
+    end_date: str,
+    vix_p90_threshold: float,
+    vix_consecutive_days: int = GTT_VIX_CONSECUTIVE_DAYS,
+    unrate_trade_lag_days: int = GTT_UNRATE_TRADE_LAG_DAYS,
+    sma_window: int = GTT_SMA_WINDOW,
+    equity_prices: pd.Series | None = None,
+) -> GttSignalData:
+    """Fetch UNRATE (FRED) and VIX (yfinance), compute signals, and return GttSignalData.
+
+    All computation is delegated to the pure signal functions; this function only
+    handles network I/O. The returned position_mask is already 1-day lag-adjusted
+    and directly consumable by run_backtest.
+
+    Arguments:
+        start_date: ISO start date (YYYY-MM-DD). Must be >= 1993-01-01 (VIX start).
+        end_date: ISO end date (YYYY-MM-DD).
+        vix_p90_threshold: Fixed VIX P90 threshold as a decimal (e.g. 0.272).
+            Look-ahead protection is the caller's responsibility.
+        vix_consecutive_days: Number of consecutive days at/above threshold to fire
+            the VIX_5D signal. Default GTT_VIX_CONSECUTIVE_DAYS (5).
+        unrate_trade_lag_days: Trading-day execution lag from the UNRATE publication
+            date to the trade. Default GTT_UNRATE_TRADE_LAG_DAYS (1). The
+            reference->publication lag is handled inside compute_ue_signal.
+        sma_window: Equity price SMA window in trading days. Default GTT_SMA_WINDOW (200).
+        equity_prices: VTI price series for the SMA filter. If None, fetched internally
+            via yfinance (^VTI). Caller can supply a pre-fetched series to avoid a
+            redundant network call.
+
+    Raises:
+        ValueError: If start_date < 1993-01-01 (VIX data unavailable before 1993).
+        ValueError: If UNRATE fetch returns an empty series (FRED unreachable or no data).
+        ValueError: If VIX fetch returns an empty series (yfinance unavailable or no data).
+
+    Returns:
+        GttSignalData with fully computed, lag-adjusted signals.
+
+    Notes:
+        FRED indexes UNRATE at the reference-month start; compute_ue_signal re-stamps
+        each observation to the first Friday of the following month (its true BLS
+        publication date) before forward-filling. The final close->open execution lag
+        is applied in compute_position_mask (shared with VIX_5D). The unrate_trade_lag_days
+        parameter is retained for API symmetry with GttConfig but the reference->publication
+        shift is deterministic inside compute_ue_signal and does not require this offset.
+    """
+    import os
+
+    import yfinance as yf
+    from fredapi import Fred
+
+    if start_date < "1993-01-01":
+        raise ValueError(
+            f"start_date {start_date!r} is before 1993-01-01; VIX data is unavailable "
+            "before January 1993. GTT requires VIX history."
+        )
+
+    fred_key = os.environ.get("FRED_API_KEY", "")
+    fred = Fred(api_key=fred_key) if fred_key else Fred()
+    unrate_raw: pd.Series = fred.get_series(
+        "UNRATE", observation_start=start_date, observation_end=end_date
+    )
+    if unrate_raw.empty:
+        raise ValueError(
+            "FRED returned an empty UNRATE series for the requested date range. "
+            "Check that the FRED API is reachable and FRED_API_KEY is set."
+        )
+    unrate_raw.name = "UNRATE"
+
+    if equity_prices is None:
+        vti_raw = yf.download(
+            "VTI", start=start_date, end=end_date, auto_adjust=True, progress=False
+        )
+        if vti_raw.empty:
+            raise ValueError(
+                "yfinance returned an empty VTI price series. "
+                "Check network connectivity and that start_date >= VTI inception (2001-05-24)."
+            )
+        equity_prices = vti_raw["Close"].squeeze().rename("VTI")
+
+    vix_raw = yf.download("^VIX", start=start_date, end=end_date, auto_adjust=True, progress=False)
+    if vix_raw.empty:
+        raise ValueError(
+            "yfinance returned an empty ^VIX series. "
+            "Check network connectivity and that start_date >= 1993-01-01."
+        )
+    vix_series: pd.Series = (vix_raw["Close"].squeeze() / 100.0).rename("VIX")
+
+    ue_sig = compute_ue_signal(unrate_raw)
+    vix_sig = compute_vix_signal(
+        vix_series, threshold=vix_p90_threshold, consecutive_days=vix_consecutive_days
+    )
+    position_mask = compute_position_mask(ue_sig, vix_sig, equity_prices, sma_window=sma_window)
+
+    return GttSignalData(
+        position_mask=position_mask,
+        ue_signal=ue_sig,
+        vix_signal=vix_sig,
+        vix_p90_threshold=vix_p90_threshold,
+        unrate_start=pd.Timestamp(unrate_raw.index[0]),
+        vix_start=pd.Timestamp(vix_series.index[0]),
+    )

@@ -822,7 +822,7 @@
       "description": "Fetch UNRATE (fredapi) and VIX (yfinance), invoke the pure signal functions, and return GttSignalData. Marked '# pragma: no cover'. Raises on pre-1993 start and empty/failed fetches.",
       "phase": 3,
       "priority": 2,
-      "status": "not_started",
+      "status": "pending_judge",
       "layer": "python",
       "dependencies": [
         "F-06-SIGNAL-DATA"
