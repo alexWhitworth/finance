@@ -880,7 +880,7 @@
       "description": "Add the LeapsGttCloseEvent dataclass and a gtt_close_events tuple field (default ()) to LeapsLedger. Add pure close_leaps_contract that marks-to-market, taxes positive gains at ltcg_rate (0 if TAX_SHELTERED/loss), and returns the event.",
       "phase": 4,
       "priority": 1,
-      "status": "pending_judge",
+      "status": "complete",
       "layer": "python",
       "dependencies": [
         "F-01-CONSTS-CONFIG"
@@ -936,7 +936,7 @@
       "description": "Segment the timeline by position_mask into Long/Defensive windows. Per Long window run run_leaps_simulation seeded with the parked pool as initial_capital, then force-close all live contracts on the window's last day. Compound the parked pool through Defensive windows via defensive_gross_return and add diverted contributions. Assemble a combined LeapsLedger with gtt_close_events.",
       "phase": 4,
       "priority": 1,
-      "status": "pending_judge",
+      "status": "complete",
       "layer": "python",
       "dependencies": [
         "F-08-LEAPS-CLOSE"
