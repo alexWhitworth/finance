@@ -393,8 +393,8 @@ Add the five constants listed in §3.4.
 
 1. Add `LeapsGttCloseEvent` dataclass and `gtt_close_events` field to `LeapsLedger` in
    `leverage.py`
-2. Add a pure helper `close_leaps_contract(contract, date, spot, iv, ltcg_rate, rfr) ->
-   LeapsGttCloseEvent` (mirrors `roll_contract` but opens no replacement)
+2. Add a pure helper `close_leaps_contract(contract, date, spot, iv, ltcg_rate, rfr) ->`
+   `LeapsGttCloseEvent` (mirrors `roll_contract` but opens no replacement)
 3. Add `run_segmented_leaps_simulation(price_series, position_mask, defensive_gross_return,
    leaps_monthly, config, ...)` that walks alternating Long/Defensive windows, calling
    `run_leaps_simulation` per Long window with `initial_capital = parked_pool`, force-closing
