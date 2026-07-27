@@ -1,5 +1,7 @@
 """Tests for GTT constants and GttConfig / PortfolioConfig validation (F-01, F-02)."""
 
+from dataclasses import FrozenInstanceError
+
 import pytest
 
 from finance.consts import (
@@ -59,17 +61,17 @@ def test_gttconfig_default_weights_are_independent_instances() -> None:
 
 def test_gttconfig_is_frozen() -> None:
     cfg = GttConfig(vix_p90_threshold=0.272)
-    with pytest.raises(Exception):
+    with pytest.raises(FrozenInstanceError):
         cfg.vix_p90_threshold = 0.30  # type: ignore[misc]
 
 
 def test_gttconfig_weights_sum_below_one_raises() -> None:
-    with pytest.raises(ValueError, match="defensive_weights must sum to 1.0"):
+    with pytest.raises(ValueError, match=r"defensive_weights must sum to 1\.0"):
         GttConfig(vix_p90_threshold=0.272, defensive_weights={"R_f": 0.5, "GLD": 0.4})
 
 
 def test_gttconfig_weights_sum_above_one_raises() -> None:
-    with pytest.raises(ValueError, match="defensive_weights must sum to 1.0"):
+    with pytest.raises(ValueError, match=r"defensive_weights must sum to 1\.0"):
         GttConfig(vix_p90_threshold=0.272, defensive_weights={"R_f": 0.6, "GLD": 0.5})
 
 
@@ -130,7 +132,7 @@ def test_portfolioconfig_unknown_defensive_ticker_raises() -> None:
         vix_p90_threshold=0.272,
         defensive_weights={"R_f": 0.5, "TLT": 0.5},  # TLT absent from target_weights
     )
-    with pytest.raises(ValueError, match="absent from target_weights.*TLT"):
+    with pytest.raises(ValueError, match=r"absent from target_weights.*TLT"):
         _portfolio_config(gtt_config=gtt)
 
 
