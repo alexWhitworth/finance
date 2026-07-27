@@ -286,11 +286,15 @@ def test_fetch_gtt_live_fred_indexing_check() -> None:
         Sep-2021 rate -> published 2021-10-01 (first Friday of Oct 2021 = Oct 1 itself)
         Jan-2008 rate -> published 2008-02-01 (first Friday of Feb 2008 = Feb 1 itself)
 
-    This test is marked 'slow' and requires a valid FRED_API_KEY environment variable.
+    This test is marked 'slow' and requires a valid FRED_API_KEY environment variable
+    (or a .env file in the project root readable by python-dotenv).
     """
     import os
 
+    from dotenv import load_dotenv
     from fredapi import Fred
+
+    load_dotenv()
 
     from finance.gtt import _first_friday_of_following_month
 
