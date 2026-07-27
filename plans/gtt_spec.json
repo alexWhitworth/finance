@@ -880,7 +880,7 @@
       "description": "Add the LeapsGttCloseEvent dataclass and a gtt_close_events tuple field (default ()) to LeapsLedger. Add pure close_leaps_contract that marks-to-market, taxes positive gains at ltcg_rate (0 if TAX_SHELTERED/loss), and returns the event.",
       "phase": 4,
       "priority": 1,
-      "status": "not_started",
+      "status": "pending_judge",
       "layer": "python",
       "dependencies": [
         "F-01-CONSTS-CONFIG"

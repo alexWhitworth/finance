@@ -164,20 +164,47 @@ class LeapsPartialCloseEvent:
 
 
 @dataclass(frozen=True)
+class LeapsGttCloseEvent:
+    """Forced full close of a LEAPS contract triggered by a GTT defensive signal.
+
+    Distinct from a roll (no replacement contract is opened) and from a partial
+    close (this is a full close and, in taxable accounts, taxes positive gains).
+
+    Attributes:
+        close_date: Execution date (last Long day before a Defensive window).
+        contract: The contract being fully closed.
+        mtm_value: Black-Scholes mark-to-market value at close.
+        gain_realized: mtm_value minus original total cost basis; may be negative.
+        tax_paid: max(0, gain_realized) * ltcg_rate; 0.0 for TAX_SHELTERED or loss.
+        net_proceeds: mtm_value - tax_paid, parked in the defensive sleeve.
+    """
+
+    close_date: pd.Timestamp
+    contract: LeapsContract
+    mtm_value: float
+    gain_realized: float
+    tax_paid: float
+    net_proceeds: float
+
+
+@dataclass(frozen=True)
 class LeapsLedger:
     """Complete transaction history for one LEAPS simulation.
 
     Attributes:
         contracts: All contracts ever created (includes both live and rolled-out).
         roll_events: All roll transactions executed during the simulation.
-        partial_close_events: All pro-rata partial close events (from rebalancing).
         account_type: Account type governing all contracts in this ledger.
+        partial_close_events: All pro-rata partial close events (from rebalancing).
+        gtt_close_events: All GTT-driven forced full-close events. Empty tuple when
+            GTT is not active (default), ensuring backward compatibility.
     """
 
     contracts: tuple[LeapsContract, ...]
     roll_events: tuple[LeapsRollEvent, ...]
     account_type: AccountType
     partial_close_events: tuple[LeapsPartialCloseEvent, ...] = ()
+    gtt_close_events: tuple[LeapsGttCloseEvent, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -514,11 +541,57 @@ def roll_contract(
     )
 
 
+def close_leaps_contract(
+    contract: LeapsContract,
+    date: pd.Timestamp,
+    spot: float,
+    iv: float,
+    ltcg_rate: float,
+    rfr: float,
+) -> LeapsGttCloseEvent:
+    """Fully close a LEAPS contract triggered by a GTT defensive signal.
+
+    Marks the contract to market, computes the realized gain, taxes positive
+    gains at ltcg_rate for TAXABLE accounts (0.0 for TAX_SHELTERED or losses),
+    and returns the full event record. No replacement contract is opened.
+
+    Arguments:
+        contract: The contract to fully close.
+        date: Close execution date.
+        spot: Underlying spot price at close.
+        iv: Implied volatility for Black-Scholes pricing at close.
+        ltcg_rate: Combined LTCG + NIIT rate applied to positive gains.
+        rfr: Continuously compounded risk-free rate for BS pricing.
+
+    Returns:
+        LeapsGttCloseEvent with mtm_value, gain_realized, tax_paid, and
+        net_proceeds populated.
+    """
+    mtm_value = price_leaps_contract(contract, spot, date, iv, rfr)
+    cost_basis = contract.premium_paid * CONTRACT_MULTIPLIER * contract.n_contracts
+    gain_realized = mtm_value - cost_basis
+
+    if contract.account_type == AccountType.TAX_SHELTERED:
+        tax_paid = 0.0
+    else:
+        tax_paid = max(0.0, gain_realized) * ltcg_rate
+
+    return LeapsGttCloseEvent(
+        close_date=date,
+        contract=contract,
+        mtm_value=mtm_value,
+        gain_realized=gain_realized,
+        tax_paid=tax_paid,
+        net_proceeds=mtm_value - tax_paid,
+    )
+
+
 def _live_contracts(ledger: LeapsLedger, current_date: pd.Timestamp) -> list[LeapsContract]:
     """Return the set of live contracts at current_date.
 
-    Excludes rolled-out originals and replaced partial-close originals.
-    Substitutes continuation contracts for partially-closed originals.
+    Excludes rolled-out originals, GTT-force-closed contracts, replaced
+    partial-close originals, and expired contracts. Substitutes continuation
+    contracts for partially-closed originals.
 
     Arguments:
         ledger: LeapsLedger with full contract and event history.
@@ -528,6 +601,7 @@ def _live_contracts(ledger: LeapsLedger, current_date: pd.Timestamp) -> list[Lea
         List of live LeapsContract objects.
     """
     rolled_out = {event.old_contract for event in ledger.roll_events}
+    gtt_closed = {event.contract for event in ledger.gtt_close_events}
     partially_closed: dict[LeapsContract, LeapsContract] = {
         ev.original_contract: ev.continuation_contract
         for ev in ledger.partial_close_events
@@ -535,6 +609,8 @@ def _live_contracts(ledger: LeapsLedger, current_date: pd.Timestamp) -> list[Lea
     live: list[LeapsContract] = []
     for c in ledger.contracts:
         if c in rolled_out:
+            continue
+        if c in gtt_closed:
             continue
         if c.expiry_date <= current_date:
             continue
