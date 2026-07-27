@@ -933,10 +933,10 @@
     {
       "id": "F-09-SEGMENTED-LEAPS",
       "name": "run_segmented_leaps_simulation (pure)",
-      "description": "Segment the timeline by position_mask into Long/Defensive windows. Per Long window run run_leaps_simulation seeded with the parked pool as initial_capital, then force-close all live contracts on the window's last day. Compound the parked pool through Defensive windows via defensive_gross_return and add diverted contributions. Assemble a combined LeapsLedger with gtt_close_events.",
+      "description": "SUPERSEDED by unified rebalance design (A9/A10 in implement_gtt.md). run_segmented_leaps_simulation is removed from the codebase as part of F-10. The segmentation loop now lives inside run_backtest. Primitives (close_leaps_contract, LeapsGttCloseEvent) from F-08 are retained and reused.",
       "phase": 4,
       "priority": 1,
-      "status": "complete",
+      "status": "superseded",
       "layer": "python",
       "dependencies": [
         "F-08-LEAPS-CLOSE"
@@ -990,12 +990,12 @@
         "Whipsaw: many short Long/Defensive flips produce one close event set per boundary; realized tax accumulates in gtt_close_events."
       ],
       "clarification_needed": false,
-      "clarification_notes": null
+      "clarification_notes": "Superseded because re-entry LEAPS capital = leaps_fraction x total_NAV requires live portfolio NAV, only available inside run_backtest loop. Pre-computation assumption is incompatible with unified rebalance."
     },
     {
       "id": "F-10-RUN-BACKTEST",
       "name": "run_backtest GTT branch",
-      "description": "Add gtt_signal parameter. Pre-compute GTT-governed tickers, reindexed position_mask, and defensive-sleeve gross return; build the segmented ledger when LEAPS present. In the loop, defensive days route base-equity capital to the defensive sleeve while LEAPS MTM is 0 (no live contracts). Rebalance first, then GTT override (Option C). Divert VTI/LEAPS contribution shares to the defensive sleeve when defensive. gtt_signal=None is a no-op.",
+      "description": "Add gtt_signal parameter to run_backtest. Remove run_segmented_leaps_simulation. Pre-compute GTT-governed tickers, reindexed position_mask, and defensive-sleeve gross return. Inline segmentation loop: track leaps_pool and current_leaps_ledger across the daily loop. On Long->Defensive: force-close via close_leaps_contract, pool = sum(net_proceeds). On Defensive->Long: forced re-entry rebalance restores target_weights on total_NAV = base_eq + leaps_pool; LEAPS capital = leaps_fraction x total_NAV; call run_leaps_simulation for new window. On Defensive day: base equity rides defensive sleeve, LEAPS MTM=0, leaps_monthly diverts to pool. Quarterly rebalance on a Long day runs normally (Option C). Assemble final LeapsLedger from per-window ledgers at loop end. gtt_signal=None is a no-op.",
       "phase": 5,
       "priority": 1,
       "status": "not_started",
@@ -1003,7 +1003,7 @@
       "dependencies": [
         "F-02-PORTFOLIO-CONFIG",
         "F-06-SIGNAL-DATA",
-        "F-09-SEGMENTED-LEAPS"
+        "F-08-LEAPS-CLOSE"
       ],
       "linked_schemas": [
         "S-PORTFOLIO-CONFIG-EXT",
@@ -1032,6 +1032,7 @@
         "With gtt_signal=None, BacktestResult (nav, return_series, weight_history, leaps_ledger) is identical to the pre-change implementation on the existing test corpus (exact equality).",
         "With an all-Long position_mask, results equal the no-GTT run within 1e-9 on terminal NAV.",
         "On a synthetic defensive window, VTI (and VTI_LEAPS) weight in weight_history is exactly 0 and defensive_weights assets carry the redistributed capital.",
+        "On Defensive->Long re-entry, portfolio weight_history immediately reflects target_weights (forced rebalance): leaps weight = leaps_fraction within 1e-9 and base assets at base_target_w within 1e-9.",
         "Providing gtt_signal while config.gtt_config is None (or the reverse) raises ValueError.",
         "A no-LEAPS GTT backtest and a no-GTT LEAPS backtest both match their respective baselines."
       ],
@@ -1050,14 +1051,25 @@
         },
         {
           "type": "unit",
+          "description": "Forced re-entry rebalance: assert portfolio weights equal target_weights within 1e-9 on the first Long day after a defensive window."
+        },
+        {
+          "type": "unit",
+          "description": "LEAPS pool compounding: assert leaps_pool at re-entry equals force-close proceeds compounded by defensive_gross_return plus diverted leaps_monthly contributions (within 1e-9)."
+        },
+        {
+          "type": "unit",
           "description": "Rebalance-then-override ordering (Option C) on a rebalance date that is also defensive."
         }
       ],
       "edge_cases": [
-        "Rebalance date coincides with a defensive day -> rebalance runs first, then GTT zeroes VTI/LEAPS.",
+        "Rebalance date coincides with a defensive day -> quarterly rebalance runs on base-equity holdings only, then GTT override re-applied.",
+        "Rebalance date coincides with re-entry (Defensive->Long) day -> forced re-entry rebalance fires; scheduled quarterly rebalance is redundant and skipped (or merged).",
         "position_mask holiday misalignment with returns.index -> reindex with ffill.",
         "gtt_config set but target_weights hold no VTI/LEAPS -> GTT is a no-op, no crash.",
-        "Re-entry mid-quarter -> parked pools return to VTI shares and a fresh LEAPS contract that day."
+        "leaps_pool at re-entry too small to create a contract -> create_leaps_contract floors n_contracts to 0; pool carries over to next month-end purchase.",
+        "Timeline ends inside a defensive window -> leaps_pool is reported in final LeapsLedger gtt_close_events; no dangling open contracts.",
+        "Whipsaw: rapid Long->Defensive->Long flips -> each transition force-closes and re-opens; tax drag accumulates in gtt_close_events."
       ],
       "clarification_needed": false,
       "clarification_notes": null

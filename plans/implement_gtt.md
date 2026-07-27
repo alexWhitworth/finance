@@ -268,45 +268,49 @@ parked capital buys **fresh** DITM 2-year contracts at the then-current spot and
 accurate treatment: the closed contracts stop carrying delta during the defensive period, and
 re-entry pays the prevailing option price (correctly capturing elevated IV after a vol spike).
 
-*Why this changes the architecture.* Today `run_leaps_simulation` is pre-computed **once**, up
-front, and the daily loop only prices the resulting ledger. GTT-driven close/reopen cannot use a
-single pre-computed ledger because the re-entry capital depends on how the parked proceeds grow
-inside the defensive sleeve. However, the defensive-sleeve return path is itself independent of
-LEAPS (it is a fixed-weight blend of `defensive_weights` assets + `R_f`), so it **can** be
-pre-computed. This lets us keep the "pre-compute the ledger, then price it in the loop" pattern
-via a **segmented simulation**:
+*Architecture decision (confirmed).* The LEAPS re-entry capital must equal
+`leaps_fraction × total_NAV` at the re-entry date, so the portfolio is re-anchored to target
+asset allocation on every Defensive→Long transition. This means the re-entry LEAPS capital
+depends on live portfolio NAV, which is only known inside `run_backtest`'s daily loop.
+`run_segmented_leaps_simulation` (F-09) is therefore **superseded**: its pre-computation
+assumption is incompatible with the unified rebalance model and it is removed from the
+codebase as part of F-10.
+
+*Re-entry mechanics (Option A — immediate forced rebalance):* On the first Long day after a
+defensive window, regardless of the quarterly schedule:
+
+1. Total NAV = base-equity defensive sleeve value + parked LEAPS pool
+2. A forced rebalance restores `target_weights` on that combined NAV:
+   - `leaps_fraction × NAV` → seeds `run_leaps_simulation` as `initial_capital` for the new Long window
+   - `(1 - leaps_fraction) × NAV` → redistributed across base assets at `base_target_w`
+3. The monthly contribution split (`leaps_monthly` / `base_contribution`) remains fixed dollar amounts set at startup; quarterly rebalancing naturally corrects any subsequent drift.
+
+*Segmentation loop (now lives inside `run_backtest`):*
 
 ```
-Given position_mask, split the timeline into alternating Long / Defensive windows.
-Pre-compute defensive_gross_return_t  (pure: defensive_weights · asset_returns, R_f → rfr/252).
+Per Long window (driven inline from run_backtest's daily loop):
+    On first Long day after a defensive window:
+        total_nav = base_eq_value + leaps_pool
+        leaps_capital = leaps_fraction × total_nav
+        base_nav = (1 - leaps_fraction) × total_nav
+        realign base holdings to base_target_w on base_nav   ← forced rebalance
+        call run_leaps_simulation(window_prices, leaps_monthly,
+                                  config, initial_capital=leaps_capital)
+        → append window LeapsLedger to running combined ledger
 
-pool = 0.0                                   # parked LEAPS-origin capital (dollars)
-for each window in chronological order:
-    if window is LONG:
-        segment_ledger = run_leaps_simulation(
-            price_series = prices[window],
-            monthly_contribution_to_leaps = leaps_monthly,
-            initial_capital = pool,          # deploy parked capital as a fresh contract on day 1
-            ... iv_series, risk_free_series ...
-        )
-        # On the window's final day, force-close every live contract:
-        #   value  = price_leaps_contract(c, spot, last_day, iv, rfr)   for each live c
-        #   tax    = max(0, value - cost_basis) * ltcg_rate    (0 if TAX_SHELTERED or loss)
-        #   record a LeapsGttCloseEvent(close_date, contract, value, tax)
-        pool = sum(value - tax over live contracts)
-        append segment_ledger.contracts / roll_events / close_events to the combined ledger
-    else:  # DEFENSIVE window
-        # Parked LEAPS capital rides the defensive sleeve alongside diverted contributions.
-        for day in window:
-            pool *= (1 + defensive_gross_return_day)
-        pool += diverted_leaps_contributions over the window   # leaps share of monthly_contribution
-        # No live LEAPS contracts exist during a defensive window → LEAPS MTM = 0.
+    On last Long day before a Defensive window:
+        force-close all live contracts via close_leaps_contract
+        leaps_pool = sum(net_proceeds)
+
+Per Defensive window:
+    each day: leaps_pool *= (1 + defensive_gross_return_day)
+    each month-end: leaps_pool += leaps_monthly   # diverted LEAPS contributions
+    base equity holdings ride defensive_weights assets normally
+    no live LEAPS contracts → LEAPS MTM = 0
 ```
 
-The combined `LeapsLedger` is assembled from all segments. During a defensive window the loop
-finds **no** live contracts (`_live_contracts` returns empty), so equity/LEAPS attribution is
-correctly zero and the parked `pool` shows up under the defensive sleeve — matching the real
-economics with no notional hand-waving.
+The combined `LeapsLedger` is assembled by appending per-window ledgers at the end of the loop.
+During a defensive window `_live_contracts` returns empty, so LEAPS attribution is correctly zero.
 
 *New event type (in `leverage.py`):*
 
@@ -327,14 +331,15 @@ class LeapsGttCloseEvent:
 
 `LeapsLedger` gains one field: `gtt_close_events: tuple[LeapsGttCloseEvent, ...] = ()`.
 
-**Monthly contributions during a defensive period:** the VTI and LEAPS shares of
-`monthly_contribution` are diverted to the defensive sleeve. The base-equity share and the
-LEAPS share are tracked as separate parked pools so that on re-entry each returns to its own
-destination (VTI → shares at current price; LEAPS → a fresh contract sized by its parked pool).
+**Monthly contributions during a defensive period:** the LEAPS share of `monthly_contribution`
+is diverted into `leaps_pool` (compounding with the defensive return). The base-equity share
+continues to be allocated to `defensive_weights` assets. The split remains fixed dollar amounts
+(`leaps_monthly` and `base_contribution` computed once at startup); drift is corrected by the
+next scheduled quarterly rebalance.
 
-**Re-entry timing:** re-entry deploys the parked LEAPS pool on the first Long day via
-`create_leaps_contract` at that day's spot/IV — it does not wait for a month-end. The normal
-month-end roll/purchase cadence resumes thereafter.
+**Re-entry timing:** the forced rebalance fires on the first Long day, immediately redeploying
+the full combined NAV (base equity + leaps_pool) to `target_weights`. It does not wait for a
+month-end or the next scheduled quarterly rebalance date.
 
 **No changes to `BacktestResult` shape.** `weight_history` will reflect 0 weight for VTI
 and non-zero for defensive assets during GTT-active periods, which is the correct
@@ -389,18 +394,17 @@ Add the five constants listed in §3.4.
 5. Wire through to pure functions; return `GttSignalData`
 6. Integration test (optional, marked slow): live fetch for a short date range
 
-### Phase 4 — Segmented LEAPS Simulation (close-and-reopen)
+### Phase 4 — LEAPS Close Primitives (close-and-reopen building blocks)
+
+**Note:** `run_segmented_leaps_simulation` (originally planned here) is superseded by the
+unified rebalance design. Only the primitives needed by F-10 are implemented in this phase.
 
 1. Add `LeapsGttCloseEvent` dataclass and `gtt_close_events` field to `LeapsLedger` in
    `leverage.py`
 2. Add a pure helper `close_leaps_contract(contract, date, spot, iv, ltcg_rate, rfr) ->`
    `LeapsGttCloseEvent` (mirrors `roll_contract` but opens no replacement)
-3. Add `run_segmented_leaps_simulation(price_series, position_mask, defensive_gross_return,
-   leaps_monthly, config, ...)` that walks alternating Long/Defensive windows, calling
-   `run_leaps_simulation` per Long window with `initial_capital = parked_pool`, force-closing
-   at each Long→Defensive boundary, and compounding the pool through Defensive windows
-4. Tests (pure): single Long window == current behavior; a Long→Defensive→Long sequence closes
-   and reopens with the expected proceeds; TAX_SHELTERED path pays zero close tax
+3. Tests (pure): gain/loss/TAX_SHELTERED close cases; `LeapsLedger` backward compatibility;
+   `_live_contracts` excludes GTT-closed contracts
 
 ### Phase 5 — `run_backtest` GTT Branch
 
@@ -409,15 +413,29 @@ Add the five constants listed in §3.4.
    - Identify GTT-governed tickers: `GTT_EQUITY_TICKERS` ∪ all `*_LEAPS` keys derived from them
    - Reindex `gtt_signal.position_mask` to `returns.index`
    - `defensive_gross_return_t` = `defensive_weights · asset_returns` (with `R_f` → `rfr/252`)
-   - If LEAPS present, build the segmented ledger via `run_segmented_leaps_simulation`
-3. Inside the loop, after step (a) apply returns:
-   - If `position_mask[date] == 0`: base-equity holdings ride the defensive sleeve; LEAPS MTM
-     is naturally 0 because no contracts are live (segmented ledger already reflects the close)
-4. Monthly contribution diversion: inside month-end block, branch on `position_mask`; base and
-   LEAPS shares parked in the defensive sleeve, each returned to its destination on re-entry
-5. Rebalance interaction: rebalance runs first (Option C), then GTT override applied
+3. State carried across the loop:
+   - `leaps_pool: float` — parked LEAPS-origin capital during defensive windows
+   - `current_leaps_ledger: LeapsLedger | None` — the active Long-window ledger (None when defensive)
+   - `all_window_ledgers: list[LeapsLedger]` — accumulated per-window ledgers for final assembly
+4. Inside the loop:
+   - **Defensive day:** base-equity holdings ride the defensive sleeve; LEAPS MTM = 0 (no live
+     contracts in `current_leaps_ledger`); on month-end add `leaps_monthly` to `leaps_pool`
+   - **Long→Defensive transition:** force-close all live contracts via `close_leaps_contract`;
+     `leaps_pool = sum(net_proceeds)`; append window ledger to `all_window_ledgers`
+   - **Defensive→Long transition (forced re-entry rebalance):**
+     - `total_nav = base_eq_value + leaps_pool`
+     - `leaps_capital = leaps_fraction × total_nav`
+     - Realign base holdings to `base_target_w` on `(1 - leaps_fraction) × total_nav`
+     - Call `run_leaps_simulation(remaining_prices, leaps_monthly, config, initial_capital=leaps_capital)`
+       to build the new Long-window ledger; set as `current_leaps_ledger`
+     - `leaps_pool = 0`
+   - **Scheduled quarterly rebalance on a Long day:** rebalance runs as normal (Option C)
+   - **Scheduled quarterly rebalance on a Defensive day:** rebalance runs on base-equity holdings
+     only; GTT override re-applied after
+5. After the loop: assemble final `LeapsLedger` from `all_window_ledgers`; freeze
+   `gtt_close_events` onto it
 6. Tests: unit tests with synthetic return/price data; verify NAV, weight_history,
-   return_series match expected values when GTT fires and when it does not; verify a
+   return_series; verify forced re-entry rebalance restores `target_weights`; verify a
    no-LEAPS GTT backtest and a no-GTT LEAPS backtest are both unchanged
 
 ### Phase 6 — Validation Against EDA
@@ -441,6 +459,8 @@ Add the five constants listed in §3.4.
 | A5 | GTT governs only `GTT_EQUITY_TICKERS` (VTI) and their `_LEAPS` variants | VXUS held through all regimes until a VXUS-specific signal is designed |
 | A6 | `R_f` sentinel in `defensive_weights` earns `return_data.risk_free_rate[t] / 252` on each date t (a date-varying Series, not a scalar) | Uses the same `return_data.risk_free_rate` Series (`data.fetch_risk_free_rate`, daily annualized decimal) as the rest of the backtest; `defensive_gross_return` is computed per-date |
 | A7 | Defensive allocation is held at fixed weights; not rebalanced within a GTT-active period | Simplest correct behavior; drift within a defensive period is acceptable |
+| A9 | On Defensive→Long re-entry, a forced rebalance immediately restores `target_weights` on `total_NAV = base_eq + leaps_pool`, regardless of the quarterly schedule. LEAPS capital = `leaps_fraction × total_NAV`; base equity = `(1 - leaps_fraction) × total_NAV` at `base_target_w`. | Ensures the portfolio is re-anchored to the intended asset allocation at every re-entry; subsequent quarterly rebalances correct any intra-Long-window drift. Monthly contribution split (`leaps_monthly` / `base_contribution`) remains fixed dollar amounts set at startup. |
+| A10 | `run_segmented_leaps_simulation` (F-09) is superseded and removed. The segmentation loop now lives inside `run_backtest`. `run_leaps_simulation` (per-window primitive) and `close_leaps_contract` / `LeapsGttCloseEvent` (F-08 primitives) are retained and reused. | Necessary consequence of the unified rebalance design: re-entry LEAPS capital depends on live portfolio NAV, which is only known inside the backtest loop. |
 | A8 | `fredapi` is a hard dep (already in `pyproject.toml`); no optional-extra needed | Confirmed from `pyproject.toml` inspection |
 
 ---
@@ -452,7 +472,7 @@ Add the five constants listed in §3.4.
 | GTT fires on day 1 (before 200d SMA is computable) | Medium | `sma_window` period returns NaN SMA → treat as "above SMA" (stay long) until SMA is available; document this warm-up behavior |
 | UNRATE series gap / FRED API down | Medium | `fetch_gtt_signal_data` raises `ValueError` with clear message; never silently defaults to "no recession" |
 | `defensive_weights` ticker missing from `return_data` on a given day | Low | Caught at `__post_init__` validation time, not at runtime; fail fast |
-| GTT deactivates mid-quarter: re-entry timing vs. next rebalance date | Low | On re-entry, parked LEAPS pool buys a fresh contract that day; base-equity pool re-buys shares at current price; next rebalance corrects any drift |
+| GTT deactivates mid-quarter: re-entry timing vs. next rebalance date | Low | Forced re-entry rebalance fires immediately on the first Long day (Option A), fully restoring `target_weights` on combined NAV. No drift to correct; next quarterly rebalance is a no-op if no subsequent drift. |
 | Whipsaw: rapid Long→Defensive→Long flips churn LEAPS (close tax + fresh premium each cycle) | Medium | Real cost of the strategy, not a bug — surfaced via `gtt_close_events` count and realized tax in the ledger so the drag is measurable. VIX_5D's 5-consecutive-day rule already damps flip frequency |
 | GTT close on a contract with `n_contracts == 0` (premium floored) or a defensive window with zero live contracts | Low | Skip close (nothing to sell); pool simply compounds through the defensive sleeve |
 | Re-entry premium too small to buy a contract (`create_leaps_contract` floors `n_contracts` to 0) | Low | Parked pool stays in cash within the sleeve until the next month-end purchase can deploy it; matches existing `create_leaps_contract` behavior |
