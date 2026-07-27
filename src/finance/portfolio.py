@@ -4,11 +4,20 @@ All business logic is pure. Receives ReturnData + PriceData + PortfolioConfig
 and produces BacktestResult consumed by metrics.py.
 """
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 
 import pandas as pd
 
-from finance.consts import DEFAULT_IV, DRIFT_BAND_RELATIVE, LEAPS_KEY_SUFFIX, VIX_MTM_WINDOW
+from finance.consts import (
+    DEFAULT_IV,
+    DRIFT_BAND_RELATIVE,
+    GTT_DEFENSIVE_WEIGHTS_DEFAULT,
+    GTT_SMA_WINDOW,
+    GTT_UNRATE_TRADE_LAG_DAYS,
+    GTT_VIX_CONSECUTIVE_DAYS,
+    LEAPS_KEY_SUFFIX,
+    VIX_MTM_WINDOW,
+)
 from finance.data import PriceData
 from finance.leverage import (
     LeapsConfig,
@@ -27,6 +36,58 @@ from finance.returns import ReturnData
 # ---------------------------------------------------------------------------
 
 
+# Sentinel key in defensive_weights meaning T-bill cash (earns risk_free_rate/252
+# per day). Exempt from the target_weights membership check.
+GTT_RISK_FREE_KEY: str = "R_f"
+
+
+@dataclass(frozen=True)
+class GttConfig:
+    """Configuration for the GTT (Growth Trend Timing) market-timing overlay.
+
+    Opt-in via PortfolioConfig.gtt_config. Governs the GTT_EQUITY_TICKERS leg
+    (currently VTI and its _LEAPS variant), moving it into a fixed-weight
+    defensive sleeve when recession risk is detected and the price trend confirms.
+    Extensible for future per-ticker signals (e.g. VXUS).
+
+    Attributes:
+        vix_p90_threshold: Fixed VIX P90 threshold as a decimal (e.g. 0.272 == 27.2%).
+            Caller computes from desired history to avoid look-ahead; the library
+            applies no look-ahead protection.
+        sma_window: Rolling window (trading days) for the equity price SMA trend
+            filter. Default GTT_SMA_WINDOW (200).
+        vix_consecutive_days: N consecutive days VIX >= threshold required to fire
+            VIX_5D. Default GTT_VIX_CONSECUTIVE_DAYS (5).
+        unrate_trade_lag_days: Trading-day execution lag from the UNRATE publication
+            date to the trade. The ~1-month reference→publication lag is handled
+            inside compute_ue_signal, NOT by this field. Default
+            GTT_UNRATE_TRADE_LAG_DAYS (1).
+        defensive_weights: Weights the defensive sleeve holds when defensive. Must
+            sum to 1.0 (abs tol 1e-6). Sentinel key "R_f" means T-bill cash whose
+            daily gross return is risk_free_rate[t]/252 (a date-varying Series, not
+            a scalar). Non-R_f keys must exist in target_weights. Default
+            GTT_DEFENSIVE_WEIGHTS_DEFAULT.
+
+    Raises:
+        ValueError: If defensive_weights does not sum to 1.0 within 1e-6.
+    """
+
+    vix_p90_threshold: float
+    sma_window: int = GTT_SMA_WINDOW
+    vix_consecutive_days: int = GTT_VIX_CONSECUTIVE_DAYS
+    unrate_trade_lag_days: int = GTT_UNRATE_TRADE_LAG_DAYS
+    defensive_weights: dict[str, float] = field(
+        default_factory=lambda: dict(GTT_DEFENSIVE_WEIGHTS_DEFAULT)
+    )
+
+    def __post_init__(self) -> None:
+        total = sum(self.defensive_weights.values())
+        if abs(total - 1.0) > 1e-6:
+            raise ValueError(
+                f"defensive_weights must sum to 1.0; got {total:.6f}"
+            )
+
+
 @dataclass(frozen=True)
 class PortfolioConfig:
     """Specification for a single backtest run.
@@ -38,6 +99,14 @@ class PortfolioConfig:
         rebalance_rule: When to rebalance (QUARTERLY, etc.).
         weight_strategy: How target weights are determined.
         leaps_config: Optional LEAPS overlay configuration.
+        gtt_config: Optional GTT market-timing overlay. None = GTT disabled
+            (existing behavior unchanged). When set, non-R_f keys in
+            defensive_weights must exist in target_weights.
+
+    Raises:
+        ValueError: If target_weights does not sum to 1.0 within 1e-6.
+        ValueError: If gtt_config is set and a non-R_f defensive_weights key is
+            absent from target_weights.
     """
 
     target_weights: dict[str, float]
@@ -46,6 +115,7 @@ class PortfolioConfig:
     rebalance_rule: RebalanceRule
     weight_strategy: WeightStrategy
     leaps_config: LeapsConfig | None = None
+    gtt_config: GttConfig | None = None
 
     def __post_init__(self) -> None:
         total = sum(self.target_weights.values())
@@ -53,6 +123,16 @@ class PortfolioConfig:
             raise ValueError(
                 f"target_weights must sum to 1.0; got {total:.6f}"
             )
+        if self.gtt_config is not None:
+            missing = [
+                k
+                for k in self.gtt_config.defensive_weights
+                if k != GTT_RISK_FREE_KEY and k not in self.target_weights
+            ]
+            if missing:
+                raise ValueError(
+                    f"defensive_weights keys absent from target_weights: {missing}"
+                )
 
 
 @dataclass(frozen=True)

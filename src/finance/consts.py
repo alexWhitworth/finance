@@ -79,3 +79,26 @@ NBER_RECESSION_PERIODS: list[tuple[str, str]] = [
     ("2007-12-31", "2009-06-30"),
     ("2020-02-28", "2020-04-30"),
 ]
+
+# ---------------------------------------------------------------------------
+# GTT (Growth Trend Timing) market-timing overlay
+# ---------------------------------------------------------------------------
+
+# Tickers governed by the GTT timing signal.
+# VTI_LEAPS is matched via the LEAPS_KEY_SUFFIX suffix ("VTI_LEAPS").
+# Extend this set when a VXUS GTT signal is designed and validated.
+GTT_EQUITY_TICKERS: frozenset[str] = frozenset({"VTI"})
+
+# Trading-day execution lag from the UNRATE publication date to the trade. The
+# reference→publication (~1-month) lag is handled inside compute_ue_signal via
+# first-Friday re-stamping, NOT by this constant.
+GTT_UNRATE_TRADE_LAG_DAYS: int = 1
+GTT_VIX_CONSECUTIVE_DAYS: int = 5  # Default persistence window
+GTT_SMA_WINDOW: int = 200  # Default equity price SMA window
+
+GTT_DEFENSIVE_WEIGHTS_DEFAULT: dict[str, float] = {
+    "R_f": 0.25,
+    "KMLM": 0.25,
+    "VGIT": 0.25,
+    "GLD": 0.25,
+}
