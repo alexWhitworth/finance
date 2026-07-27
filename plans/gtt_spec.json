@@ -516,7 +516,7 @@
       "description": "Add GTT_EQUITY_TICKERS, GTT_UNRATE_TRADE_LAG_DAYS, GTT_VIX_CONSECUTIVE_DAYS, GTT_SMA_WINDOW, GTT_DEFENSIVE_WEIGHTS_DEFAULT to consts.py. Add frozen GttConfig to portfolio.py with __post_init__ validating defensive_weights sums to 1.0 (abs tol 1e-6).",
       "phase": 1,
       "priority": 1,
-      "status": "completed",
+      "status": "pending_judge",
       "layer": "python",
       "dependencies": [],
       "linked_schemas": [
@@ -565,7 +565,7 @@
       "description": "Add optional gtt_config: GttConfig | None = None to PortfolioConfig. Extend __post_init__: if gtt_config is not None, every non-R_f key in defensive_weights must exist in target_weights.",
       "phase": 1,
       "priority": 1,
-      "status": "completed",
+      "status": "pending_judge",
       "layer": "python",
       "dependencies": [
         "F-01-CONSTS-CONFIG"
@@ -617,7 +617,7 @@
       "description": "UNRATE monthly obs re-stamped to their publication date (1st Friday of the FOLLOWING month, Option B) -> daily ffill -> trailing 12-month MA -> 0/1 flag where UNRATE >= MA. No day-count shift here; the close->open execution lag is applied downstream in compute_position_mask. Eliminates the ~1-month reference-month look-ahead.",
       "phase": 2,
       "priority": 1,
-      "status": "completed",
+      "status": "pending_judge",
       "layer": "python",
       "dependencies": [
         "F-01-CONSTS-CONFIG"
@@ -674,7 +674,7 @@
       "description": "0/1 flag where VIX >= threshold for N consecutive days (rolling sum of daily >= flags equals N).",
       "phase": 2,
       "priority": 1,
-      "status": "completed",
+      "status": "pending_judge",
       "layer": "python",
       "dependencies": [
         "F-01-CONSTS-CONFIG"
@@ -725,7 +725,7 @@
       "description": "OR the UE and VIX signals, gate with the 200d SMA price filter, apply 1-day lag. 1=Long, 0=Defensive. SMA warm-up (NaN) treated as above-SMA.",
       "phase": 2,
       "priority": 1,
-      "status": "completed",
+      "status": "pending_judge",
       "layer": "python",
       "dependencies": [
         "F-03-UE-SIGNAL",
@@ -777,7 +777,7 @@
       "description": "Frozen container carrying position_mask, ue_signal, vix_signal, threshold, and start dates. Assembled by fetch_gtt_signal_data; consumed by run_backtest.",
       "phase": 2,
       "priority": 2,
-      "status": "completed",
+      "status": "pending_judge",
       "layer": "python",
       "dependencies": [
         "F-05-POSITION-MASK"
