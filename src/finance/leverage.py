@@ -1022,19 +1022,21 @@ def run_segmented_leaps_simulation(
         partial_close_events, and gtt_close_events populated.
 
     Raises:
-        ValueError: If price_series and position_mask indexes cannot be aligned
-            (no common dates).
+        ValueError: If position_mask is non-empty and shares no dates with
+            price_series (would produce a silently all-Long mask).
     """
     if price_series.empty:
         return LeapsLedger(contracts=(), roll_events=(), account_type=config.account_type)
 
-    # Align position_mask to price_series index; missing values default to 1 (Long).
-    mask_aligned = position_mask.reindex(price_series.index, method="ffill").fillna(1).astype(int)
-
-    if mask_aligned.index.intersection(price_series.index).empty:
+    # Validate before reindex: a non-empty mask with no date overlap would ffill-fill
+    # entirely from NaN -> silently treat the whole timeline as Long (regime=1).
+    if not position_mask.empty and position_mask.index.intersection(price_series.index).empty:
         raise ValueError(
             "price_series and position_mask indexes cannot be aligned (no common dates)."
         )
+
+    # Align position_mask to price_series index; missing values default to 1 (Long).
+    mask_aligned = position_mask.reindex(price_series.index, method="ffill").fillna(1).astype(int)
 
     # Identify window boundaries: (start_idx, end_idx_inclusive, regime)
     # by scanning for transitions in the mask.

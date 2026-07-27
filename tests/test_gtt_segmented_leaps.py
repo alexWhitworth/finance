@@ -47,7 +47,7 @@ def _config(account_type: AccountType = AccountType.TAXABLE) -> LeapsConfig:
 
 
 def test_all_long_equivalence_contracts() -> None:
-    """All-Long mask: contracts and roll_events must match run_leaps_simulation exactly."""
+    """All-Long mask: contracts and roll_events must be byte-equal to run_leaps_simulation."""
     prices = _prices(n_months=24)
     mask = _all_long_mask(prices)
     def_ret = _zero_defensive_return(prices)
@@ -58,19 +58,19 @@ def test_all_long_equivalence_contracts() -> None:
         prices, mask, def_ret, leaps_monthly=500.0, config=cfg
     )
 
-    # gtt_close_events should be empty for an all-Long run
+    # gtt_close_events must be empty for an all-Long run
     assert segmented.gtt_close_events == ()
 
-    # Every contract in `direct` should also be in `segmented`.
-    # We compare by (purchase_date, strike, n_contracts) tuples since dataclasses are frozen.
-    def _contract_key(c: object) -> tuple:  # type: ignore[type-arg]
-        return (c.purchase_date, round(c.strike, 6), round(c.n_contracts, 6))  # type: ignore[union-attr]
+    # Contracts must be identical (frozen dataclasses: full field equality, same order)
+    assert segmented.contracts == direct.contracts, (
+        f"contracts differ: segmented has {len(segmented.contracts)}, "
+        f"direct has {len(direct.contracts)}"
+    )
 
-    direct_keys = {_contract_key(c) for c in direct.contracts}
-    seg_keys = {_contract_key(c) for c in segmented.contracts}
-    assert direct_keys == seg_keys, "Contract sets differ between direct and segmented"
-
-    assert len(direct.roll_events) == len(segmented.roll_events)
+    # Roll events must be identical (same count, same content)
+    assert len(segmented.roll_events) == len(direct.roll_events)
+    for i, (sr, dr) in enumerate(zip(segmented.roll_events, direct.roll_events, strict=True)):
+        assert sr == dr, f"roll_event[{i}] differs: segmented={sr} direct={dr}"
 
 
 def test_all_long_no_gtt_close_events() -> None:
@@ -159,48 +159,61 @@ def test_ldl_live_contracts_exist_in_long_windows() -> None:
 
 
 def test_ldl_parked_pool_grows_through_defensive_window() -> None:
-    """Parked pool grows by defensive_gross_return during the Defensive window."""
+    """Parked pool grows exactly by defensive_gross_return during the Defensive window.
+
+    AC-2: capital at re-entry == sum(net_proceeds from force-close) compounded by
+    defensive_gross_return over each defensive day, plus leaps_monthly at each
+    month-end, all within 1e-9 tolerance.
+    """
     prices, mask = _ldl_prices_and_mask(long1_months=4, def_months=2, long2_months=4)
 
-    # Use a known constant daily gross return of 0.001 (0.1% per day)
-    daily_return = 0.001
+    daily_return = 0.001  # 0.1% per day — known constant
     def_ret = pd.Series(daily_return, index=prices.index)
-
+    leaps_monthly = 500.0
     cfg = _config()
 
-    # Run twice: once with the given return, once with zero return.
-    # The second Long window contracts should be sized differently because the
-    # re-entry pool is larger with non-zero defensive return.
-    ledger_with_return = run_segmented_leaps_simulation(
-        prices, mask, def_ret, leaps_monthly=500.0, config=cfg
-    )
-    ledger_zero_return = run_segmented_leaps_simulation(
-        prices, mask, _zero_defensive_return(prices), leaps_monthly=500.0, config=cfg
+    ledger = run_segmented_leaps_simulation(
+        prices, mask, def_ret, leaps_monthly=leaps_monthly, config=cfg
     )
 
-    # The ledger with positive defensive return should have a larger pool at re-entry,
-    # which means more capital deployed at the start of the second Long window.
-    # We verify this indirectly by checking that gtt_close_events exist in both cases
-    # and that the re-entry contracts are non-trivially sized (n_contracts > 0).
-    assert len(ledger_with_return.gtt_close_events) > 0
-    assert len(ledger_zero_return.gtt_close_events) > 0
+    assert len(ledger.gtt_close_events) > 0, "Expected GTT close events at L->D boundary"
 
-    # The total initial capital deployed at re-entry should be >= the zero-return case.
-    # Find the first contract purchased after the defensive window ends.
-    t0 = pd.Timestamp("2018-01-02")
-    reentry_start = t0 + pd.DateOffset(months=6)
-    second_long_contracts_with = [
-        c for c in ledger_with_return.contracts
-        if c.purchase_date >= reentry_start
-    ]
-    second_long_contracts_zero = [
-        c for c in ledger_zero_return.contracts
-        if c.purchase_date >= reentry_start
-    ]
-    # With a positive defensive return the re-entry initial_capital should be larger.
-    # At minimum both should produce contracts in the second Long window.
-    assert len(second_long_contracts_with) > 0
-    assert len(second_long_contracts_zero) > 0
+    # --- Compute expected pool at re-entry manually ---
+    # Step 1: pool after force-close = sum of net_proceeds
+    pool = sum(evt.net_proceeds for evt in ledger.gtt_close_events)
+
+    # Step 2: identify defensive dates and compound pool day by day
+    defensive_dates = prices.index[mask.reindex(prices.index).values == 0]
+
+    # Month-end dates within the defensive window (last trading day of each calendar month)
+    seg_prices_def = prices.loc[defensive_dates]
+    dt_idx = pd.DatetimeIndex(defensive_dates)
+    gb = seg_prices_def.groupby(dt_idx.to_period("M"))
+    month_ends_def = {grp.index[-1] for _, grp in gb}
+
+    for d in defensive_dates:
+        pool *= 1.0 + daily_return
+        if d in month_ends_def:
+            pool += leaps_monthly
+
+    # Step 3: the first contract purchased after re-entry was seeded with this pool as
+    # initial_capital on the first day of the second Long window. Retrieve that contract.
+    reentry_start = prices.index[mask.reindex(prices.index).values == 1]
+    reentry_start = reentry_start[reentry_start > defensive_dates[-1]][0]
+
+    # The initial_capital contract is the one purchased on the very first day of the second window.
+    initial_contracts = [c for c in ledger.contracts if c.purchase_date == reentry_start]
+    assert len(initial_contracts) == 1, (
+        f"Expected exactly 1 initial contract on {reentry_start}, got {len(initial_contracts)}"
+    )
+    init_c = initial_contracts[0]
+
+    # Verify that this contract's total_cost == pool within 1e-9
+    from finance.leverage import CONTRACT_MULTIPLIER
+    deployed = init_c.premium_paid * CONTRACT_MULTIPLIER * init_c.n_contracts
+    assert deployed == pytest.approx(pool, abs=1e-9), (
+        f"Re-entry capital {deployed:.6f} != expected pool {pool:.6f}"
+    )
 
 
 def test_ldl_gtt_close_event_count_matches_boundaries() -> None:
@@ -345,3 +358,45 @@ def test_timeline_ends_in_defensive_window_no_dangling_open_contracts() -> None:
     # No live contracts at the end of the series
     last_date = prices.index[-1]
     assert _live_contracts(ledger, last_date) == []
+
+
+def test_misaligned_mask_raises_value_error() -> None:
+    """Non-empty position_mask with no date overlap raises ValueError before reindex."""
+    prices = _prices(n_months=12, start="2020-01-02")
+    # mask on a completely different date range — no overlap with prices
+    mask = pd.Series(1, index=pd.bdate_range("2010-01-04", periods=50), dtype=int)
+    def_ret = _zero_defensive_return(prices)
+    cfg = _config()
+
+    with pytest.raises(ValueError, match="no common dates"):
+        run_segmented_leaps_simulation(prices, mask, def_ret, leaps_monthly=500.0, config=cfg)
+
+
+def test_optional_iv_and_rfr_series_used_at_force_close_boundary() -> None:
+    """iv_series and risk_free_series are used for force-close pricing at L->D boundary.
+
+    Exercises lines 1098 and 1102: the seg_iv/seg_rfr true branches inside the
+    force-close block.
+    """
+    prices, mask = _ldl_prices_and_mask(long1_months=4, def_months=2, long2_months=4)
+    def_ret = _zero_defensive_return(prices)
+    cfg = _config()
+
+    # Provide explicit iv_series and risk_free_series so the optional branches fire
+    iv_series = pd.Series(0.25, index=prices.index)   # 25% IV (above DEFAULT_IV floor)
+    rfr_series = pd.Series(0.04, index=prices.index)  # 4% risk-free rate
+
+    ledger = run_segmented_leaps_simulation(
+        prices, mask, def_ret, leaps_monthly=500.0, config=cfg,
+        iv_series=iv_series, risk_free_series=rfr_series,
+    )
+
+    # The simulation must complete and produce at least one close event at the L->D boundary
+    assert len(ledger.gtt_close_events) > 0
+
+    # All close events must have valid (non-NaN, positive) mtm_value and net_proceeds
+    for evt in ledger.gtt_close_events:
+        assert evt.mtm_value > 0.0, f"mtm_value={evt.mtm_value} should be positive"
+        assert evt.net_proceeds > 0.0, f"net_proceeds={evt.net_proceeds} should be positive"
+        # net_proceeds == mtm_value - tax_paid (identity check with 1e-9 tolerance)
+        assert evt.net_proceeds == pytest.approx(evt.mtm_value - evt.tax_paid, abs=1e-9)
