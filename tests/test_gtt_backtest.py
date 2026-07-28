@@ -650,3 +650,75 @@ def test_taxable_close_realizes_drag_vs_sheltered() -> None:
     # Identical up to the close; the taxable account pays LTCG on the gained LEAPS
     # at the transition, so its parked NAV is strictly lower thereafter.
     assert taxable.nav_series.iloc[205] < sheltered.nav_series.iloc[205]
+
+
+# ---------------------------------------------------------------------------
+# F-10d.4 — Defensive->Long re-entry (forced rebalance seeds fresh LEAPS)
+# ---------------------------------------------------------------------------
+
+
+def test_reentry_restores_full_target_including_leaps() -> None:
+    """On re-entry, weight_history lands exactly on target including the LEAPS leg."""
+    rd, pd_obj = _make_rd_and_pd(504)
+    idx = pd.DatetimeIndex(rd.returns.index)
+    r = run_backtest(
+        rd, pd_obj, _leaps_gtt_config(gtt=True), gtt_signal=_window_signal(idx, 200, 250)
+    )
+    tw = _LEAPS_WEIGHTS
+    for k, target in tw.items():
+        assert r.weight_history[k].iloc[250] == pytest.approx(target, abs=1e-9)
+    # LEAPS leg equals leaps_fraction (0.30) at re-entry.
+    assert r.weight_history["VTI_LEAPS"].iloc[250] == pytest.approx(0.30, abs=1e-9)
+
+
+def test_reentry_leaps_capital_equals_fraction_of_nav() -> None:
+    """Re-entry LEAPS MTM == leaps_fraction * total_NAV within a create-flooring basis.
+
+    With a single fresh DITM contract seeded at leaps_fraction * NAV and no VIX
+    (so pricing IV == config.iv), the day-of-re-entry LEAPS value equals
+    leaps_fraction * total_NAV up to the create_leaps_contract share rounding.
+    """
+    rd, pd_obj = _make_rd_and_pd(504)
+    idx = pd.DatetimeIndex(rd.returns.index)
+    r = run_backtest(
+        rd, pd_obj, _leaps_only_config(AccountType.TAX_SHELTERED),
+        gtt_signal=_window_signal(idx, 200, 250),
+    )
+    nav = r.nav_series.iloc[250]
+    leaps_val = r.weight_history["VTI_LEAPS"].iloc[250] * nav
+    assert leaps_val == pytest.approx(0.5 * nav, rel=1e-9)
+
+
+def test_pool_and_sleeve_compound_with_monthly_diversion() -> None:
+    """Parked pool + sleeve compound by rfr/252 and absorb month-end contributions.
+
+    Isolated setup: TAX_SHELTERED (close conserves capital), all-R_f sleeve, with a
+    monthly contribution. Through the defensive window the entire portfolio is
+    parked, so its value follows a deterministic recurrence: each day it grows by
+    rfr/252, and on each month-end the full monthly_contribution (base share +
+    diverted leaps share) is added. Re-entry NAV must match that recurrence exactly.
+    """
+    rd, pd_obj = _make_rd_and_pd(504)
+    idx = pd.DatetimeIndex(rd.returns.index)
+    contribution = 12_000.0
+    gc = GttConfig(vix_p90_threshold=0.272, defensive_weights={"R_f": 1.0})
+    cfg = PortfolioConfig(
+        target_weights={"VTI": 0.5, "VTI_LEAPS": 0.5},
+        initial_nav=1_000_000.0,
+        monthly_contribution=contribution,
+        rebalance_rule=RebalanceRule.QUARTERLY,
+        weight_strategy=WeightStrategy.USER_SPECIFIED,
+        leaps_config=LeapsConfig(account_type=AccountType.TAX_SHELTERED),
+        gtt_config=gc,
+    )
+    lo, hi = 200, 250  # defensive window spans at least one month-end
+    r = run_backtest(rd, pd_obj, cfg, gtt_signal=_window_signal(idx, lo, hi))
+
+    month_end_dates = {grp.index[-1] for _, grp in rd.returns.groupby(idx.to_period("M"))}
+    rfr = rd.risk_free_rate.reindex(idx, method="ffill").fillna(0.0)
+    nav = r.nav_series.iloc[lo - 1]  # last Long day value
+    for i in range(lo, hi + 1):
+        nav *= 1.0 + rfr.iloc[i] / 252.0
+        if idx[i] in month_end_dates:
+            nav += contribution
+    assert r.nav_series.iloc[hi] == pytest.approx(nav, rel=1e-9)

@@ -512,6 +512,7 @@ def run_backtest(
         governed = _gtt_governed_keys(config.target_weights)
         governed_base = [k for k in governed if k in base_assets]
         gtt_active = len(governed) > 0
+    long_window_end: dict[pd.Timestamp, pd.Timestamp] = {}
     if gtt_active:
         assert gtt_signal is not None and config.gtt_config is not None
         defensive_weights = config.gtt_config.defensive_weights
@@ -519,6 +520,9 @@ def run_backtest(
         def_gross = _defensive_gross_return(
             returns, return_data.risk_free_rate, defensive_weights
         )
+        # start-date -> end-date for each Long window, so re-entry can slice the
+        # new window's prices for a fresh LEAPS simulation.
+        long_window_end = dict(_long_windows(mask_aligned))
 
     # LEAPS setup — carve capital out of NAV and run a fresh simulation (Model B).
     # Under GTT the ledger is segmented: the initial simulation covers only the
@@ -738,14 +742,45 @@ def run_backtest(
                             holdings[a] += net_proceeds * float(base_target_w[a])
                     leaps_value = target_leaps_value
 
-        # (GTT close) Defensive -> Long re-entry: re-anchor the whole portfolio to
-        # target on the combined NAV (base holdings + sleeve). This is the last
-        # holdings mutation of the day, so weight_history lands exactly on target.
-        if gtt_active and prev_regime == 0 and regime_t == 1 and base_assets:
-            total = sum(holdings.values()) + defensive_sleeve
+        # (GTT close) Defensive -> Long re-entry (A9 forced rebalance): re-anchor the
+        # whole portfolio to target_weights on the combined NAV (base holdings +
+        # sleeve + LEAPS pool). Base assets take (1 - leaps_fraction) of NAV at
+        # base_target_w; leaps_fraction * NAV seeds a fresh LEAPS simulation over the
+        # new Long window. This is the last mutation of the day, so weight_history
+        # lands exactly on target.
+        if gtt_active and prev_regime == 0 and regime_t == 1:
+            total = sum(holdings.values()) + defensive_sleeve + leaps_pool
+            base_total = total * (1.0 - leaps_fraction)
             for a in base_assets:
-                holdings[a] = total * float(base_target_w[a])
+                holdings[a] = base_total * float(base_target_w[a])
             defensive_sleeve = 0.0
+            leaps_pool = 0.0
+
+            if use_leaps and underlying_prices is not None and config.leaps_config is not None:
+                win_end = long_window_end.get(date_ts, pd.Timestamp(returns.index[-1]))
+                win_prices = underlying_prices.loc[date_ts:win_end]
+                leaps_ledger = run_leaps_simulation(
+                    win_prices,
+                    leaps_monthly,
+                    config.leaps_config,
+                    risk_free_series=return_data.risk_free_rate,
+                    iv_series=raw_vix,
+                    initial_capital=total * leaps_fraction,
+                )
+                all_window_ledgers.append(leaps_ledger)
+                # Recompute this day's LEAPS MTM from the freshly opened contracts so
+                # the re-entry weight reflects the seeded position immediately.
+                spot = float(underlying_prices.loc[date_ts])
+                rfr = float(rfr_series.loc[date_ts]) if rfr_series is not None else 0.0
+                day_iv = iv
+                if mtm_iv_series is not None:
+                    smoothed = mtm_iv_series.loc[date_ts]
+                    if pd.notna(smoothed):
+                        day_iv = max(float(smoothed), iv)
+                leaps_value = sum(
+                    price_leaps_contract(c, spot, date_ts, day_iv, rfr)
+                    for c in _live_contracts(leaps_ledger, date_ts)
+                )
 
         total_nav = sum(holdings.values()) + leaps_value + defensive_sleeve + leaps_pool
 
