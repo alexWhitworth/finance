@@ -20,6 +20,7 @@ from finance.portfolio import (
     PortfolioConfig,
     _defensive_gross_return,
     _gtt_governed_keys,
+    _long_windows,
     _reindex_position_mask,
     run_backtest,
 )
@@ -498,3 +499,49 @@ def test_gtt_with_leaps_not_yet_supported() -> None:
     )
     with pytest.raises(NotImplementedError, match="F-10d"):
         run_backtest(rd, pd_obj, cfg, gtt_signal=_all_long_signal(idx))
+
+
+# ---------------------------------------------------------------------------
+# F-10d.1 — _long_windows
+# ---------------------------------------------------------------------------
+
+
+def test_long_windows_all_long_single_window() -> None:
+    """An all-Long mask yields one window spanning the whole index."""
+    idx = pd.bdate_range("2021-01-04", periods=10)
+    mask = pd.Series(1, index=idx)
+    wins = _long_windows(mask)
+    assert wins == [(idx[0], idx[-1])]
+
+
+def test_long_windows_all_defensive_empty() -> None:
+    """An all-Defensive mask yields no windows."""
+    idx = pd.bdate_range("2021-01-04", periods=10)
+    mask = pd.Series(0, index=idx)
+    assert _long_windows(mask) == []
+
+
+def test_long_windows_single_interior_defensive_gap() -> None:
+    """One defensive gap splits the timeline into two Long windows."""
+    idx = pd.bdate_range("2021-01-04", periods=10)
+    m = np.ones(10, dtype=int)
+    m[3:6] = 0  # defensive days 3,4,5
+    wins = _long_windows(pd.Series(m, index=idx))
+    assert wins == [(idx[0], idx[2]), (idx[6], idx[9])]
+
+
+def test_long_windows_leading_and_trailing_defensive() -> None:
+    """Leading and trailing defensive runs are excluded from the windows."""
+    idx = pd.bdate_range("2021-01-04", periods=10)
+    m = np.zeros(10, dtype=int)
+    m[2:5] = 1  # the only Long run is days 2,3,4
+    wins = _long_windows(pd.Series(m, index=idx))
+    assert wins == [(idx[2], idx[4])]
+
+
+def test_long_windows_single_day_windows() -> None:
+    """Alternating regimes produce single-day Long windows."""
+    idx = pd.bdate_range("2021-01-04", periods=5)
+    m = np.array([1, 0, 1, 0, 1])
+    wins = _long_windows(pd.Series(m, index=idx))
+    assert wins == [(idx[0], idx[0]), (idx[2], idx[2]), (idx[4], idx[4])]

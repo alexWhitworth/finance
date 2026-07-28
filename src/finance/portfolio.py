@@ -313,6 +313,36 @@ def _reindex_position_mask(mask: pd.Series, index: pd.DatetimeIndex) -> pd.Serie
     return mask.reindex(index, method="ffill").fillna(1).astype(int)
 
 
+def _long_windows(mask: pd.Series) -> list[tuple[pd.Timestamp, pd.Timestamp]]:
+    """Return the (start, end) date bounds of each contiguous Long (mask==1) run.
+
+    Scans the aligned position mask chronologically and groups maximal runs of
+    Long days. Defensive (mask==0) runs are skipped. Each returned tuple gives the
+    first and last date (both inclusive) of one Long window, so a caller can slice
+    a price series to that window for a per-window LEAPS simulation.
+
+    Arguments:
+        mask: Int position mask (1=Long, 0=Defensive) with a DatetimeIndex.
+
+    Returns:
+        List of (start_date, end_date) inclusive Long-window bounds, in
+        chronological order. Empty if the mask never equals 1.
+    """
+    windows: list[tuple[pd.Timestamp, pd.Timestamp]] = []
+    dates = mask.index
+    regimes = mask.to_numpy()
+    start_i: int | None = None
+    for i in range(len(regimes)):
+        if regimes[i] == 1 and start_i is None:
+            start_i = i
+        elif regimes[i] == 0 and start_i is not None:
+            windows.append((pd.Timestamp(dates[start_i]), pd.Timestamp(dates[i - 1])))
+            start_i = None
+    if start_i is not None:
+        windows.append((pd.Timestamp(dates[start_i]), pd.Timestamp(dates[-1])))
+    return windows
+
+
 def _defensive_gross_return(
     returns: pd.DataFrame,
     rfr_series: pd.Series,
