@@ -31,12 +31,12 @@ def _make_series(start: str, end: str, name: str, seed: int = 0) -> pd.Series:
 
 def test_splice_no_overlap() -> None:
     """Pre-splice segment ends the day before splice_date; post starts on it."""
-    aqmix = _make_series("2015-01-02", "2021-06-30", "AQMIX")
-    kmlm = _make_series("2021-01-04", "2023-12-31", "KMLM")
-    spliced = splice(kmlm, aqmix, _KMLM_START)
+    proxy = _make_series("2015-01-02", "2021-06-30", "kmlm_mlmi_pre")
+    kmlm = _make_series("2020-12-02", "2023-12-31", "KMLM")
+    spliced = splice(kmlm, proxy, _KMLM_START)
 
     assert spliced.name == "KMLM"
-    # All dates before _KMLM_START come from AQMIX
+    # All dates before _KMLM_START come from proxy
     pre_dates = spliced.index[spliced.index < _KMLM_START]
     assert not pre_dates.empty
     # All dates from _KMLM_START onward come from KMLM
@@ -48,30 +48,30 @@ def test_splice_no_overlap() -> None:
 
 def test_splice_values_match_sources() -> None:
     """KMLM values are unchanged post-splice; proxy returns are preserved pre-splice."""
-    aqmix = _make_series("2018-01-02", "2021-06-30", "AQMIX", seed=1)
-    kmlm = _make_series("2021-01-04", "2022-12-31", "KMLM", seed=2)
-    spliced = splice(kmlm, aqmix, _KMLM_START)
+    proxy = _make_series("2018-01-02", "2021-06-30", "kmlm_mlmi_pre", seed=1)
+    kmlm = _make_series("2020-12-02", "2022-12-31", "KMLM", seed=2)
+    spliced = splice(kmlm, proxy, _KMLM_START)
 
     # Post-splice values are unchanged from KMLM
     post_date = spliced.index[-10]
     assert post_date in kmlm.index
     assert spliced[post_date] == pytest.approx(kmlm[post_date])
 
-    # Pre-splice daily returns match AQMIX (level-scaling preserves return ratios)
+    # Pre-splice daily returns match proxy (level-scaling preserves return ratios)
     pre_idx = spliced.index[spliced.index < _KMLM_START]
     spliced_pre_rets = spliced.loc[pre_idx].pct_change().dropna()
-    aqmix_pre_rets = aqmix.loc[pre_idx].pct_change().dropna()
-    common = spliced_pre_rets.index.intersection(aqmix_pre_rets.index)
+    proxy_pre_rets = proxy.loc[pre_idx].pct_change().dropna()
+    common = spliced_pre_rets.index.intersection(proxy_pre_rets.index)
     assert (spliced_pre_rets.loc[common].values == pytest.approx(
-        aqmix_pre_rets.loc[common].values, rel=1e-9
+        proxy_pre_rets.loc[common].values, rel=1e-9
     ))
 
 
 def test_splice_no_seam_jump() -> None:
     """pct_change() at the splice boundary is exactly 0% (no level discontinuity)."""
-    aqmix = _make_series("2018-01-02", "2021-06-30", "AQMIX", seed=3)
-    kmlm = _make_series("2021-01-04", "2022-12-31", "KMLM", seed=4)
-    spliced = splice(kmlm, aqmix, _KMLM_START)
+    proxy = _make_series("2018-01-02", "2021-06-30", "kmlm_mlmi_pre", seed=3)
+    kmlm = _make_series("2020-12-02", "2022-12-31", "KMLM", seed=4)
+    spliced = splice(kmlm, proxy, _KMLM_START)
 
     returns = spliced.pct_change()
     # The first KMLM date (splice boundary) should have a ~0 return
@@ -81,18 +81,18 @@ def test_splice_no_seam_jump() -> None:
 
 def test_splice_raises_empty_post() -> None:
     """Raises if primary has no data on or after splice_date."""
-    aqmix = _make_series("2018-01-02", "2020-12-31", "AQMIX")
+    proxy = _make_series("2018-01-02", "2020-11-30", "kmlm_mlmi_pre")
     kmlm = _make_series("2018-01-02", "2020-06-30", "KMLM")  # ends before splice
     with pytest.raises(ValueError, match="KMLM has no data"):
-        splice(kmlm, aqmix, _KMLM_START)
+        splice(kmlm, proxy, _KMLM_START)
 
 
 def test_splice_raises_empty_pre() -> None:
     """Raises if proxy has no data before splice_date."""
-    aqmix = _make_series("2021-06-01", "2023-12-31", "AQMIX")  # starts after splice
-    kmlm = _make_series("2021-01-04", "2023-12-31", "KMLM")
-    with pytest.raises(ValueError, match="AQMIX has no data before"):
-        splice(kmlm, aqmix, _KMLM_START)
+    proxy = _make_series("2021-06-01", "2023-12-31", "kmlm_mlmi_pre")  # starts after splice
+    kmlm = _make_series("2020-12-02", "2023-12-31", "KMLM")
+    with pytest.raises(ValueError, match="kmlm_mlmi_pre has no data before"):
+        splice(kmlm, proxy, _KMLM_START)
 
 
 # ---------------------------------------------------------------------------
@@ -163,14 +163,17 @@ def test_build_price_data_no_splice() -> None:
 
 
 def test_build_price_data_with_splice() -> None:
-    """With splice, AQMIX prepends KMLM and spliced=True."""
+    """With splice, MLMI parquet prepends KMLM and spliced=True."""
     start, end = "2018-01-02", "2022-12-31"
 
     def fake_fetch(tickers: tuple[str, ...], s: str, e: str) -> pd.DataFrame:
         return _fake_prices(tickers, s, e)
 
+    fake_proxy = _make_series("2018-01-02", "2020-12-01", "kmlm_mlmi_pre", seed=7)
+
     with (
         patch("finance.data.fetch_prices", side_effect=fake_fetch),
+        patch("finance.data.fetch_file_proxy", return_value=fake_proxy),
         patch("finance.data.fetch_dividends", return_value=pd.Series(dtype=float)),
     ):
         pd_obj = build_price_data(start, end, use_splice=True)
@@ -182,20 +185,16 @@ def test_build_price_data_with_splice() -> None:
     assert not pre_kmlm.empty
 
 
-def test_build_price_data_missing_aqmix_raises() -> None:
-    """If AQMIX is unavailable, fetch_prices raises and it propagates."""
+def test_build_price_data_missing_proxy_file_raises() -> None:
+    """If the MLMI parquet proxy is missing, FileNotFoundError propagates."""
     start, end = "2018-01-02", "2022-12-31"
 
-    def fake_fetch_no_aqmix(tickers: tuple[str, ...], s: str, e: str) -> pd.DataFrame:
-        if "AQMIX" in tickers:
-            raise ValueError("No price data returned for tickers: ['AQMIX']")
-        return _fake_prices(tickers, s, e)
-
     with (
-        patch("finance.data.fetch_prices", side_effect=fake_fetch_no_aqmix),
+        patch("finance.data.fetch_prices", side_effect=lambda t, s, e: _fake_prices(t, s, e)),
+        patch("finance.data.fetch_file_proxy", side_effect=FileNotFoundError("Proxy parquet not found")),
         patch("finance.data.fetch_dividends", return_value=pd.Series(dtype=float)),
     ):
-        with pytest.raises(ValueError, match="AQMIX"):
+        with pytest.raises(FileNotFoundError, match="Proxy parquet not found"):
             build_price_data(start, end, use_splice=True)
 
 

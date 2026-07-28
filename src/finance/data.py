@@ -5,6 +5,7 @@ the network; all downstream modules receive pure DataFrames.
 """
 
 from dataclasses import dataclass
+from pathlib import Path
 
 import pandas as pd
 import yfinance as yf
@@ -202,6 +203,33 @@ def splice(
     return spliced
 
 
+def fetch_file_proxy(path: str, start_date: str, end_date: str) -> pd.Series:  # pragma: no cover
+    """Load a proxy price series from a local parquet file.
+
+    Arguments:
+        path: Path to a parquet file with a DatetimeIndex named 'date' and a
+            'price' column. Paths may be absolute or relative to the repo root.
+        start_date: Inclusive start date (YYYY-MM-DD); earlier rows are dropped.
+        end_date: Inclusive end date (YYYY-MM-DD); later rows are dropped.
+
+    Returns:
+        Series with DatetimeIndex and name derived from the file stem.
+
+    Raises:
+        FileNotFoundError: If the parquet file does not exist.
+        ValueError: If the file has no rows in the requested date range.
+    """
+    p = Path(path)
+    if not p.exists():
+        raise FileNotFoundError(f"Proxy parquet not found: {p}")
+    df = pd.read_parquet(p)
+    series: pd.Series = df["price"].loc[start_date:end_date]
+    if series.empty:
+        raise ValueError(f"No data in {p} between {start_date} and {end_date}")
+    series.name = p.stem
+    return series
+
+
 def _forward_fill_prices(prices: pd.DataFrame, max_gap: int = 5) -> pd.DataFrame:
     """Forward-fill price gaps up to max_gap days; raise if a longer gap exists.
 
@@ -264,15 +292,24 @@ def build_price_data(
             if ticker in asset_tickers and start_date < splice_date:
                 splice_needed[ticker] = (proxy, splice_date)
 
-    proxy_tickers = tuple(proxy for proxy, _ in splice_needed.values())
+    # Separate file-based proxies (prefix "file:") from yfinance proxies
+    file_proxies = {t: (p, d) for t, (p, d) in splice_needed.items() if p.startswith("file:")}
+    yf_proxies = {t: (p, d) for t, (p, d) in splice_needed.items() if not p.startswith("file:")}
+
+    proxy_tickers = tuple(proxy for proxy, _ in yf_proxies.values())
     fetch_tickers = (*asset_tickers, *proxy_tickers)
 
     raw_prices = fetch_prices(fetch_tickers, start_date, end_date)
 
     # Apply splice for each ticker that needs it
     prices = raw_prices[list(asset_tickers)].copy()
-    for ticker, (proxy, splice_date) in splice_needed.items():
+    for ticker, (proxy, splice_date) in yf_proxies.items():
         spliced_col = splice(raw_prices[ticker], raw_prices[proxy], splice_date)
+        prices[ticker] = spliced_col
+        prices = prices.loc[spliced_col.index[0]:]
+    for ticker, (proxy_path, splice_date) in file_proxies.items():
+        proxy_series = fetch_file_proxy(proxy_path[len("file:"):], start_date, splice_date)
+        spliced_col = splice(raw_prices[ticker], proxy_series, splice_date)
         prices[ticker] = spliced_col
         prices = prices.loc[spliced_col.index[0]:]
 

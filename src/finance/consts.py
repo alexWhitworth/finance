@@ -6,10 +6,18 @@ All modules import from here rather than defining constants locally.
 TICKERS: tuple[str, ...] = ("VTI", "VXUS", "GLD", "MUB", "KMLM", "VGIT")
 
 SPLICE_MAP: dict[str, tuple[str, str]] = {
-    "KMLM": ("AQMIX", "2021-01-01"),
+    # KMLM: proxy is a parquet file of MLMI total-return index history (1988–2020-12-01).
+    # Splice date = KMLM ETF inception. See data/kmlm_mlmi_pre.parquet.
+    "KMLM": ("file:data/kmlm_mlmi_pre.parquet", "2020-12-02"),
     "VXUS": ("VGTSX", "2011-01-25"),
     "MUB": ("VWITX", "2007-09-10"),
     "VTI": ("VTSMX", "2001-06-15"),
+    # Unable to find a splice source.
+    # -------------------------------------------
+    # "GLD": inception on yfinance = 2004-11-18.
+        # Removed from FRED (blogpost: https://shorturl.at/Bq28j)
+        # NASDAQ: not freely available
+        # WorldBank: not downloading
 }
 
 VOL_INDEX_TICKERS: frozenset[str] = frozenset({"^VIX", "^GVZ", "^MOVE"})
