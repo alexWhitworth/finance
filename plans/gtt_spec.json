@@ -1080,7 +1080,7 @@
       "description": "analyses/gtt_library_validation.py runs the full multi-asset GTT backtest (LEAPS overlay + the 4-asset {R_f,KMLM,VGIT,GLD} defensive sleeve) and asserts directional, risk-reduction behavior vs. an equivalent GTT-off buy-and-hold portfolio. The EDA (outputs/gtt_findings.md, Table 5.1) was a 100%-equity long/cash simplification and is used ONLY as a qualitative reference, not a numeric reproduction target. The goal of the library is a multi-asset portfolio, so the defensive sleeve materially changes the numbers by design.",
       "phase": 6,
       "priority": 3,
-      "status": "not_started",
+      "status": "pending_judge",
       "layer": "python",
       "dependencies": [
         "F-07-FETCH-GTT",
