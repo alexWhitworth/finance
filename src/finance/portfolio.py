@@ -24,11 +24,13 @@ from finance.gtt import GttSignalData
 from finance.leverage import (
     LeapsConfig,
     LeapsContract,
+    LeapsGttCloseEvent,
     LeapsLedger,
     LeapsPartialCloseEvent,
     RebalanceRule,
     WeightStrategy,
     _live_contracts,
+    close_leaps_contract,
     price_leaps_contract,
 )
 from finance.returns import ReturnData
@@ -498,6 +500,7 @@ def run_backtest(
     # Computed before the LEAPS setup so the initial ledger can be scoped to the
     # first Long window (LEAPS is force-closed across defensive windows).
     defensive_sleeve = 0.0
+    leaps_pool = 0.0  # parked LEAPS-origin capital during defensive windows
     prev_regime = 1
     governed_base: list[str] = []
     defensive_weights: dict[str, float] = {}
@@ -528,6 +531,7 @@ def run_backtest(
     raw_vix: pd.Series | None = None
     leaps_monthly = 0.0
     all_window_ledgers: list[LeapsLedger] = []
+    all_gtt_closes: list[LeapsGttCloseEvent] = []
 
     if use_leaps:
         underlyings = {k.removesuffix(LEAPS_KEY_SUFFIX) for k in leaps_keys}
@@ -592,6 +596,7 @@ def run_backtest(
     nav_values: list[float] = []
     return_values: list[float] = []
     weight_rows: list[dict[str, float]] = []
+    prev_date_ts: pd.Timestamp | None = None
 
     for date in returns.index:
         date_ts = pd.Timestamp(date)
@@ -610,20 +615,58 @@ def run_backtest(
                     defensive_sleeve += holdings[k]
                     holdings[k] = 0.0
 
+        # (GTT LEAPS force-close) On the Long -> Defensive transition, close every
+        # live contract at the last Long day's close (prev_date_ts) and park the net
+        # proceeds in leaps_pool. Valued at the raw-VIX transaction IV (config.iv
+        # floor), consistent with roll/create pricing elsewhere. The pool then rides
+        # the defensive sleeve return like the equity sweep. Net proceeds are after
+        # LTCG tax, so a taxable close realizes tax drag on the transition day.
+        if (
+            gtt_active
+            and leaps_ledger is not None
+            and prev_regime == 1
+            and regime_t == 0
+            and underlying_prices is not None
+            and config.leaps_config is not None
+            and prev_date_ts is not None
+        ):
+            close_spot = float(underlying_prices.loc[prev_date_ts])
+            close_rfr = float(rfr_series.loc[prev_date_ts]) if rfr_series is not None else 0.0
+            close_iv = iv
+            if raw_vix is not None:
+                close_iv = max(float(raw_vix.loc[prev_date_ts]), iv)
+            for c in _live_contracts(leaps_ledger, prev_date_ts):
+                scale = leaps_scale.get(c, 1.0)
+                c_eff = replace(c, n_contracts=c.n_contracts * scale) if scale != 1.0 else c
+                evt = close_leaps_contract(
+                    c_eff, prev_date_ts, close_spot, close_iv,
+                    config.leaps_config.ltcg_rate, close_rfr,
+                )
+                all_gtt_closes.append(evt)
+                leaps_pool += evt.net_proceeds
+
         # (a) Apply daily returns to base holdings
         for a in base_assets:
             holdings[a] *= 1.0 + float(day_ret[a])  # type: ignore[arg-type]
 
-        # (a') The defensive sleeve rides the blended defensive return while it holds
-        # defensively-allocated capital: every defensive day (regime_t == 0) and the
-        # re-entry day (prev_regime == 0), where it earns one final defensive day
-        # before being redeployed to target at the close.
+        # (a') The defensive sleeve and parked LEAPS pool ride the blended defensive
+        # return while they hold defensively-allocated capital: every defensive day
+        # (regime_t == 0) and the re-entry day (prev_regime == 0), where they earn one
+        # final defensive day before redeployment to target at the close.
         if gtt_active and def_gross is not None and (regime_t == 0 or prev_regime == 0):
-            defensive_sleeve *= 1.0 + float(def_gross.loc[date_ts])
+            factor = 1.0 + float(def_gross.loc[date_ts])
+            defensive_sleeve *= factor
+            leaps_pool *= factor
 
-        # (e) LEAPS gross mark-to-market (carved-out capital value), scaled by prior closes
+        # (e) LEAPS gross mark-to-market (carved-out capital value), scaled by prior
+        # closes. During a GTT defensive window all contracts are closed (parked in
+        # leaps_pool), so live MTM is naturally 0.
         leaps_value = 0.0
-        if leaps_ledger is not None and underlying_prices is not None:
+        if (
+            leaps_ledger is not None
+            and underlying_prices is not None
+            and not (gtt_active and regime_t == 0)
+        ):
             spot = float(underlying_prices.loc[date_ts])
             rfr = float(rfr_series.loc[date_ts]) if rfr_series is not None else 0.0
             day_iv = iv
@@ -637,7 +680,7 @@ def run_backtest(
                 for c in live
             )
 
-        nav_before_contrib = sum(holdings.values()) + leaps_value + defensive_sleeve
+        nav_before_contrib = sum(holdings.values()) + leaps_value + defensive_sleeve + leaps_pool
 
         # (b) Market return — excludes the upcoming contribution
         port_return = nav_before_contrib / prev_total_nav - 1.0
@@ -645,7 +688,9 @@ def run_backtest(
         # (c) Month-end: add the base share of the contribution across base assets.
         # On a defensive day the governed-ticker share of that contribution is
         # diverted into the sleeve (base_target_w still sums to 1 over base_assets,
-        # so the governed weight is its base_target_w mass).
+        # so the governed weight is its base_target_w mass). The LEAPS monthly share
+        # is diverted into leaps_pool while defensive (it is added inside the ledger
+        # during Long windows).
         if date_ts in month_end_dates and base_assets:
             alloc = apply_contribution(nav_before_contrib, base_contribution, base_target_w)
             for a in base_assets:
@@ -653,6 +698,8 @@ def run_backtest(
                     defensive_sleeve += alloc[a]
                 else:
                     holdings[a] += alloc[a]
+        if gtt_active and regime_t == 0 and date_ts in month_end_dates:
+            leaps_pool += leaps_monthly
 
         # (d) QUARTERLY rebalance: realign base holdings to base target weights.
         # Runs first (Option C); the GTT defensive override below re-zeros the
@@ -700,7 +747,7 @@ def run_backtest(
                 holdings[a] = total * float(base_target_w[a])
             defensive_sleeve = 0.0
 
-        total_nav = sum(holdings.values()) + leaps_value + defensive_sleeve
+        total_nav = sum(holdings.values()) + leaps_value + defensive_sleeve + leaps_pool
 
         nav_values.append(total_nav)
         return_values.append(port_return)
@@ -708,15 +755,18 @@ def run_backtest(
         for k in leaps_keys:
             share = float(w[k]) / leaps_fraction if leaps_fraction > 0 else 0.0
             row[k] = leaps_value * share / total_nav
-        # Decompose the defensive sleeve across defensive_weights for weight_history;
-        # governed keys were zeroed at the open so their rows are already 0.
-        if gtt_active and defensive_sleeve > 0.0:
+        # Decompose the parked defensive capital (equity sleeve + LEAPS pool, which
+        # compound identically) across defensive_weights for weight_history; governed
+        # keys (incl. VTI_LEAPS) were zeroed/closed already so their rows are 0.
+        parked = defensive_sleeve + leaps_pool
+        if gtt_active and parked > 0.0:
             for dk, dw in defensive_weights.items():
-                row[dk] = row.get(dk, 0.0) + dw * defensive_sleeve / total_nav
+                row[dk] = row.get(dk, 0.0) + dw * parked / total_nav
         weight_rows.append(row)
 
         prev_total_nav = total_nav
         prev_regime = regime_t
+        prev_date_ts = date_ts
 
     # Freeze accumulated partial closes onto the ledger once, at the return boundary.
     # Every entry in leaps_scale is a surviving fraction < 1.0 (only closes write it).

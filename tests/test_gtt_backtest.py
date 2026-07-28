@@ -565,3 +565,88 @@ def test_all_long_gtt_leaps_equals_no_gtt_leaps() -> None:
     assert len(gtt.leaps_ledger.contracts) == len(baseline.leaps_ledger.contracts)
     # No defensive transitions -> no GTT close events.
     assert gtt.leaps_ledger.gtt_close_events == ()
+
+
+# ---------------------------------------------------------------------------
+# F-10d.3 — Long->Defensive force-close (observable behavior; ledger events in d.5)
+# ---------------------------------------------------------------------------
+
+
+def _leaps_sheltered_gtt_config() -> PortfolioConfig:
+    """TAX_SHELTERED LEAPS+GTT config (force-close realizes no tax)."""
+    return PortfolioConfig(
+        target_weights=dict(_LEAPS_WEIGHTS),
+        initial_nav=1_000_000.0,
+        monthly_contribution=0.0,
+        rebalance_rule=RebalanceRule.QUARTERLY,
+        weight_strategy=WeightStrategy.USER_SPECIFIED,
+        leaps_config=LeapsConfig(account_type=AccountType.TAX_SHELTERED),
+        gtt_config=_gtt_config(),
+    )
+
+
+def test_defensive_window_zeros_leaps_weight() -> None:
+    """VTI_LEAPS weight is exactly 0 through a defensive window (contracts closed)."""
+    rd, pd_obj = _make_rd_and_pd(504)
+    idx = pd.DatetimeIndex(rd.returns.index)
+    r = run_backtest(
+        rd, pd_obj, _leaps_gtt_config(gtt=True), gtt_signal=_window_signal(idx, 200, 260)
+    )
+    assert r.weight_history["VTI_LEAPS"].iloc[200:260].abs().max() == 0.0
+    # VTI (base equity) is also zeroed by the equity overlay.
+    assert r.weight_history["VTI"].iloc[200:260].abs().max() == 0.0
+    np.testing.assert_allclose(r.weight_history.sum(axis=1).to_numpy(), 1.0, atol=1e-9)
+
+
+def _leaps_only_config(account_type: AccountType) -> PortfolioConfig:
+    """VTI + VTI_LEAPS only, with an R_f-only defensive sleeve.
+
+    During a defensive window the entire portfolio (base VTI sleeve + parked LEAPS
+    pool) rides rfr/252, isolating the force-close/pool mechanics from other assets.
+    """
+    gc = GttConfig(vix_p90_threshold=0.272, defensive_weights={"R_f": 1.0})
+    return PortfolioConfig(
+        target_weights={"VTI": 0.5, "VTI_LEAPS": 0.5},
+        initial_nav=1_000_000.0,
+        monthly_contribution=0.0,
+        rebalance_rule=RebalanceRule.QUARTERLY,
+        weight_strategy=WeightStrategy.USER_SPECIFIED,
+        leaps_config=LeapsConfig(account_type=account_type),
+        gtt_config=gc,
+    )
+
+
+def test_force_close_nav_rides_rfr_tax_sheltered() -> None:
+    """TAX_SHELTERED: whole VTI/LEAPS portfolio parked in R_f compounds by rfr/252.
+
+    With no tax on the close, force-closing the LEAPS conserves capital, so every
+    defensive day (including the transition day) the NAV grows by exactly rfr/252.
+    """
+    rd, pd_obj = _make_rd_and_pd(504)
+    idx = pd.DatetimeIndex(rd.returns.index)
+    r = run_backtest(
+        rd, pd_obj, _leaps_only_config(AccountType.TAX_SHELTERED),
+        gtt_signal=_window_signal(idx, 200, 260),
+    )
+    rfr = rd.risk_free_rate.reindex(idx, method="ffill").fillna(0.0)
+    expected = r.nav_series.iloc[199]
+    for i in range(200, 260):
+        expected *= 1.0 + rfr.iloc[i] / 252.0
+    assert r.nav_series.iloc[259] == pytest.approx(expected, rel=1e-12)
+
+
+def test_taxable_close_realizes_drag_vs_sheltered() -> None:
+    """A taxable force-close on gains leaves less parked capital than TAX_SHELTERED."""
+    rd, pd_obj = _make_rd_and_pd(504)
+    idx = pd.DatetimeIndex(rd.returns.index)
+    taxable = run_backtest(
+        rd, pd_obj, _leaps_only_config(AccountType.TAXABLE),
+        gtt_signal=_window_signal(idx, 200, 260),
+    )
+    sheltered = run_backtest(
+        rd, pd_obj, _leaps_only_config(AccountType.TAX_SHELTERED),
+        gtt_signal=_window_signal(idx, 200, 260),
+    )
+    # Identical up to the close; the taxable account pays LTCG on the gained LEAPS
+    # at the transition, so its parked NAV is strictly lower thereafter.
+    assert taxable.nav_series.iloc[205] < sheltered.nav_series.iloc[205]
