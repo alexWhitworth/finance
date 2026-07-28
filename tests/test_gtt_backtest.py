@@ -722,3 +722,122 @@ def test_pool_and_sleeve_compound_with_monthly_diversion() -> None:
         if idx[i] in month_end_dates:
             nav += contribution
     assert r.nav_series.iloc[hi] == pytest.approx(nav, rel=1e-9)
+
+
+# ---------------------------------------------------------------------------
+# F-10d.5 — final ledger assembly + gtt_close_events
+# ---------------------------------------------------------------------------
+
+
+def test_tax_sheltered_zero_close_tax() -> None:
+    """TAX_SHELTERED force-closes realize zero tax across all gtt_close_events."""
+    rd, pd_obj = _make_rd_and_pd(504)
+    idx = pd.DatetimeIndex(rd.returns.index)
+    r = run_backtest(
+        rd, pd_obj, _leaps_only_config(AccountType.TAX_SHELTERED),
+        gtt_signal=_window_signal(idx, 200, 260),
+    )
+    assert r.leaps_ledger is not None
+    assert len(r.leaps_ledger.gtt_close_events) >= 1
+    assert sum(e.tax_paid for e in r.leaps_ledger.gtt_close_events) == 0.0
+
+
+def test_taxable_close_taxes_positive_gains() -> None:
+    """A taxable force-close on a gained contract records positive tax."""
+    rd, pd_obj = _make_rd_and_pd(504)
+    idx = pd.DatetimeIndex(rd.returns.index)
+    r = run_backtest(
+        rd, pd_obj, _leaps_only_config(AccountType.TAXABLE),
+        gtt_signal=_window_signal(idx, 200, 260),
+    )
+    assert r.leaps_ledger is not None
+    closes = r.leaps_ledger.gtt_close_events
+    assert len(closes) >= 1
+    # The initial DITM contract has appreciated by day 200 -> positive gain -> tax.
+    assert any(e.tax_paid > 0.0 for e in closes)
+    for e in closes:
+        assert e.tax_paid == pytest.approx(max(0.0, e.gain_realized) * 0.238, rel=1e-9)
+        assert e.net_proceeds == pytest.approx(e.mtm_value - e.tax_paid, rel=1e-12)
+
+
+def test_whipsaw_one_close_set_per_boundary() -> None:
+    """Each Long->Defensive boundary produces exactly one close-set (one per date)."""
+    rd, pd_obj = _make_rd_and_pd(504)
+    idx = pd.DatetimeIndex(rd.returns.index)
+    m = np.ones(len(idx), dtype=int)
+    m[100:130] = 0
+    m[250:280] = 0
+    r = run_backtest(rd, pd_obj, _leaps_gtt_config(gtt=True), gtt_signal=_signal_from_mask(m, idx))
+    assert r.leaps_ledger is not None
+    close_dates = {e.close_date for e in r.leaps_ledger.gtt_close_events}
+    assert len(close_dates) == 2  # two Long->Defensive transitions
+
+
+def test_terminal_defensive_window_no_dangling_contracts() -> None:
+    """A timeline ending in a defensive window closes out; no live contracts remain."""
+    from finance.leverage import _live_contracts
+
+    rd, pd_obj = _make_rd_and_pd(504)
+    idx = pd.DatetimeIndex(rd.returns.index)
+    n = len(idx)
+    r = run_backtest(
+        rd, pd_obj, _leaps_only_config(AccountType.TAX_SHELTERED),
+        gtt_signal=_window_signal(idx, n - 30, n),
+    )
+    assert r.leaps_ledger is not None
+    assert len(r.leaps_ledger.gtt_close_events) >= 1
+    assert _live_contracts(r.leaps_ledger, idx[-1]) == []
+
+
+def test_whipsaw_multiple_reentries_restore_target() -> None:
+    """After each defensive window the LEAPS leg is restored to target on re-entry."""
+    rd, pd_obj = _make_rd_and_pd(504)
+    idx = pd.DatetimeIndex(rd.returns.index)
+    m = np.ones(len(idx), dtype=int)
+    m[100:130] = 0
+    m[250:280] = 0
+    r = run_backtest(rd, pd_obj, _leaps_gtt_config(gtt=True), gtt_signal=_signal_from_mask(m, idx))
+    # Re-entry days are 130 and 280; VTI_LEAPS restored to its 0.30 target.
+    assert r.weight_history["VTI_LEAPS"].iloc[130] == pytest.approx(0.30, abs=1e-9)
+    assert r.weight_history["VTI_LEAPS"].iloc[280] == pytest.approx(0.30, abs=1e-9)
+
+
+def _make_pd_with_vix(vix_level: float = 0.25, n: int = 504) -> tuple[ReturnData, PriceData]:
+    """(ReturnData, PriceData) with a constant '^VIX' column for dynamic-IV paths."""
+    base = _make_price_data(n)
+    vix = pd.DataFrame({"^VIX": vix_level}, index=base.prices.index)
+    pd_obj = PriceData(
+        prices=base.prices, dividends=base.dividends, vol_prices=vix,
+        tickers=base.tickers, start_date=base.start_date,
+        end_date=base.end_date, spliced=base.spliced,
+    )
+    return build_return_data(pd_obj, apply_tey=False), pd_obj
+
+
+def test_gtt_leaps_with_dynamic_vix_closes_and_reenters() -> None:
+    """With a '^VIX' column, force-close and re-entry use VIX-driven IV (>= floor)."""
+    rd, pd_obj = _make_pd_with_vix(vix_level=0.25)
+    idx = pd.DatetimeIndex(rd.returns.index)
+    r = run_backtest(
+        rd, pd_obj, _leaps_gtt_config(gtt=True), gtt_signal=_window_signal(idx, 200, 250)
+    )
+    assert r.leaps_ledger is not None
+    assert len(r.leaps_ledger.gtt_close_events) >= 1
+    # Re-entry restores the LEAPS leg to target.
+    assert r.weight_history["VTI_LEAPS"].iloc[250] == pytest.approx(0.30, abs=1e-9)
+    # VTI_LEAPS is flat through the defensive window.
+    assert r.weight_history["VTI_LEAPS"].iloc[200:250].abs().max() == 0.0
+
+
+def test_gtt_leaps_never_long_opens_no_contracts() -> None:
+    """An all-Defensive mask with a LEAPS carve-out opens no contracts."""
+    rd, pd_obj = _make_rd_and_pd(252)
+    idx = pd.DatetimeIndex(rd.returns.index)
+    all_defensive = _signal_from_mask(np.zeros(len(idx), dtype=int), idx)
+    r = run_backtest(rd, pd_obj, _leaps_gtt_config(gtt=True), gtt_signal=all_defensive)
+    assert r.leaps_ledger is not None
+    assert r.leaps_ledger.contracts == ()
+    assert r.leaps_ledger.gtt_close_events == ()
+    # VTI and VTI_LEAPS are flat for the entire (all-defensive) timeline.
+    assert r.weight_history["VTI"].abs().max() == 0.0
+    assert r.weight_history["VTI_LEAPS"].abs().max() == 0.0

@@ -820,6 +820,20 @@ def run_backtest(
             )
         leaps_ledger = replace(leaps_ledger, partial_close_events=tuple(partial_close_list))
 
+    # Under GTT, assemble the final ledger from every per-window simulation and
+    # attach the accumulated force-close events. Windows partition the timeline, so
+    # concatenating their records yields the full non-overlapping history.
+    if gtt_active and use_leaps and config.leaps_config is not None:
+        leaps_ledger = LeapsLedger(
+            contracts=tuple(c for wl in all_window_ledgers for c in wl.contracts),
+            roll_events=tuple(e for wl in all_window_ledgers for e in wl.roll_events),
+            account_type=config.leaps_config.account_type,
+            partial_close_events=tuple(
+                e for wl in all_window_ledgers for e in wl.partial_close_events
+            ),
+            gtt_close_events=tuple(all_gtt_closes),
+        )
+
     nav_series = pd.Series(nav_values, index=returns.index, name="NAV")
     return_series = pd.Series(return_values, index=returns.index, name="portfolio_return")
     weight_history = pd.DataFrame(weight_rows, index=returns.index)
