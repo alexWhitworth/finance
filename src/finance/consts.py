@@ -9,6 +9,7 @@ SPLICE_MAP: dict[str, tuple[str, str]] = {
     "KMLM": ("AQMIX", "2021-01-01"),
     "VXUS": ("VGTSX", "2011-01-25"),
     "MUB": ("VWITX", "2007-09-10"),
+    "VTI": ("VTSMX", "2001-06-15"),
 }
 
 VOL_INDEX_TICKERS: frozenset[str] = frozenset({"^VIX", "^GVZ", "^MOVE"})

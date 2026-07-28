@@ -14,7 +14,7 @@ __pycache__/
 outputs/figures/*
 !outputs/figures/fig5_1_strategy_equity_curve.png
 analyses/
-!analyses/gtt_library_validation.py
+analyses/gtt_library_validation.py
 
 # code-cov
 .coverage
