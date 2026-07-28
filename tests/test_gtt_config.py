@@ -136,6 +136,18 @@ def test_portfolioconfig_unknown_defensive_ticker_raises() -> None:
         _portfolio_config(gtt_config=gtt)
 
 
+def test_portfolioconfig_target_weights_not_summing_to_one_raises() -> None:
+    # target_weights summing to != 1.0 (outside 1e-6) must raise ValueError.
+    with pytest.raises(ValueError, match=r"target_weights must sum to 1\.0"):
+        PortfolioConfig(
+            target_weights={"VTI": 0.5, "VXUS": 0.4},  # sums to 0.9
+            initial_nav=1_000_000.0,
+            monthly_contribution=0.0,
+            rebalance_rule=RebalanceRule.QUARTERLY,
+            weight_strategy=WeightStrategy.USER_SPECIFIED,
+        )
+
+
 def test_portfolioconfig_defensive_key_with_zero_target_weight_is_valid() -> None:
     # Key present in target_weights (even at 0 weight) passes membership check.
     weights = dict(_EQUAL_WEIGHTS)

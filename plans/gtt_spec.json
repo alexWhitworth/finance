@@ -998,7 +998,7 @@
       "description": "Add gtt_signal parameter to run_backtest. Remove run_segmented_leaps_simulation. Pre-compute GTT-governed tickers, reindexed position_mask, and defensive-sleeve gross return. Inline segmentation loop: track leaps_pool and current_leaps_ledger across the daily loop. On Long->Defensive: force-close via close_leaps_contract, pool = sum(net_proceeds). On Defensive->Long: forced re-entry rebalance restores target_weights on total_NAV = base_eq + leaps_pool; LEAPS capital = leaps_fraction x total_NAV; call run_leaps_simulation for new window. On Defensive day: base equity rides defensive sleeve, LEAPS MTM=0, leaps_monthly diverts to pool. Quarterly rebalance on a Long day runs normally (Option C). Assemble final LeapsLedger from per-window ledgers at loop end. gtt_signal=None is a no-op. Implemented incrementally across four commits (F-10a signature/validation, F-10b pure pre-compute helpers, F-10c equity-only branch, F-10d LEAPS segmentation); see plans/f10_breakdown.md.",
       "phase": 5,
       "priority": 1,
-      "status": "pending_judge",
+      "status": "complete",
       "layer": "python",
       "dependencies": [
         "F-02-PORTFOLIO-CONFIG",
