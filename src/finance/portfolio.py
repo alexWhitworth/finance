@@ -489,12 +489,45 @@ def run_backtest(
         for _, grp in returns.groupby(idx.to_period("M"))
     }
 
-    # LEAPS setup — carve capital out of NAV and run a fresh simulation (Model B)
+    # GTT overlay state. When active, the governed (VTI / VTI_LEAPS) leg is moved
+    # into a single defensive-sleeve scalar on defensive days and re-anchored to
+    # target on re-entry. The sleeve compounds by the blended defensive return and
+    # is decomposed at defensive_weights proportions for weight_history.
+    # The overlay only engages when the signal is present AND the portfolio holds a
+    # governed ticker; otherwise GTT is a complete no-op (no forced rebalance fires).
+    # Computed before the LEAPS setup so the initial ledger can be scoped to the
+    # first Long window (LEAPS is force-closed across defensive windows).
+    defensive_sleeve = 0.0
+    prev_regime = 1
+    governed_base: list[str] = []
+    defensive_weights: dict[str, float] = {}
+    mask_aligned: pd.Series | None = None
+    def_gross: pd.Series | None = None
+    gtt_active = False
+    if gtt_signal is not None:
+        assert config.gtt_config is not None  # paired above
+        governed = _gtt_governed_keys(config.target_weights)
+        governed_base = [k for k in governed if k in base_assets]
+        gtt_active = len(governed) > 0
+    if gtt_active:
+        assert gtt_signal is not None and config.gtt_config is not None
+        defensive_weights = config.gtt_config.defensive_weights
+        mask_aligned = _reindex_position_mask(gtt_signal.position_mask, idx)
+        def_gross = _defensive_gross_return(
+            returns, return_data.risk_free_rate, defensive_weights
+        )
+
+    # LEAPS setup — carve capital out of NAV and run a fresh simulation (Model B).
+    # Under GTT the ledger is segmented: the initial simulation covers only the
+    # first Long window; later windows are (re-)opened inside the loop on re-entry.
     leaps_ledger: LeapsLedger | None = None
     underlying_prices: pd.Series | None = None
     iv = DEFAULT_IV
     rfr_series: pd.Series | None = None
     mtm_iv_series: pd.Series | None = None  # 30-day smoothed VIX for daily MTM
+    raw_vix: pd.Series | None = None
+    leaps_monthly = 0.0
+    all_window_ledgers: list[LeapsLedger] = []
 
     if use_leaps:
         underlyings = {k.removesuffix(LEAPS_KEY_SUFFIX) for k in leaps_keys}
@@ -511,21 +544,33 @@ def run_backtest(
 
         # VIX-based dynamic IV: raw VIX for contract creation/roll (via iv_series),
         # 30-day rolling mean for daily MTM. config.iv is the floor throughout.
-        raw_vix: pd.Series | None = None
         if not price_data.vol_prices.empty and "^VIX" in price_data.vol_prices.columns:
             raw_vix = price_data.vol_prices["^VIX"].reindex(idx, method="ffill")
             mtm_iv_series = raw_vix.rolling(VIX_MTM_WINDOW).mean().ffill()
 
         initial_leaps_capital = config.initial_nav * leaps_fraction
         leaps_monthly = config.monthly_contribution * leaps_fraction
+
+        # Under GTT, scope the initial simulation to the first Long window; the
+        # LEAPS position is force-closed at its end and re-opened on re-entry.
+        init_prices = underlying_prices
+        if gtt_active and mask_aligned is not None:
+            long_wins = _long_windows(mask_aligned)
+            if long_wins:
+                first_start, first_end = long_wins[0]
+                init_prices = underlying_prices.loc[first_start:first_end]
+            else:
+                init_prices = underlying_prices.iloc[0:0]  # never Long -> no contracts
+
         leaps_ledger = run_leaps_simulation(
-            underlying_prices,
+            init_prices,
             leaps_monthly,
             config.leaps_config,
             risk_free_series=return_data.risk_free_rate,
             iv_series=raw_vix,
             initial_capital=initial_leaps_capital,
         )
+        all_window_ledgers.append(leaps_ledger)
 
     # Initialize base holdings: dollar value per base asset (LEAPS capital carved out)
     base_nav_init = config.initial_nav * (1.0 - leaps_fraction)
@@ -543,37 +588,6 @@ def run_backtest(
     leaps_scale: dict[LeapsContract, float] = {}
     partial_close_list: list[LeapsPartialCloseEvent] = []
     target_leaps_value = config.initial_nav * leaps_fraction  # dollar target for LEAPS sleeve
-
-    # GTT overlay state. When active, the governed (VTI / VTI_LEAPS) leg is moved
-    # into a single defensive-sleeve scalar on defensive days and re-anchored to
-    # target on re-entry. The sleeve compounds by the blended defensive return and
-    # is decomposed at defensive_weights proportions for weight_history.
-    # The overlay only engages when the signal is present AND the portfolio holds a
-    # governed ticker; otherwise GTT is a complete no-op (no forced rebalance fires).
-    defensive_sleeve = 0.0
-    prev_regime = 1
-    governed_base: list[str] = []
-    defensive_weights: dict[str, float] = {}
-    mask_aligned: pd.Series | None = None
-    def_gross: pd.Series | None = None
-    gtt_active = False
-    if gtt_signal is not None:
-        assert config.gtt_config is not None  # paired above
-        governed = _gtt_governed_keys(config.target_weights)
-        governed_base = [k for k in governed if k in base_assets]
-        gtt_active = len(governed) > 0
-    if gtt_active:
-        assert gtt_signal is not None and config.gtt_config is not None
-        if use_leaps:
-            # LEAPS-under-GTT segmentation lands in F-10d; guard until then.
-            raise NotImplementedError(
-                "GTT overlay with a LEAPS carve-out is implemented in F-10d"
-            )
-        defensive_weights = config.gtt_config.defensive_weights
-        mask_aligned = _reindex_position_mask(gtt_signal.position_mask, idx)
-        def_gross = _defensive_gross_return(
-            returns, return_data.risk_free_rate, defensive_weights
-        )
 
     nav_values: list[float] = []
     return_values: list[float] = []

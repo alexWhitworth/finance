@@ -14,7 +14,7 @@ import pytest
 
 from finance.data import PriceData
 from finance.gtt import GttSignalData
-from finance.leverage import RebalanceRule, WeightStrategy
+from finance.leverage import AccountType, LeapsConfig, RebalanceRule, WeightStrategy
 from finance.portfolio import (
     GttConfig,
     PortfolioConfig,
@@ -483,24 +483,6 @@ def test_gtt_config_without_vti_is_noop() -> None:
     assert gtt.nav_series.iloc[-1] == pytest.approx(plain.nav_series.iloc[-1], abs=1e-9)
 
 
-def test_gtt_with_leaps_not_yet_supported() -> None:
-    """A LEAPS carve-out under GTT raises until F-10d lands (documents the guard)."""
-    from finance.leverage import AccountType, LeapsConfig
-
-    rd, pd_obj = _make_rd_and_pd(252)
-    idx = pd.DatetimeIndex(rd.returns.index)
-    weights = {"VTI": 0.4, "VTI_LEAPS": 0.2, "VXUS": 0.2, "GLD": 0.1, "MUB": 0.1}
-    gc = GttConfig(vix_p90_threshold=0.272, defensive_weights={"R_f": 0.5, "GLD": 0.5})
-    cfg = PortfolioConfig(
-        target_weights=weights, initial_nav=1_000_000.0, monthly_contribution=0.0,
-        rebalance_rule=RebalanceRule.QUARTERLY, weight_strategy=WeightStrategy.USER_SPECIFIED,
-        leaps_config=LeapsConfig(account_type=AccountType.TAXABLE),
-        gtt_config=gc,
-    )
-    with pytest.raises(NotImplementedError, match="F-10d"):
-        run_backtest(rd, pd_obj, cfg, gtt_signal=_all_long_signal(idx))
-
-
 # ---------------------------------------------------------------------------
 # F-10d.1 — _long_windows
 # ---------------------------------------------------------------------------
@@ -545,3 +527,41 @@ def test_long_windows_single_day_windows() -> None:
     m = np.array([1, 0, 1, 0, 1])
     wins = _long_windows(pd.Series(m, index=idx))
     assert wins == [(idx[0], idx[0]), (idx[2], idx[2]), (idx[4], idx[4])]
+
+
+# ---------------------------------------------------------------------------
+# F-10d.2 — first-window ledger (all-Long GTT+LEAPS == no-GTT LEAPS baseline)
+# ---------------------------------------------------------------------------
+
+_LEAPS_WEIGHTS = {
+    "VTI_LEAPS": 0.30, "VTI": 0.10, "VXUS": 0.15, "GLD": 0.15,
+    "MUB": 0.15, "KMLM": 0.075, "VGIT": 0.075,
+}
+
+
+def _leaps_gtt_config(gtt: bool) -> PortfolioConfig:
+    """LEAPS portfolio config, optionally with the GTT overlay attached."""
+    return PortfolioConfig(
+        target_weights=dict(_LEAPS_WEIGHTS),
+        initial_nav=1_000_000.0,
+        monthly_contribution=5_000.0,
+        rebalance_rule=RebalanceRule.QUARTERLY,
+        weight_strategy=WeightStrategy.USER_SPECIFIED,
+        leaps_config=LeapsConfig(account_type=AccountType.TAXABLE),
+        gtt_config=_gtt_config() if gtt else None,
+    )
+
+
+def test_all_long_gtt_leaps_equals_no_gtt_leaps() -> None:
+    """All-Long GTT+LEAPS reproduces the no-GTT LEAPS baseline exactly."""
+    rd, pd_obj = _make_rd_and_pd(504)
+    idx = pd.DatetimeIndex(rd.returns.index)
+    baseline = run_backtest(rd, pd_obj, _leaps_gtt_config(gtt=False))
+    gtt = run_backtest(rd, pd_obj, _leaps_gtt_config(gtt=True), gtt_signal=_all_long_signal(idx))
+
+    pd.testing.assert_series_equal(gtt.nav_series, baseline.nav_series)
+    pd.testing.assert_frame_equal(gtt.weight_history, baseline.weight_history)
+    assert baseline.leaps_ledger is not None and gtt.leaps_ledger is not None
+    assert len(gtt.leaps_ledger.contracts) == len(baseline.leaps_ledger.contracts)
+    # No defensive transitions -> no GTT close events.
+    assert gtt.leaps_ledger.gtt_close_events == ()
