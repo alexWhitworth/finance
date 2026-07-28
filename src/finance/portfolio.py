@@ -12,6 +12,7 @@ from finance.consts import (
     DEFAULT_IV,
     DRIFT_BAND_RELATIVE,
     GTT_DEFENSIVE_WEIGHTS_DEFAULT,
+    GTT_EQUITY_TICKERS,
     GTT_SMA_WINDOW,
     GTT_UNRATE_TRADE_LAG_DAYS,
     GTT_VIX_CONSECUTIVE_DAYS,
@@ -266,6 +267,80 @@ def apply_contribution(
     """
     _ = nav  # reserved for future weight strategies that use NAV context
     return {str(a): contribution * float(weights[a]) for a in weights.index}
+
+
+# ---------------------------------------------------------------------------
+# GTT pre-compute helpers (pure; used by the run_backtest GTT branch)
+# ---------------------------------------------------------------------------
+
+
+def _gtt_governed_keys(target_weights: dict[str, float]) -> set[str]:
+    """Return the target_weights keys governed by the GTT signal.
+
+    A key is governed when it is a GTT_EQUITY_TICKERS ticker present in
+    target_weights, or a "<ticker>_LEAPS" carve-out of such a ticker. When
+    target_weights holds no governed ticker the result is empty and the GTT
+    overlay is a no-op.
+
+    Arguments:
+        target_weights: Portfolio target-weight mapping (asset -> weight).
+
+    Returns:
+        Set of governed keys (subset of target_weights). Empty if none.
+    """
+    governed: set[str] = set()
+    for key in target_weights:
+        base = key.removesuffix(LEAPS_KEY_SUFFIX) if key.endswith(LEAPS_KEY_SUFFIX) else key
+        if base in GTT_EQUITY_TICKERS:
+            governed.add(key)
+    return governed
+
+
+def _reindex_position_mask(mask: pd.Series, index: pd.DatetimeIndex) -> pd.Series:
+    """Align a position mask to the backtest index, defaulting gaps to Long.
+
+    Missing dates (holiday misalignment) are forward-filled from the last known
+    signal; leading dates before any signal exists default to 1 (Long), so the
+    overlay never forces a defensive posture on unknown data.
+
+    Arguments:
+        mask: 0/1 position mask (1=Long, 0=Defensive), DatetimeIndex.
+        index: Target backtest trading-day index.
+
+    Returns:
+        Int Series aligned to index, values in {0, 1}, no NaN.
+    """
+    return mask.reindex(index, method="ffill").fillna(1).astype(int)
+
+
+def _defensive_gross_return(
+    returns: pd.DataFrame,
+    rfr_series: pd.Series,
+    defensive_weights: dict[str, float],
+) -> pd.Series:
+    """Compute the daily blended gross return of the defensive sleeve.
+
+    The sleeve return on day t is Sum_i w_i * r_i(t), where the sentinel key
+    "R_f" contributes w_Rf * rfr(t)/252 (a date-varying T-bill day return) and
+    every other key contributes its own asset return. This is the single factor
+    by which the parked defensive capital (and the LEAPS pool) compounds.
+
+    Arguments:
+        returns: Daily simple returns (DatetimeIndex x asset columns).
+        rfr_series: Daily annualized risk-free rate (decimal), aligned to returns.
+        defensive_weights: Sleeve weights summing to 1.0; may contain "R_f".
+
+    Returns:
+        Daily float Series of blended sleeve returns, indexed like returns.
+    """
+    blended = pd.Series(0.0, index=returns.index, name="defensive_gross_return")
+    rfr_aligned = rfr_series.reindex(returns.index, method="ffill").fillna(0.0)
+    for key, weight in defensive_weights.items():
+        if key == GTT_RISK_FREE_KEY:
+            blended = blended + weight * (rfr_aligned / 252.0)
+        else:
+            blended = blended + weight * returns[key]
+    return blended
 
 
 # ---------------------------------------------------------------------------
