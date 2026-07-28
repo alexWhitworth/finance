@@ -19,6 +19,7 @@ from finance.consts import (
     VIX_MTM_WINDOW,
 )
 from finance.data import PriceData
+from finance.gtt import GttSignalData
 from finance.leverage import (
     LeapsConfig,
     LeapsContract,
@@ -276,6 +277,7 @@ def run_backtest(
     return_data: ReturnData,
     price_data: PriceData,
     config: PortfolioConfig,
+    gtt_signal: GttSignalData | None = None,
 ) -> BacktestResult:
     """Run the core portfolio backtest loop.
 
@@ -285,6 +287,14 @@ def run_backtest(
       c. On month-end: apply monthly_contribution proportional to target weights.
       d. On rebalance date: realign holdings to target weights.
       e. If LEAPS keys present: include carved-out LEAPS mark-to-market in total NAV.
+
+    GTT overlay (opt-in via a matched gtt_signal + config.gtt_config pair):
+      When gtt_signal is provided, the GTT_EQUITY_TICKERS leg (VTI and its _LEAPS
+      variant) is governed by gtt_signal.position_mask (1=Long, 0=Defensive). On
+      defensive days the governed capital is moved into a fixed-weight defensive
+      sleeve and live LEAPS contracts are force-closed; on re-entry a forced
+      rebalance re-anchors the portfolio to target_weights. gtt_signal=None
+      preserves the pre-GTT behavior exactly.
 
     LEAPS (Model B carve-out, triggered by any "*_LEAPS" key in target_weights):
       - The underlying (key without the "_LEAPS" suffix) must exist in
@@ -302,6 +312,9 @@ def run_backtest(
         return_data: ReturnData containing daily simple returns for all assets.
         price_data: PriceData providing absolute asset prices (used for LEAPS spot).
         config: PortfolioConfig specifying weights, contributions, and rebalancing.
+        gtt_signal: Optional pre-computed GTT signal. None disables the overlay and
+            preserves the pre-GTT behavior exactly. When provided, config.gtt_config
+            must also be set (and vice versa).
 
     Returns:
         BacktestResult with NAV series, weight history, return series, and ledger.
@@ -311,10 +324,34 @@ def run_backtest(
         ValueError: If a LEAPS underlying (key without "_LEAPS") is absent from price_data.prices.
         ValueError: If more than one distinct LEAPS underlying is requested.
         ValueError: If LEAPS keys are present but config.leaps_config is None.
+        ValueError: If exactly one of gtt_signal / config.gtt_config is set (both or
+            neither required).
+        ValueError: If gtt_signal is set and a non-R_f defensive_weights ticker is
+            absent from return_data.
     """
     from finance.leverage import run_leaps_simulation
 
+    # GTT opt-in requires a matched (gtt_signal, config.gtt_config) pair.
+    if (gtt_signal is None) != (config.gtt_config is None):
+        raise ValueError(
+            "gtt_signal and config.gtt_config must both be set or both be None; got "
+            f"gtt_signal={'set' if gtt_signal is not None else 'None'}, "
+            f"config.gtt_config={'set' if config.gtt_config is not None else 'None'}"
+        )
+
     returns = return_data.returns
+
+    if gtt_signal is not None:
+        assert config.gtt_config is not None  # guaranteed by the paired check above
+        missing_def = [
+            k
+            for k in config.gtt_config.defensive_weights
+            if k != GTT_RISK_FREE_KEY and k not in returns.columns
+        ]
+        if missing_def:
+            raise ValueError(
+                f"defensive_weights tickers absent from return_data: {missing_def}"
+            )
 
     # Split target weights into base assets and carved-out LEAPS keys (Model B)
     leaps_keys = [k for k in config.target_weights if k.endswith(LEAPS_KEY_SUFFIX)]
