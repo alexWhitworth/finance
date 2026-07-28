@@ -99,18 +99,29 @@ def _config(
     )
 
 
-def _all_long_signal(index: pd.DatetimeIndex, threshold: float = 0.272) -> GttSignalData:
-    """A GttSignalData whose mask is 1 (Long) on every date in index."""
-    mask = pd.Series(1, index=index, name="position_mask")
+def _signal_from_mask(mask_values: np.ndarray, index: pd.DatetimeIndex) -> GttSignalData:
+    """Build a GttSignalData directly from a 0/1 mask array aligned to index."""
     zeros = pd.Series(0, index=index)
     return GttSignalData(
-        position_mask=mask,
+        position_mask=pd.Series(mask_values, index=index, name="position_mask"),
         ue_signal=zeros,
         vix_signal=zeros,
-        vix_p90_threshold=threshold,
+        vix_p90_threshold=0.272,
         unrate_start=pd.Timestamp(index[0]),
         vix_start=pd.Timestamp(index[0]),
     )
+
+
+def _all_long_signal(index: pd.DatetimeIndex, threshold: float = 0.272) -> GttSignalData:
+    """A GttSignalData whose mask is 1 (Long) on every date in index."""
+    return _signal_from_mask(np.ones(len(index), dtype=int), index)
+
+
+def _window_signal(index: pd.DatetimeIndex, lo: int, hi: int) -> GttSignalData:
+    """Mask that is Defensive (0) on [lo, hi) and Long (1) elsewhere."""
+    m = np.ones(len(index), dtype=int)
+    m[lo:hi] = 0
+    return _signal_from_mask(m, index)
 
 
 # ---------------------------------------------------------------------------
@@ -321,3 +332,169 @@ def test_defensive_gross_return_rf_only_earns_daily_rfr() -> None:
     rfr = pd.Series([0.0504, 0.0504], index=idx)
     out = _defensive_gross_return(returns, rfr, {"R_f": 1.0})
     np.testing.assert_allclose(out.to_numpy(), [0.0504 / 252.0] * 2, atol=1e-15)
+
+
+# ---------------------------------------------------------------------------
+# F-10c — equity-only GTT branch (no LEAPS)
+# ---------------------------------------------------------------------------
+
+_TICKER_ORDER = ("VTI", "VXUS", "GLD", "MUB", "KMLM", "VGIT")
+
+
+def test_all_long_mask_equals_no_gtt() -> None:
+    """An all-Long mask reproduces the no-GTT run within 1e-9 terminal NAV."""
+    rd, pd_obj = _make_rd_and_pd(252)
+    idx = pd.DatetimeIndex(rd.returns.index)
+    baseline = run_backtest(rd, pd_obj, _config(contribution=10_000.0))
+    gtt = run_backtest(
+        rd, pd_obj,
+        _config(contribution=10_000.0, gtt_config=_gtt_config()),
+        gtt_signal=_all_long_signal(idx),
+    )
+    assert gtt.nav_series.iloc[-1] == pytest.approx(baseline.nav_series.iloc[-1], abs=1e-9)
+    # Governed leg is never zeroed under an all-Long mask.
+    assert (gtt.weight_history["VTI"] > 0).all()
+
+
+def test_defensive_window_zeros_vti_and_redistributes() -> None:
+    """During a defensive window VTI weight is exactly 0 and defensive tickers carry it."""
+    rd, pd_obj = _make_rd_and_pd(252)
+    idx = pd.DatetimeIndex(rd.returns.index)
+    gtt = run_backtest(
+        rd, pd_obj,
+        _config(gtt_config=_gtt_config()),
+        gtt_signal=_window_signal(idx, 50, 100),
+    )
+    wh = gtt.weight_history
+    assert wh["VTI"].iloc[50:100].abs().max() == 0.0
+    # Redistributed capital shows up under the defensive sleeve (R_f synthetic column).
+    assert "R_f" in wh.columns
+    assert (wh["R_f"].iloc[50:100] > 0).all()
+    # R_f is 0 on Long days (sleeve empty).
+    assert wh["R_f"].iloc[10] == 0.0
+    # Every row still sums to 1.0.
+    np.testing.assert_allclose(wh.sum(axis=1).to_numpy(), 1.0, atol=1e-9)
+
+
+def test_defensive_sleeve_rf_only_earns_daily_rfr() -> None:
+    """An all-R_f defensive sleeve compounds NAV by exactly rfr/252 each defensive day."""
+    rd, pd_obj = _make_rd_and_pd(252)
+    idx = pd.DatetimeIndex(rd.returns.index)
+    # VTI is the sole weighted base asset; sleeve is pure R_f.
+    weights = {"VTI": 1.0, "KMLM": 0.0, "VGIT": 0.0, "GLD": 0.0}
+    gc = GttConfig(vix_p90_threshold=0.272, defensive_weights={"R_f": 1.0})
+    cfg = PortfolioConfig(
+        target_weights=weights, initial_nav=1_000_000.0, monthly_contribution=0.0,
+        rebalance_rule=RebalanceRule.QUARTERLY, weight_strategy=WeightStrategy.USER_SPECIFIED,
+        gtt_config=gc,
+    )
+    res = run_backtest(rd, pd_obj, cfg, gtt_signal=_window_signal(idx, 50, 100))
+    rfr = rd.risk_free_rate.reindex(idx, method="ffill").fillna(0.0)
+    expected = res.nav_series.iloc[49]
+    for i in range(50, 100):
+        expected *= 1.0 + rfr.iloc[i] / 252.0
+    assert res.nav_series.iloc[99] == pytest.approx(expected, rel=1e-12)
+    assert res.weight_history["R_f"].iloc[60] == pytest.approx(1.0, abs=1e-12)
+
+
+def test_reentry_restores_target_weights() -> None:
+    """On the first Long day after a defensive window, weights snap to target (1e-9)."""
+    rd, pd_obj = _make_rd_and_pd(252)
+    idx = pd.DatetimeIndex(rd.returns.index)
+    gtt = run_backtest(
+        rd, pd_obj,
+        _config(gtt_config=_gtt_config()),
+        gtt_signal=_window_signal(idx, 50, 100),  # re-entry on day 100
+    )
+    wh = gtt.weight_history
+    target = 1.0 / len(_TICKER_ORDER)
+    for a in _TICKER_ORDER:
+        assert wh[a].iloc[100] == pytest.approx(target, abs=1e-9)
+
+
+def test_rebalance_on_defensive_day_keeps_vti_zero() -> None:
+    """A quarterly rebalance landing on a defensive day still yields 0 VTI (Option C)."""
+    rd, pd_obj = _make_rd_and_pd(504)
+    idx = pd.DatetimeIndex(rd.returns.index)
+    # Find a quarterly rebalance date and force a defensive window covering it.
+    from finance.portfolio import get_rebalance_dates
+
+    rebal = get_rebalance_dates(idx, RebalanceRule.QUARTERLY)
+    assert rebal, "expected at least one rebalance date in a 2y window"
+    pos = idx.get_loc(rebal[len(rebal) // 2])
+    gtt = run_backtest(
+        rd, pd_obj,
+        _config(gtt_config=_gtt_config()),
+        gtt_signal=_window_signal(idx, pos - 2, pos + 3),  # defensive across the rebalance
+    )
+    # VTI repopulated by the rebalance is re-zeroed by the GTT override on that day.
+    assert gtt.weight_history["VTI"].iloc[pos] == 0.0
+
+
+def test_whipsaw_multiple_windows_all_long_between() -> None:
+    """Multiple defensive windows each zero VTI; Long gaps between restore it."""
+    rd, pd_obj = _make_rd_and_pd(504)
+    idx = pd.DatetimeIndex(rd.returns.index)
+    m = np.ones(len(idx), dtype=int)
+    m[40:60] = 0
+    m[120:140] = 0
+    gtt = run_backtest(
+        rd, pd_obj, _config(gtt_config=_gtt_config()), gtt_signal=_signal_from_mask(m, idx)
+    )
+    wh = gtt.weight_history
+    assert wh["VTI"].iloc[40:60].abs().max() == 0.0
+    assert wh["VTI"].iloc[120:140].abs().max() == 0.0
+    assert wh["VTI"].iloc[80] > 0.0  # Long gap between the two windows
+    np.testing.assert_allclose(wh.sum(axis=1).to_numpy(), 1.0, atol=1e-9)
+
+
+def test_terminal_defensive_window_reports_no_vti() -> None:
+    """A timeline ending inside a defensive window keeps VTI at 0 through the end."""
+    rd, pd_obj = _make_rd_and_pd(252)
+    idx = pd.DatetimeIndex(rd.returns.index)
+    n = len(idx)
+    gtt = run_backtest(
+        rd, pd_obj, _config(gtt_config=_gtt_config()), gtt_signal=_window_signal(idx, n - 30, n)
+    )
+    assert gtt.weight_history["VTI"].iloc[-1] == 0.0
+    assert gtt.weight_history["R_f"].iloc[-1] > 0.0
+
+
+def test_gtt_config_without_vti_is_noop() -> None:
+    """gtt_config set but target_weights hold no governed ticker -> GTT is a no-op."""
+    rd, pd_obj = _make_rd_and_pd(252)
+    idx = pd.DatetimeIndex(rd.returns.index)
+    # No VTI in the portfolio; defensive_weights must still be corpus tickers.
+    weights = {"VXUS": 0.5, "GLD": 0.25, "MUB": 0.25}
+    gc = GttConfig(vix_p90_threshold=0.272, defensive_weights={"GLD": 0.5, "MUB": 0.5})
+    cfg_gtt = PortfolioConfig(
+        target_weights=weights, initial_nav=1_000_000.0, monthly_contribution=0.0,
+        rebalance_rule=RebalanceRule.QUARTERLY, weight_strategy=WeightStrategy.USER_SPECIFIED,
+        gtt_config=gc,
+    )
+    cfg_plain = PortfolioConfig(
+        target_weights=weights, initial_nav=1_000_000.0, monthly_contribution=0.0,
+        rebalance_rule=RebalanceRule.QUARTERLY, weight_strategy=WeightStrategy.USER_SPECIFIED,
+    )
+    gtt = run_backtest(rd, pd_obj, cfg_gtt, gtt_signal=_window_signal(idx, 50, 100))
+    plain = run_backtest(rd, pd_obj, cfg_plain)
+    # No governed ticker -> defensive window changes nothing.
+    assert gtt.nav_series.iloc[-1] == pytest.approx(plain.nav_series.iloc[-1], abs=1e-9)
+
+
+def test_gtt_with_leaps_not_yet_supported() -> None:
+    """A LEAPS carve-out under GTT raises until F-10d lands (documents the guard)."""
+    from finance.leverage import AccountType, LeapsConfig
+
+    rd, pd_obj = _make_rd_and_pd(252)
+    idx = pd.DatetimeIndex(rd.returns.index)
+    weights = {"VTI": 0.4, "VTI_LEAPS": 0.2, "VXUS": 0.2, "GLD": 0.1, "MUB": 0.1}
+    gc = GttConfig(vix_p90_threshold=0.272, defensive_weights={"R_f": 0.5, "GLD": 0.5})
+    cfg = PortfolioConfig(
+        target_weights=weights, initial_nav=1_000_000.0, monthly_contribution=0.0,
+        rebalance_rule=RebalanceRule.QUARTERLY, weight_strategy=WeightStrategy.USER_SPECIFIED,
+        leaps_config=LeapsConfig(account_type=AccountType.TAXABLE),
+        gtt_config=gc,
+    )
+    with pytest.raises(NotImplementedError, match="F-10d"):
+        run_backtest(rd, pd_obj, cfg, gtt_signal=_all_long_signal(idx))

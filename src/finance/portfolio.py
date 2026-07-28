@@ -514,6 +514,37 @@ def run_backtest(
     partial_close_list: list[LeapsPartialCloseEvent] = []
     target_leaps_value = config.initial_nav * leaps_fraction  # dollar target for LEAPS sleeve
 
+    # GTT overlay state. When active, the governed (VTI / VTI_LEAPS) leg is moved
+    # into a single defensive-sleeve scalar on defensive days and re-anchored to
+    # target on re-entry. The sleeve compounds by the blended defensive return and
+    # is decomposed at defensive_weights proportions for weight_history.
+    # The overlay only engages when the signal is present AND the portfolio holds a
+    # governed ticker; otherwise GTT is a complete no-op (no forced rebalance fires).
+    defensive_sleeve = 0.0
+    prev_regime = 1
+    governed_base: list[str] = []
+    defensive_weights: dict[str, float] = {}
+    mask_aligned: pd.Series | None = None
+    def_gross: pd.Series | None = None
+    gtt_active = False
+    if gtt_signal is not None:
+        assert config.gtt_config is not None  # paired above
+        governed = _gtt_governed_keys(config.target_weights)
+        governed_base = [k for k in governed if k in base_assets]
+        gtt_active = len(governed) > 0
+    if gtt_active:
+        assert gtt_signal is not None and config.gtt_config is not None
+        if use_leaps:
+            # LEAPS-under-GTT segmentation lands in F-10d; guard until then.
+            raise NotImplementedError(
+                "GTT overlay with a LEAPS carve-out is implemented in F-10d"
+            )
+        defensive_weights = config.gtt_config.defensive_weights
+        mask_aligned = _reindex_position_mask(gtt_signal.position_mask, idx)
+        def_gross = _defensive_gross_return(
+            returns, return_data.risk_free_rate, defensive_weights
+        )
+
     nav_values: list[float] = []
     return_values: list[float] = []
     weight_rows: list[dict[str, float]] = []
@@ -522,9 +553,29 @@ def run_backtest(
         date_ts = pd.Timestamp(date)
         day_ret = returns.loc[date_ts]
 
+        # (GTT open) The governed leg is swept into the sleeve at the open of a
+        # defensive day (mask is lag-adjusted: mask[t]=0 means hold defensive
+        # *during* day t), so the freed VTI capital rides the defensive return
+        # rather than VTI's. Re-entry to target happens at the close (below), so
+        # weight_history on the re-entry day lands exactly on target_weights.
+        regime_t = 1
+        if gtt_active and mask_aligned is not None:
+            regime_t = int(mask_aligned.loc[date_ts])
+            if regime_t == 0:
+                for k in governed_base:
+                    defensive_sleeve += holdings[k]
+                    holdings[k] = 0.0
+
         # (a) Apply daily returns to base holdings
         for a in base_assets:
             holdings[a] *= 1.0 + float(day_ret[a])  # type: ignore[arg-type]
+
+        # (a') The defensive sleeve rides the blended defensive return while it holds
+        # defensively-allocated capital: every defensive day (regime_t == 0) and the
+        # re-entry day (prev_regime == 0), where it earns one final defensive day
+        # before being redeployed to target at the close.
+        if gtt_active and def_gross is not None and (regime_t == 0 or prev_regime == 0):
+            defensive_sleeve *= 1.0 + float(def_gross.loc[date_ts])
 
         # (e) LEAPS gross mark-to-market (carved-out capital value), scaled by prior closes
         leaps_value = 0.0
@@ -542,22 +593,34 @@ def run_backtest(
                 for c in live
             )
 
-        nav_before_contrib = sum(holdings.values()) + leaps_value
+        nav_before_contrib = sum(holdings.values()) + leaps_value + defensive_sleeve
 
         # (b) Market return — excludes the upcoming contribution
         port_return = nav_before_contrib / prev_total_nav - 1.0
 
-        # (c) Month-end: add the base share of the contribution across base assets
+        # (c) Month-end: add the base share of the contribution across base assets.
+        # On a defensive day the governed-ticker share of that contribution is
+        # diverted into the sleeve (base_target_w still sums to 1 over base_assets,
+        # so the governed weight is its base_target_w mass).
         if date_ts in month_end_dates and base_assets:
             alloc = apply_contribution(nav_before_contrib, base_contribution, base_target_w)
             for a in base_assets:
-                holdings[a] += alloc[a]
+                if gtt_active and regime_t == 0 and a in governed_base:
+                    defensive_sleeve += alloc[a]
+                else:
+                    holdings[a] += alloc[a]
 
-        # (d) QUARTERLY rebalance: realign base holdings to base target weights
+        # (d) QUARTERLY rebalance: realign base holdings to base target weights.
+        # Runs first (Option C); the GTT defensive override below re-zeros the
+        # governed leg into the sleeve after the rebalance repopulates it.
         if date_ts in rebal_dates and base_assets:
             base_nav = sum(holdings.values())
             for a in base_assets:
                 holdings[a] = base_nav * float(base_target_w[a])
+            if gtt_active and regime_t == 0:
+                for k in governed_base:
+                    defensive_sleeve += holdings[k]
+                    holdings[k] = 0.0
 
         # (f) DRIFT rebalance: check monthly; trim LEAPS overshoot pro-rata (tax-free)
         if config.rebalance_rule == RebalanceRule.DRIFT and date_ts in month_end_dates:
@@ -584,7 +647,16 @@ def run_backtest(
                             holdings[a] += net_proceeds * float(base_target_w[a])
                     leaps_value = target_leaps_value
 
-        total_nav = sum(holdings.values()) + leaps_value
+        # (GTT close) Defensive -> Long re-entry: re-anchor the whole portfolio to
+        # target on the combined NAV (base holdings + sleeve). This is the last
+        # holdings mutation of the day, so weight_history lands exactly on target.
+        if gtt_active and prev_regime == 0 and regime_t == 1 and base_assets:
+            total = sum(holdings.values()) + defensive_sleeve
+            for a in base_assets:
+                holdings[a] = total * float(base_target_w[a])
+            defensive_sleeve = 0.0
+
+        total_nav = sum(holdings.values()) + leaps_value + defensive_sleeve
 
         nav_values.append(total_nav)
         return_values.append(port_return)
@@ -592,9 +664,15 @@ def run_backtest(
         for k in leaps_keys:
             share = float(w[k]) / leaps_fraction if leaps_fraction > 0 else 0.0
             row[k] = leaps_value * share / total_nav
+        # Decompose the defensive sleeve across defensive_weights for weight_history;
+        # governed keys were zeroed at the open so their rows are already 0.
+        if gtt_active and defensive_sleeve > 0.0:
+            for dk, dw in defensive_weights.items():
+                row[dk] = row.get(dk, 0.0) + dw * defensive_sleeve / total_nav
         weight_rows.append(row)
 
         prev_total_nav = total_nav
+        prev_regime = regime_t
 
     # Freeze accumulated partial closes onto the ledger once, at the return boundary.
     # Every entry in leaps_scale is a surviving fraction < 1.0 (only closes write it).
@@ -616,6 +694,10 @@ def run_backtest(
     nav_series = pd.Series(nav_values, index=returns.index, name="NAV")
     return_series = pd.Series(return_values, index=returns.index, name="portfolio_return")
     weight_history = pd.DataFrame(weight_rows, index=returns.index)
+    if gtt_active:
+        # A synthetic R_f column (and any defensive-only ticker) appears only on
+        # defensive days; other days are absent -> NaN. Zero-fill for a dense frame.
+        weight_history = weight_history.fillna(0.0)
 
     return BacktestResult(
         nav_series=nav_series,
