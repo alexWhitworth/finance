@@ -16,6 +16,8 @@ outputs/figures/*
 analyses/
 analyses/gtt_library_validation.py
 
+scripts/
+
 # code-cov
 .coverage
 coverage.xml

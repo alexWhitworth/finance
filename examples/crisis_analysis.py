@@ -1,7 +1,6 @@
 """Crisis-period performance analysis for a 6-asset diversified portfolio.
 
-Fetches prices from 2010-02-01 to 2026-06-30 (AQMIX splice used as KMLM proxy
-before 2021), runs a quarterly-rebalanced backtest, then slices the return
+Fetches prices, runs a quarterly-rebalanced backtest, then slices the return
 series into three pre-defined crisis windows (GFC, COVID, 2022 Rate Hike) and
 prints PerformanceMetrics for each.  Also saves a drawdown chart with shaded
 crisis bands to figures/crisis_drawdown.png.
@@ -23,14 +22,14 @@ WEIGHTS = {
     "GLD": 0.10,
     "MUB": 0.10,
     "KMLM": 0.10,
-    "VGIT": 0.10,
+    "IEF": 0.10,
 }
 
 if __name__ == "__main__":
-    START, END = "2010-02-01", "2026-06-30"
+    START, END = "2000-09-01", "2026-06-30"
 
     print("=== Fetching Price Data ===")
-    price_data = build_price_data(START, END, use_splice=True)
+    price_data = build_price_data(START, END, tickers=list(WEIGHTS.keys()), use_splice=True)
 
     print("=== Fetching Risk-Free Rate ===")
     rfr_series = fetch_risk_free_rate(START, END)
@@ -61,7 +60,8 @@ if __name__ == "__main__":
 
     print("\n=== Crisis-Period Metrics ===")
     for metrics in report.crisis_periods:
-        start, end = CRISIS_PERIODS[metrics.period_label]
+        base_label = metrics.period_label.split(" (")[0]
+        start, end = CRISIS_PERIODS[base_label]
         print(f"\n--- {metrics.period_label} ({start} → {end}) ---")
         crisis_report = PerformanceReport(
             full_period=metrics,

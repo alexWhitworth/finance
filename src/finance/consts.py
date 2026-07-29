@@ -9,10 +9,12 @@ SPLICE_MAP: dict[str, tuple[str, str]] = {
     # KMLM: proxy is a parquet file of MLMI total-return index history (1988–2020-12-01).
     # Splice date = KMLM ETF inception. See data/kmlm_mlmi_pre.parquet.
     "KMLM": ("file:data/kmlm_mlmi_pre.parquet", "2020-12-02"),
-    "VXUS": ("VGTSX", "2011-01-25"),
-    "MUB": ("VWITX", "2007-09-10"),
+    "VXUS": ("VGTSX", "2011-01-28"),
     "VTI": ("VTSMX", "2001-06-15"),
-    # Unable to find a splice source.
+    "VGIT": ("VFITX", "2009-11-23"),
+    "MUB": ("VWITX", "2007-09-10"),
+    "GLD": ("GC=F", "2004-11-18"),  # only goes back to 2000-08-30 :(
+    # Unable to find a splice source further back. Still trying to get.
     # -------------------------------------------
     # "GLD": inception on yfinance = 2004-11-18.
         # Removed from FRED (blogpost: https://shorturl.at/Bq28j)
@@ -107,7 +109,7 @@ GTT_SMA_WINDOW: int = 200  # Default equity price SMA window
 
 GTT_DEFENSIVE_WEIGHTS_DEFAULT: dict[str, float] = {
     "R_f": 0.25,
-    "KMLM": 0.25,
+    "KMLM": 0.5,
     "VGIT": 0.25,
-    "GLD": 0.25,
+    "GLD": 0.0,
 }

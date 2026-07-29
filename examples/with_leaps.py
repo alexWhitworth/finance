@@ -1,9 +1,8 @@
 """LEAPS overlay backtest: taxable vs. tax-sheltered account comparison.
 
-Runs two identical backtests from 2010-02-01 to 2026-06-30 — one with a LEAPS
-overlay in a TAXABLE account, one in a TAX_SHELTERED account — then prints a
-side-by-side performance comparison and saves a tax-drag comparison chart to
-figures/leaps_tax_drag.png.
+Runs two identical backtests — one with a LEAPS overlay in a TAXABLE account, 
+one in a TAX_SHELTERED account — then prints a side-by-side performance 
+comparison and saves a tax-drag comparison chart to figures/leaps_tax_drag.png.
 
 The base portfolio is a 6-asset quarterly-rebalanced allocation. The LEAPS
 overlay is specified via a "VTI_LEAPS" key in target_weights; run_backtest
@@ -39,7 +38,7 @@ LTCG_RATE = 0.238
 
 
 if __name__ == "__main__":
-    START, END = "2010-02-01", "2026-06-30"
+    START, END = "2000-09-01", "2026-06-30"
 
     print("=== Fetching Price Data ===")
     price_data = build_price_data(START, END, use_splice=True, fetch_vol_indices=True)

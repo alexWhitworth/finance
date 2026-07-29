@@ -1,9 +1,9 @@
 """End-to-end backtest example for a 6-asset diversified portfolio.
 
-Fetches prices from 2010-02-01 to 2026-06-30 with an AQMIX splice for
-pre-KMLM history, runs a quarterly-rebalanced backtest, computes performance
-metrics and a volatility model, then prints a formatted performance table and
-saves a NAV growth chart to figures/basic_backtest_nav.png.
+Fetches prices with data splicing for assets without long price history (eg VTI -> VTSMX),
+runs a quarterly-rebalanced backtest, computes performance metrics and 
+a volatility model, then prints a formatted performance table and saves a 
+NAV growth chart to figures/basic_backtest_nav.png.
 """
 
 from pathlib import Path
@@ -26,7 +26,7 @@ WEIGHTS = {
 }
 
 if __name__ == "__main__":
-    START, END = "2010-02-01", "2026-06-30"
+    START, END = "2000-09-01", "2026-06-30"
 
     print("=== Fetching Price Data ===")
     price_data = build_price_data(START, END, use_splice=True)

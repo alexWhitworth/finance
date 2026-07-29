@@ -1,7 +1,6 @@
 """Volatility contribution report for a 6-asset diversified portfolio.
 
-Fetches prices from 2010-02-01 to 2026-06-30 with an AQMIX splice for
-pre-KMLM history, builds a VolatilityModel, prints the full vol contribution
+Fetches prices, builds a VolatilityModel, prints the full vol contribution
 table (90-day realized vol, EWMA vol, correlation with VTI, and contribution
 fraction), prints the forward portfolio vol forecast, and saves a vol
 contributions bar chart to figures/vol_contributions.png.
@@ -55,7 +54,7 @@ def _format_vol_table(tbl: pd.DataFrame) -> pd.DataFrame:
 
 
 if __name__ == "__main__":
-    START, END = "2010-02-01", "2026-06-30"
+    START, END = "2000-09-01", "2026-06-30"
 
     print("=== Fetching Price Data ===")
     price_data = build_price_data(START, END, use_splice=True)

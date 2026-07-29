@@ -89,11 +89,18 @@ uv run mypy src/               # type-check
 
 ## Examples
 
+**Recommended:** pipe outputs to `tee` (e.g. `uv run file.py 2>&1 | tee logfile.log`)
+
 ```bash
+# pipe to tee usage:
+uv run examples/basic_backtest.py 2>&1 | tee basic_backtest.log
+
+# Examples:
 uv run examples/basic_backtest.py      # full backtest + performance table + NAV chart
 uv run examples/with_leaps.py          # LEAPS overlay, taxable vs. tax-sheltered
 uv run examples/volatility_report.py   # vol contribution table + forward vol forecast
 uv run examples/crisis_analysis.py     # GFC / COVID / 2022 per-period metrics
+uv run examples/basic_gtt.py           # Basic backtest, with the GTT signal and comparison
 ```
 
 ## Growth and Trend Timing

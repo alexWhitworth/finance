@@ -348,7 +348,11 @@ def build_performance_report(
     rfr = return_data.risk_free_rate
 
     full_rfr = rfr.reindex(port_returns.index, method="ffill").fillna(0.0)
-    full_period = compute_metrics(port_returns, nav, "Full Period", full_rfr)
+    full_start = port_returns.index[0].strftime("%Y-%m")
+    full_end = port_returns.index[-1].strftime("%Y-%m")
+    full_period = compute_metrics(
+        port_returns, nav, f"Full Period ({full_start}:{full_end})", full_rfr
+    )
 
     crisis_metrics: list[PerformanceMetrics] = []
     for label, (start, end) in crisis_periods.items():
@@ -357,7 +361,11 @@ def build_performance_report(
             continue
         crisis_nav = nav.loc[crisis_ret.index]
         crisis_rfr = rfr.reindex(crisis_ret.index, method="ffill").fillna(0.0)
-        crisis_metrics.append(compute_metrics(crisis_ret, crisis_nav, label, crisis_rfr))
+        start_fmt = pd.Timestamp(start).strftime("%Y-%m")
+        end_fmt = pd.Timestamp(end).strftime("%Y-%m")
+        crisis_metrics.append(
+            compute_metrics(crisis_ret, crisis_nav, f"{label} ({start_fmt}:{end_fmt})", crisis_rfr)
+        )
 
     weights = pd.Series(backtest_result.config.target_weights)
     weights = weights[~weights.index.str.endswith(LEAPS_KEY_SUFFIX)]
