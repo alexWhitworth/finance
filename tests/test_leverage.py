@@ -1101,6 +1101,45 @@ def test_live_contracts_gtt_close_no_lookahead() -> None:
     assert contract in live_day_before
 
 
+def test_live_contracts_partial_close_no_lookahead() -> None:
+    """Partial-close continuation is substituted; original is not visible after close.
+
+    Because partial_close_events carry a synthetic close_date (== final_date),
+    the substitution is applied unconditionally rather than date-filtered.
+    This test asserts the observable live/excluded invariant: after the event
+    is attached, the continuation contract is what _live_contracts returns,
+    and the n_contracts of the returned contract is reduced vs the original.
+    """
+    _p0 = pd.Timestamp("2020-01-02")
+    _p_close = pd.Timestamp("2020-06-01")
+
+    original = _make_live_contract(_p0)
+    current_mtm = price_leaps_contract(original, 200.0, _p_close, DEFAULT_IV, 0.0)
+    close_ev = partial_close_leaps(original, _p_close, 200.0, target_value=current_mtm * 0.5)
+    ledger_no_close = LeapsLedger(
+        contracts=(original,), roll_events=(), account_type=AccountType.TAXABLE
+    )
+    ledger_with_close = LeapsLedger(
+        contracts=(original,),
+        roll_events=(),
+        account_type=AccountType.TAXABLE,
+        partial_close_events=(close_ev,),
+    )
+
+    # Without the event: original full-size contract is live
+    live_no_close = _live_contracts(ledger_no_close, _p_close)
+    assert len(live_no_close) == 1
+    assert live_no_close[0].n_contracts == pytest.approx(original.n_contracts, rel=1e-9)
+
+    # With the event: continuation (reduced) is returned, original full-size is not
+    live_with_close = _live_contracts(ledger_with_close, _p_close)
+    assert len(live_with_close) == 1
+    assert live_with_close[0].n_contracts == pytest.approx(
+        close_ev.continuation_contract.n_contracts, rel=1e-9
+    )
+    assert live_with_close[0].n_contracts < original.n_contracts
+
+
 def test_live_contracts_partial_close_substitution_unconditional() -> None:
     """Partial-close substitution applies unconditionally (synthetic close_date trap).
 

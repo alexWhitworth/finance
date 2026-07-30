@@ -373,7 +373,7 @@
       "description": "Falsifiable unit tests for INV-1 across all three guards (roll / gtt-close / partial-close), including the same-day roll boundary. Target tests/test_leverage.py; no fixture rework.",
       "phase": "2a",
       "priority": 1,
-      "status": "not_started",
+      "status": "pending_judge",
       "layer": "python",
       "dependencies": [
         "F-1A"
