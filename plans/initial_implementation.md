@@ -654,7 +654,7 @@ def run_backtest(
 - [x] No new library code; examples only call the public API
 - [x] ruff clean, mypy strict clean across all four files
 
-### Phase 10 — Bug Fixes, Redesign, & Realism Improvements 🔴 IN PROGRESS
+### Phase 10 — Bug Fixes, Redesign, & Realism Improvements ✅ COMPLETE
 
 > **See [`plans/phase_10_refactor.md`](phase_10_refactor.md) for the full design specification.**
 
