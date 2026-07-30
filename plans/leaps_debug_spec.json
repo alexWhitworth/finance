@@ -488,7 +488,7 @@
       "description": "Un-break the real-data loader (read df['^IRX']/df['^VIX']), add a constant-IV fixture variant (vol_prices WITHOUT the underlying key), and assert INV-2 (day-1 NAV within 1% of initial_nav) and INV-3 (conserved carve-out) on the 7-yr parquet. Attributes the entire NAV correction to F-1A alone.",
       "phase": "2c",
       "priority": 2,
-      "status": "not_started",
+      "status": "pending_judge",
       "layer": "python",
       "dependencies": [
         "F-1A"
