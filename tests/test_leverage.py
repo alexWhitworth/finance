@@ -1002,7 +1002,7 @@ _T3 = pd.Timestamp("2022-01-04")  # day after event
 
 
 def _make_live_contract(purchase_date: pd.Timestamp = _T0) -> LeapsContract:
-    """Minimal contract with expiry well past any test date."""
+    """Minimal contract; default purchase 2020-01-02 gives expiry 2022-01-02."""
     return create_leaps_contract(purchase_date, 200.0, 10_000.0, DEFAULT_IV, AccountType.TAXABLE)
 
 
@@ -1028,25 +1028,49 @@ def test_live_contracts_roll_no_lookahead() -> None:
 
 
 def test_live_contracts_same_day_roll_boundary() -> None:
-    """On the roll date itself: old excluded, new live (<=  semantics, no gap)."""
+    """On the roll date itself: old excluded, new live (<= semantics, no gap).
+
+    Uses a roll_date one day before expiry (2022-01-01 < expiry 2022-01-02) so
+    that 'original not in live' is exclusively caused by the roll guard, not the
+    expiry guard.  A < mutation would leave original in the live set at roll_date.
+    """
+    # Roll one day before the contract's expiry so expiry does not mask the guard.
+    _roll_date = pd.Timestamp("2022-01-01")  # expiry is 2022-01-02
+
     original = _make_live_contract(_T0)
-    roll_ev = roll_contract(original, _T2, 200.0, DEFAULT_IV, 0.02)
+    roll_ev = roll_contract(original, _roll_date, 200.0, DEFAULT_IV, 0.02)
     ledger = LeapsLedger(
         contracts=(original, roll_ev.new_contract),
         roll_events=(roll_ev,),
         account_type=AccountType.TAXABLE,
     )
 
-    live_on_roll_date = _live_contracts(ledger, _T2)
+    live_on_roll_date = _live_contracts(ledger, _roll_date)
     assert original not in live_on_roll_date
     assert roll_ev.new_contract in live_on_roll_date
 
+    # One day before: original is still live (roll not yet applied under <=)
+    live_day_before = _live_contracts(ledger, pd.Timestamp("2021-12-31"))
+    assert original in live_day_before
+    assert roll_ev.new_contract not in live_day_before
+
 
 def test_live_contracts_gtt_close_no_lookahead() -> None:
-    """GTT-close event dated t2 must not hide the contract at t1 < t2."""
+    """GTT-close event must not hide the contract at dates before close_date.
+
+    Uses a close_date well within the contract's lifetime (2021-06-01, expiry
+    2022-01-02) so that exclusion at close_date is caused exclusively by the
+    gtt_closed guard, not the expiry guard.  A < mutation would leave the
+    contract live at close_date.
+    """
+    # close_date inside contract lifetime: expiry=2022-01-02 > close_date=2021-06-01
+    _gtt_close = pd.Timestamp("2021-06-01")
+    _before_close = pd.Timestamp("2021-03-01")
+    _after_close = pd.Timestamp("2021-09-01")
+
     contract = _make_live_contract(_T0)
     gtt_ev = LeapsGttCloseEvent(
-        close_date=_T2,
+        close_date=_gtt_close,
         contract=contract,
         mtm_value=5_000.0,
         gain_realized=500.0,
@@ -1060,17 +1084,21 @@ def test_live_contracts_gtt_close_no_lookahead() -> None:
         gtt_close_events=(gtt_ev,),
     )
 
-    # Before the close: contract is live
-    live_before = _live_contracts(ledger, _T1)
+    # Before the close: contract is live (gtt guard not yet triggered)
+    live_before = _live_contracts(ledger, _before_close)
     assert contract in live_before
 
-    # On the close date: contract is excluded (close_date <= current_date)
-    live_on_close = _live_contracts(ledger, _T2)
+    # On the close date: excluded by gtt guard (not expiry — contract still valid)
+    live_on_close = _live_contracts(ledger, _gtt_close)
     assert contract not in live_on_close
 
     # After the close: still excluded
-    live_after = _live_contracts(ledger, _T3)
+    live_after = _live_contracts(ledger, _after_close)
     assert contract not in live_after
+
+    # One day before close: still live
+    live_day_before = _live_contracts(ledger, pd.Timestamp("2021-05-31"))
+    assert contract in live_day_before
 
 
 def test_live_contracts_partial_close_substitution_unconditional() -> None:

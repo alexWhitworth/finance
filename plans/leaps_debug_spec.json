@@ -261,7 +261,7 @@
       "description": "Apply ONLY the event.roll_date <= current_date filter to the rolled_out set in _live_contracts (leverage.py:603). This is the entire cause of the day-1 and terminal symptoms. Ship in isolation; do not bundle the gtt/partial guards.",
       "phase": "1a",
       "priority": 1,
-      "status": "pending",
+      "status": "pending_judge",
       "layer": "python",
       "dependencies": [
         "F-0"
