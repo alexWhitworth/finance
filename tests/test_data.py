@@ -242,3 +242,92 @@ def test_build_price_data_custom_tickers() -> None:
 
     assert set(pd_obj.prices.columns) == {"VTI", "GLD"}
     assert pd_obj.tickers == ("VTI", "GLD")
+
+
+# ---------------------------------------------------------------------------
+# F-3: splice-eligibility guard (start_date < splice_date <= end_date)
+# ---------------------------------------------------------------------------
+
+# VXUS splice_date = "2011-01-28" per SPLICE_MAP
+_VXUS_SPLICE_DATE: str = SPLICE_MAP["VXUS"][1]  # "2011-01-28"
+
+
+def test_splice_skipped_when_window_before_splice_date() -> None:
+    """Window ending before splice_date fetches primary-only with no ValueError.
+
+    Before F-3: start_date < splice_date was True even when end_date < splice_date,
+    so splice() was called with an empty post slice and raised. After F-3 the guard
+    adds `<= end_date` and the splice path is never entered.
+    """
+    # Window entirely before VXUS splice_date — no splice should be attempted.
+    start = "2009-01-02"
+    end = "2010-12-31"  # ends the day before splice_date
+
+    called_with_proxy: list[tuple[str, ...]] = []
+
+    def fake_fetch(tickers: tuple[str, ...], s: str, e: str) -> pd.DataFrame:
+        called_with_proxy.append(tickers)
+        return _fake_prices(tickers, s, e)
+
+    with (
+        patch("finance.data.fetch_prices", side_effect=fake_fetch),
+        patch("finance.data.fetch_dividends", return_value=pd.Series(dtype=float)),
+    ):
+        pd_obj = build_price_data(start, end, tickers=["VXUS"], use_splice=True)
+
+    # No ValueError means splice() was not called with empty post.
+    # spliced=False because the guard prevented the splice-needed entry.
+    assert pd_obj.spliced is False
+    # The proxy ticker VGTSX must NOT have been fetched.
+    assert all("VGTSX" not in tickers for tickers in called_with_proxy)
+    # Primary VXUS prices are present.
+    assert "VXUS" in pd_obj.prices.columns
+
+
+def test_splice_still_applied_when_window_straddles_splice_date() -> None:
+    """A window straddling splice_date (start < splice_date <= end) still splices.
+
+    Verifies that the new `<= end_date` bound does NOT break the normal case:
+    the splice must engage when the window covers the splice date.
+    """
+    start = "2009-01-02"
+    end = "2012-12-31"  # end_date > splice_date, window straddles
+
+    fake_proxy = _make_series("2009-01-02", "2011-01-27", "VGTSX", seed=5)
+
+    def fake_fetch(tickers: tuple[str, ...], s: str, e: str) -> pd.DataFrame:
+        return _fake_prices(tickers, s, e)
+
+    with (
+        patch("finance.data.fetch_prices", side_effect=fake_fetch),
+        patch("finance.data.fetch_dividends", return_value=pd.Series(dtype=float)),
+    ):
+        pd_obj = build_price_data(start, end, tickers=["VXUS"], use_splice=True)
+
+    assert pd_obj.spliced is True
+    # VXUS should have pre-splice history
+    pre = pd_obj.prices["VXUS"].loc[:_VXUS_SPLICE_DATE]
+    assert not pre.empty
+
+
+def test_splice_applied_when_end_date_equals_splice_date() -> None:
+    """When end_date exactly equals splice_date the splice IS applied (inclusive <=).
+
+    The boundary case: `start_date < splice_date <= end_date` with equality on the
+    right side must still trigger the splice path, not skip it.
+    """
+    start = "2009-01-02"
+    end = _VXUS_SPLICE_DATE  # end_date == splice_date exactly
+
+    fake_proxy = _make_series("2009-01-02", "2011-01-27", "VGTSX", seed=6)
+
+    def fake_fetch(tickers: tuple[str, ...], s: str, e: str) -> pd.DataFrame:
+        return _fake_prices(tickers, s, e)
+
+    with (
+        patch("finance.data.fetch_prices", side_effect=fake_fetch),
+        patch("finance.data.fetch_dividends", return_value=pd.Series(dtype=float)),
+    ):
+        pd_obj = build_price_data(start, end, tickers=["VXUS"], use_splice=True)
+
+    assert pd_obj.spliced is True

@@ -289,7 +289,7 @@ def build_price_data(
     splice_needed: dict[str, tuple[str, str]] = {}
     if use_splice:
         for ticker, (proxy, splice_date) in SPLICE_MAP.items():
-            if ticker in asset_tickers and start_date < splice_date:
+            if ticker in asset_tickers and start_date < splice_date <= end_date:
                 splice_needed[ticker] = (proxy, splice_date)
 
     # Separate file-based proxies (prefix "file:") from yfinance proxies
