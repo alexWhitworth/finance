@@ -373,7 +373,7 @@
       "description": "Falsifiable unit tests for INV-1 across all three guards (roll / gtt-close / partial-close), including the same-day roll boundary. Target tests/test_leverage.py; no fixture rework.",
       "phase": "2a",
       "priority": 1,
-      "status": "pending_judge",
+      "status": "complete",
       "layer": "python",
       "dependencies": [
         "F-1A"
@@ -429,7 +429,7 @@
       "description": "One hypothesis test: for randomized event dates, _live_contracts(ledger, T) is invariant to appending any event dated > T. Target tests/test_leverage.py; independent of F-2A.",
       "phase": "2b",
       "priority": 1,
-      "status": "pending_judge",
+      "status": "complete",
       "layer": "python",
       "dependencies": [
         "F-1A"
@@ -488,7 +488,7 @@
       "description": "Un-break the real-data loader (read df['^IRX']/df['^VIX']), add a constant-IV fixture variant (vol_prices WITHOUT the underlying key), and assert INV-2 (day-1 NAV within 1% of initial_nav) and INV-3 (conserved carve-out) on the 7-yr parquet. Attributes the entire NAV correction to F-1A alone.",
       "phase": "2c",
       "priority": 2,
-      "status": "pending_judge",
+      "status": "complete",
       "layer": "python",
       "dependencies": [
         "F-1A"
@@ -542,7 +542,7 @@
       "description": "Depends on F-2C. Read the corrected constant-IV baseline (skew, excess kurtosis, annualized return, max 1-day return, terminal NAV multiple), set the final INV-4 bounds with headroom, and wire them as hard pytest assertions.",
       "phase": "2d",
       "priority": 3,
-      "status": "pending_judge",
+      "status": "complete",
       "layer": "python",
       "dependencies": [
         "F-2C"
