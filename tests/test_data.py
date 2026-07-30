@@ -191,7 +191,10 @@ def test_build_price_data_missing_proxy_file_raises() -> None:
 
     with (
         patch("finance.data.fetch_prices", side_effect=lambda t, s, e: _fake_prices(t, s, e)),
-        patch("finance.data.fetch_file_proxy", side_effect=FileNotFoundError("Proxy parquet not found")),
+        patch(
+            "finance.data.fetch_file_proxy",
+            side_effect=FileNotFoundError("Proxy parquet not found"),
+        ),
         patch("finance.data.fetch_dividends", return_value=pd.Series(dtype=float)),
     ):
         with pytest.raises(FileNotFoundError, match="Proxy parquet not found"):
@@ -293,8 +296,6 @@ def test_splice_still_applied_when_window_straddles_splice_date() -> None:
     start = "2009-01-02"
     end = "2012-12-31"  # end_date > splice_date, window straddles
 
-    fake_proxy = _make_series("2009-01-02", "2011-01-27", "VGTSX", seed=5)
-
     def fake_fetch(tickers: tuple[str, ...], s: str, e: str) -> pd.DataFrame:
         return _fake_prices(tickers, s, e)
 
@@ -318,8 +319,6 @@ def test_splice_applied_when_end_date_equals_splice_date() -> None:
     """
     start = "2009-01-02"
     end = _VXUS_SPLICE_DATE  # end_date == splice_date exactly
-
-    fake_proxy = _make_series("2009-01-02", "2011-01-27", "VGTSX", seed=6)
 
     def fake_fetch(tickers: tuple[str, ...], s: str, e: str) -> pd.DataFrame:
         return _fake_prices(tickers, s, e)
