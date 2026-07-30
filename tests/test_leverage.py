@@ -5,6 +5,8 @@ import math
 import numpy as np
 import pandas as pd
 import pytest
+from hypothesis import given, settings
+from hypothesis import strategies as st
 
 from finance.leverage import (
     CONTRACT_MULTIPLIER,
@@ -1175,3 +1177,96 @@ def test_live_contracts_partial_close_substitution_unconditional() -> None:
             close_ev.continuation_contract.n_contracts, rel=1e-9
         )
         assert live[0].n_contracts < original.n_contracts
+
+
+# ---------------------------------------------------------------------------
+# _live_contracts — no-lookahead property test (F-2B / INV-1 property form)
+# ---------------------------------------------------------------------------
+
+# Epoch anchor: all generated dates are offsets from this base.
+_EPOCH = pd.Timestamp("2020-01-01")
+
+
+def _days(n: int) -> pd.Timedelta:
+    return pd.Timedelta(days=n)
+
+
+@given(
+    purchase_offset=st.integers(min_value=0, max_value=100),
+    query_offset=st.integers(min_value=200, max_value=600),
+    future_offset=st.integers(min_value=1, max_value=200),
+    spot=st.floats(min_value=50.0, max_value=500.0, allow_nan=False, allow_infinity=False),
+)
+@settings(max_examples=200)
+def test_live_contracts_future_event_invariance(
+    purchase_offset: int,
+    query_offset: int,
+    future_offset: int,
+    spot: float,
+) -> None:
+    """append_future_event_invariance: live(ledger, T) == live(ledger + event(date>T), T).
+
+    For any valid ledger and valuation date T, appending a roll_event whose
+    roll_date is strictly after T must not change the live set at T.
+    """
+    purchase_date = _EPOCH + _days(purchase_offset)
+    query_date = _EPOCH + _days(query_offset)
+    # Future event: strictly AFTER query_date
+    future_event_date = query_date + _days(future_offset)
+
+    # Build a minimal contract (purchase_date up to query_date - 1yr for expiry room)
+    contract = create_leaps_contract(
+        purchase_date, spot, 10_000.0, DEFAULT_IV, AccountType.TAXABLE
+    )
+
+    # Base ledger: contract only, no events
+    ledger_base = LeapsLedger(
+        contracts=(contract,),
+        roll_events=(),
+        account_type=AccountType.TAXABLE,
+    )
+
+    # Ledger with a future roll event (roll_date strictly > query_date)
+    future_roll_ev = LeapsRollEvent(
+        roll_date=future_event_date,
+        old_contract=contract,
+        new_contract=contract,  # dummy new contract; identity is fine for exclusion logic
+        gain_realized=0.0,
+        tax_paid=0.0,
+        net_proceeds=0.0,
+    )
+    ledger_with_future = LeapsLedger(
+        contracts=(contract,),
+        roll_events=(future_roll_ev,),
+        account_type=AccountType.TAXABLE,
+    )
+
+    # Ledger with a future gtt_close event
+    future_gtt_ev = LeapsGttCloseEvent(
+        close_date=future_event_date,
+        contract=contract,
+        mtm_value=0.0,
+        gain_realized=0.0,
+        tax_paid=0.0,
+        net_proceeds=0.0,
+    )
+    ledger_with_future_gtt = LeapsLedger(
+        contracts=(contract,),
+        roll_events=(),
+        account_type=AccountType.TAXABLE,
+        gtt_close_events=(future_gtt_ev,),
+    )
+
+    live_base = _live_contracts(ledger_base, query_date)
+    live_future_roll = _live_contracts(ledger_with_future, query_date)
+    live_future_gtt = _live_contracts(ledger_with_future_gtt, query_date)
+
+    # Invariant: appending an event dated strictly after T must not change the live set
+    assert live_base == live_future_roll, (
+        f"Future roll event at {future_event_date} changed live set at {query_date}: "
+        f"base={live_base}, with_future={live_future_roll}"
+    )
+    assert live_base == live_future_gtt, (
+        f"Future gtt event at {future_event_date} changed live set at {query_date}: "
+        f"base={live_base}, with_future_gtt={live_future_gtt}"
+    )

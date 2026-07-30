@@ -15,7 +15,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest", "pytest-cov", "ruff", "mypy"]
+dev = ["pytest", "pytest-cov", "ruff", "mypy", "hypothesis"]
 
 [build-system]
 requires = ["hatchling"]

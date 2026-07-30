@@ -429,7 +429,7 @@
       "description": "One hypothesis test: for randomized event dates, _live_contracts(ledger, T) is invariant to appending any event dated > T. Target tests/test_leverage.py; independent of F-2A.",
       "phase": "2b",
       "priority": 1,
-      "status": "not_started",
+      "status": "pending_judge",
       "layer": "python",
       "dependencies": [
         "F-1A"
