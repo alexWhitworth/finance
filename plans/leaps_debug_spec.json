@@ -392,7 +392,7 @@
       "description": "Tighten build_price_data's splice test to `start_date < splice_date <= end_date` (data.py:292) so a window ending before a ticker's splice date fetches primary-only instead of calling splice() with an empty post slice.",
       "phase": "3",
       "priority": 1,
-      "status": "pending_judge",
+      "status": "conditional_pass",
       "layer": "python",
       "dependencies": [],
       "linked_schemas": ["S-PRICE-DATA"],
