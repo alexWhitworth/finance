@@ -1042,6 +1042,69 @@ def test_live_contracts_same_day_roll_boundary() -> None:
     assert roll_ev.new_contract in live_on_roll_date
 
 
-# NOTE: test_live_contracts_gtt_close_no_lookahead and
-# test_live_contracts_partial_close_no_lookahead are added in F-1B / F-2A,
-# after the corresponding date-awareness guards are applied.
+def test_live_contracts_gtt_close_no_lookahead() -> None:
+    """GTT-close event dated t2 must not hide the contract at t1 < t2."""
+    contract = _make_live_contract(_T0)
+    gtt_ev = LeapsGttCloseEvent(
+        close_date=_T2,
+        contract=contract,
+        mtm_value=5_000.0,
+        gain_realized=500.0,
+        tax_paid=75.0,
+        net_proceeds=4_925.0,
+    )
+    ledger = LeapsLedger(
+        contracts=(contract,),
+        roll_events=(),
+        account_type=AccountType.TAXABLE,
+        gtt_close_events=(gtt_ev,),
+    )
+
+    # Before the close: contract is live
+    live_before = _live_contracts(ledger, _T1)
+    assert contract in live_before
+
+    # On the close date: contract is excluded (close_date <= current_date)
+    live_on_close = _live_contracts(ledger, _T2)
+    assert contract not in live_on_close
+
+    # After the close: still excluded
+    live_after = _live_contracts(ledger, _T3)
+    assert contract not in live_after
+
+
+def test_live_contracts_partial_close_substitution_unconditional() -> None:
+    """Partial-close substitution applies unconditionally (synthetic close_date trap).
+
+    partial_close_events use a synthetic close_date == final_date, so a naive
+    date-filter would revert to full size before that date.  The current design
+    applies the substitution without a date guard; this test documents and pins
+    the observed behavior so any future change is deliberate.
+    """
+    # Use dates well within the 2-year contract lifetime (purchase 2020-01-02,
+    # expiry 2022-01-02) so the contract doesn't expire during the query window.
+    _p0 = pd.Timestamp("2020-01-02")
+    _p_close = pd.Timestamp("2020-06-01")   # partial-close execution date
+    _p_before = pd.Timestamp("2020-03-01")  # before partial close
+    _p_after = pd.Timestamp("2020-09-01")   # after partial close (still live)
+
+    original = _make_live_contract(_p0)
+    current_mtm = price_leaps_contract(original, 200.0, _p_close, DEFAULT_IV, 0.0)
+    close_ev = partial_close_leaps(original, _p_close, 200.0, target_value=current_mtm * 0.5)
+    ledger = LeapsLedger(
+        contracts=(original,),
+        roll_events=(),
+        account_type=AccountType.TAXABLE,
+        partial_close_events=(close_ev,),
+    )
+
+    # The continuation (reduced size) is substituted at all query dates —
+    # because partial_close_events carry a synthetic close_date (== final_date)
+    # and the guard is intentionally omitted to avoid reverting to full size.
+    for query_date in (_p_before, _p_close, _p_after):
+        live = _live_contracts(ledger, query_date)
+        assert len(live) == 1
+        assert live[0].n_contracts == pytest.approx(
+            close_ev.continuation_contract.n_contracts, rel=1e-9
+        )
+        assert live[0].n_contracts < original.n_contracts

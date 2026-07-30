@@ -317,7 +317,7 @@
       "description": "Add close_date <= current_date bounds to the gtt_closed set and the partially_closed substitution map in _live_contracts. Verify-first: both are currently no-ops on live call paths (in-loop event tuples empty; sole post-hoc caller queries at final_date). Handle the partial-close synthetic-date trap.",
       "phase": "1b",
       "priority": 2,
-      "status": "not_started",
+      "status": "pending_judge",
       "layer": "python",
       "dependencies": [
         "F-1A"

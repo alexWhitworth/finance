@@ -605,7 +605,17 @@ def _live_contracts(ledger: LeapsLedger, current_date: pd.Timestamp) -> list[Lea
         for event in ledger.roll_events
         if event.roll_date <= current_date
     }
-    gtt_closed = {event.contract for event in ledger.gtt_close_events}
+    gtt_closed = {
+        event.contract
+        for event in ledger.gtt_close_events
+        if event.close_date <= current_date
+    }
+    # partial_close_events use a *synthetic* close_date (== final_date, set at the
+    # return boundary in portfolio.py).  A naive date-filter would revert partially-
+    # closed contracts to full size at any date before final_date — the wrong
+    # direction for a correctness guard.  The substitution is therefore applied
+    # unconditionally here; a proper fix requires threading true close dates through
+    # the freeze step (documented as a no-lookahead follow-up).
     partially_closed: dict[LeapsContract, LeapsContract] = {
         ev.original_contract: ev.continuation_contract
         for ev in ledger.partial_close_events
