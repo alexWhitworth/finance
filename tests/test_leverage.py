@@ -16,11 +16,13 @@ from finance.leverage import (
     AccountType,
     LeapsConfig,
     LeapsContract,
+    LeapsGttCloseEvent,
     LeapsLedger,
     LeapsPartialCloseEvent,
     LeapsRollEvent,
     LeapsTaxSummary,
     TerminalNav,
+    _live_contracts,
     bs_call_delta,
     bs_call_price,
     bs_call_vanna,
@@ -986,3 +988,60 @@ def test_run_leaps_simulation_iv_series_none_unchanged() -> None:
     assert result_none.contracts[0].premium_paid == pytest.approx(
         result_default.contracts[0].premium_paid, rel=1e-9
     )
+
+
+# ---------------------------------------------------------------------------
+# _live_contracts — no-lookahead date-awareness (F-1A / INV-1)
+# ---------------------------------------------------------------------------
+
+# Shared timestamps for all _live_contracts tests
+_T0 = pd.Timestamp("2020-01-02")  # purchase date
+_T1 = pd.Timestamp("2021-01-04")  # between purchase and event
+_T2 = pd.Timestamp("2022-01-03")  # event date (roll / close)
+_T3 = pd.Timestamp("2022-01-04")  # day after event
+
+
+def _make_live_contract(purchase_date: pd.Timestamp = _T0) -> LeapsContract:
+    """Minimal contract with expiry well past any test date."""
+    return create_leaps_contract(purchase_date, 200.0, 10_000.0, DEFAULT_IV, AccountType.TAXABLE)
+
+
+def test_live_contracts_roll_no_lookahead() -> None:
+    """Roll event dated t2 must not hide the original contract at t1 < t2."""
+    original = _make_live_contract(_T0)
+    roll_ev = roll_contract(original, _T2, 200.0, DEFAULT_IV, 0.02)
+    ledger = LeapsLedger(
+        contracts=(original, roll_ev.new_contract),
+        roll_events=(roll_ev,),
+        account_type=AccountType.TAXABLE,
+    )
+
+    # Before the roll: original is live, new contract (purchase_date == _T2) is not
+    live_before = _live_contracts(ledger, _T1)
+    assert original in live_before
+    assert roll_ev.new_contract not in live_before
+
+    # After the roll: original is excluded, new contract is live
+    live_after = _live_contracts(ledger, _T3)
+    assert original not in live_after
+    assert roll_ev.new_contract in live_after
+
+
+def test_live_contracts_same_day_roll_boundary() -> None:
+    """On the roll date itself: old excluded, new live (<=  semantics, no gap)."""
+    original = _make_live_contract(_T0)
+    roll_ev = roll_contract(original, _T2, 200.0, DEFAULT_IV, 0.02)
+    ledger = LeapsLedger(
+        contracts=(original, roll_ev.new_contract),
+        roll_events=(roll_ev,),
+        account_type=AccountType.TAXABLE,
+    )
+
+    live_on_roll_date = _live_contracts(ledger, _T2)
+    assert original not in live_on_roll_date
+    assert roll_ev.new_contract in live_on_roll_date
+
+
+# NOTE: test_live_contracts_gtt_close_no_lookahead and
+# test_live_contracts_partial_close_no_lookahead are added in F-1B / F-2A,
+# after the corresponding date-awareness guards are applied.

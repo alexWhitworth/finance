@@ -600,7 +600,11 @@ def _live_contracts(ledger: LeapsLedger, current_date: pd.Timestamp) -> list[Lea
     Returns:
         List of live LeapsContract objects.
     """
-    rolled_out = {event.old_contract for event in ledger.roll_events}
+    rolled_out = {
+        event.old_contract
+        for event in ledger.roll_events
+        if event.roll_date <= current_date
+    }
     gtt_closed = {event.contract for event in ledger.gtt_close_events}
     partially_closed: dict[LeapsContract, LeapsContract] = {
         ev.original_contract: ev.continuation_contract

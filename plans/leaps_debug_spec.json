@@ -23,7 +23,10 @@
       "mutation": null,
       "mutation_rationale": "Plan section 2 scopes testing to pytest + hypothesis only; mutmut is intentionally excluded from this fix's design. Per plan-to-spec override, the spec matches the plan."
     },
-    "key_libraries": ["pandas", "scipy"],
+    "key_libraries": [
+      "pandas",
+      "scipy"
+    ],
     "graphics": "plotnine"
   },
   "build": {
@@ -38,9 +41,21 @@
       "immutable": true,
       "layer": "python",
       "fields": [
-        {"name": "roll_date", "required": true, "description": "pd.Timestamp the roll executed. The temporal oracle for the roll-guard filter (event.roll_date <= current_date)."},
-        {"name": "old_contract", "required": true, "description": "LeapsContract closed at the roll; the element added to the rolled_out exclusion set."},
-        {"name": "new_contract", "required": true, "description": "Replacement LeapsContract with purchase_date == roll_date; becomes live on the roll date under the <= boundary."}
+        {
+          "name": "roll_date",
+          "required": true,
+          "description": "pd.Timestamp the roll executed. The temporal oracle for the roll-guard filter (event.roll_date <= current_date)."
+        },
+        {
+          "name": "old_contract",
+          "required": true,
+          "description": "LeapsContract closed at the roll; the element added to the rolled_out exclusion set."
+        },
+        {
+          "name": "new_contract",
+          "required": true,
+          "description": "Replacement LeapsContract with purchase_date == roll_date; becomes live on the roll date under the <= boundary."
+        }
       ]
     },
     {
@@ -50,8 +65,16 @@
       "immutable": true,
       "layer": "python",
       "fields": [
-        {"name": "close_date", "required": true, "description": "pd.Timestamp of the forced full close. Genuine (not synthetic); safe for a close_date <= current_date guard."},
-        {"name": "contract", "required": true, "description": "LeapsContract fully closed; element added to the gtt_closed exclusion set."}
+        {
+          "name": "close_date",
+          "required": true,
+          "description": "pd.Timestamp of the forced full close. Genuine (not synthetic); safe for a close_date <= current_date guard."
+        },
+        {
+          "name": "contract",
+          "required": true,
+          "description": "LeapsContract fully closed; element added to the gtt_closed exclusion set."
+        }
       ]
     },
     {
@@ -61,9 +84,21 @@
       "immutable": true,
       "layer": "python",
       "fields": [
-        {"name": "close_date", "required": true, "description": "pd.Timestamp of the partial close. Synthetic (== final_date) as populated by run_backtest's freeze step; do NOT treat as the true close date without threading real dates through the freeze."},
-        {"name": "original_contract", "required": true, "description": "LeapsContract before reduction; key of the partially_closed substitution map."},
-        {"name": "continuation_contract", "required": true, "description": "Same contract with reduced n_contracts; the value substituted for the original in the live set."}
+        {
+          "name": "close_date",
+          "required": true,
+          "description": "pd.Timestamp of the partial close. Synthetic (== final_date) as populated by run_backtest's freeze step; do NOT treat as the true close date without threading real dates through the freeze."
+        },
+        {
+          "name": "original_contract",
+          "required": true,
+          "description": "LeapsContract before reduction; key of the partially_closed substitution map."
+        },
+        {
+          "name": "continuation_contract",
+          "required": true,
+          "description": "Same contract with reduced n_contracts; the value substituted for the original in the live set."
+        }
       ]
     },
     {
@@ -73,8 +108,16 @@
       "immutable": true,
       "layer": "python",
       "fields": [
-        {"name": "vol_prices", "required": true, "description": "DatetimeIndex x asset-ticker columns of implied-vol series (decimal). Empty DataFrame when vol indices not fetched. Fix 2 must look up by the LEAPS underlying ticker, not a literal '^VIX'."},
-        {"name": "prices", "required": true, "description": "DatetimeIndex x asset-ticker adjusted-close prices; underlying spot source for LEAPS MTM."}
+        {
+          "name": "vol_prices",
+          "required": true,
+          "description": "DatetimeIndex x asset-ticker columns of implied-vol series (decimal). Empty DataFrame when vol indices not fetched. Fix 2 must look up by the LEAPS underlying ticker, not a literal '^VIX'."
+        },
+        {
+          "name": "prices",
+          "required": true,
+          "description": "DatetimeIndex x asset-ticker adjusted-close prices; underlying spot source for LEAPS MTM."
+        }
       ]
     }
   ],
@@ -86,11 +129,23 @@
       "layer": "python",
       "pure": true,
       "inputs": [
-        {"name": "ledger", "type": "LeapsLedger", "description": "Full contract + event history (per-window during the backtest loop; merged post-loop)."},
-        {"name": "current_date", "type": "pd.Timestamp", "description": "Valuation date T. No returned field may depend on any event dated > T."}
+        {
+          "name": "ledger",
+          "type": "LeapsLedger",
+          "description": "Full contract + event history (per-window during the backtest loop; merged post-loop)."
+        },
+        {
+          "name": "current_date",
+          "type": "pd.Timestamp",
+          "description": "Valuation date T. No returned field may depend on any event dated > T."
+        }
       ],
       "outputs": [
-        {"name": "live", "type": "list[LeapsContract]", "description": "Contracts purchased on/before T, not expired, not rolled out as of T, not gtt-closed as of T, substituted by continuation if partially closed as of T."}
+        {
+          "name": "live",
+          "type": "list[LeapsContract]",
+          "description": "Contracts purchased on/before T, not expired, not rolled out as of T, not gtt-closed as of T, substituted by continuation if partially closed as of T."
+        }
       ],
       "raises": [],
       "ffi_notes": null
@@ -102,11 +157,23 @@
       "layer": "python",
       "pure": true,
       "inputs": [
-        {"name": "price_data.vol_prices", "type": "pd.DataFrame", "description": "Asset-ticker-keyed IV series; presence of the underlying's column toggles dynamic IV."},
-        {"name": "underlying", "type": "str", "description": "LEAPS underlying ticker derived from the *_LEAPS key; the correct column key."}
+        {
+          "name": "price_data.vol_prices",
+          "type": "pd.DataFrame",
+          "description": "Asset-ticker-keyed IV series; presence of the underlying's column toggles dynamic IV."
+        },
+        {
+          "name": "underlying",
+          "type": "str",
+          "description": "LEAPS underlying ticker derived from the *_LEAPS key; the correct column key."
+        }
       ],
       "outputs": [
-        {"name": "mtm_iv_series", "type": "pd.Series | None", "description": "VIX_MTM_WINDOW rolling-mean IV for daily MTM, floored at config.leaps_config.iv; None (constant IV) when the underlying column is absent."}
+        {
+          "name": "mtm_iv_series",
+          "type": "pd.Series | None",
+          "description": "VIX_MTM_WINDOW rolling-mean IV for daily MTM, floored at config.leaps_config.iv; None (constant IV) when the underlying column is absent."
+        }
       ],
       "raises": [],
       "ffi_notes": null
@@ -118,11 +185,23 @@
       "layer": "python",
       "pure": false,
       "inputs": [
-        {"name": "start_date", "type": "str", "description": "Inclusive window start (YYYY-MM-DD)."},
-        {"name": "end_date", "type": "str", "description": "Inclusive window end (YYYY-MM-DD). New bound: splice only attempted when splice_date <= end_date."}
+        {
+          "name": "start_date",
+          "type": "str",
+          "description": "Inclusive window start (YYYY-MM-DD)."
+        },
+        {
+          "name": "end_date",
+          "type": "str",
+          "description": "Inclusive window end (YYYY-MM-DD). New bound: splice only attempted when splice_date <= end_date."
+        }
       ],
       "outputs": [
-        {"name": "price_data", "type": "PriceData", "description": "Primary-only prices when end_date < splice_date; spliced prices when the window straddles splice_date."}
+        {
+          "name": "price_data",
+          "type": "PriceData",
+          "description": "Primary-only prices when end_date < splice_date; spliced prices when the window straddles splice_date."
+        }
       ],
       "raises": [],
       "ffi_notes": null
@@ -138,18 +217,30 @@
       "status": "complete",
       "layer": "python",
       "dependencies": [],
-      "linked_schemas": ["S-PRICE-DATA"],
+      "linked_schemas": [
+        "S-PRICE-DATA"
+      ],
       "linked_apis": [],
       "invariants": {
         "temporal_bounds": null,
-        "accounting_oracle": "config.initial_nav (input) vs observed nav_series.iloc[0] — reproduce the day-1 shortfall.",
+        "accounting_oracle": "config.initial_nav (input) vs observed nav_series.iloc[0] \u2014 reproduce the day-1 shortfall.",
         "composition_scope": "INTEGRATION",
         "plausibility_range": "Broken baseline is EXPECTED to violate plausibility: day-1 NAV ~0.6x initial_nav; terminal 5-10x spike; skew ~30-53; excess kurtosis ~1950-3620.",
         "realism_requirements": "7-yr real parquet (2018-2024) spanning >= 2 roll cycles; static mocks insufficient."
       },
-      "performance_requirements": {"complexity_budget": "O(n)", "notes": "Single 1761-row backtest; runtime negligible."},
-      "property_based_testing": {"enabled": false, "framework": null, "rationale": "Baseline capture, not a tested unit."},
-      "mutation_testing": {"enabled": false, "rationale_if_disabled": "No production code changed; measurement step only."},
+      "performance_requirements": {
+        "complexity_budget": "O(n)",
+        "notes": "Single 1761-row backtest; runtime negligible."
+      },
+      "property_based_testing": {
+        "enabled": false,
+        "framework": null,
+        "rationale": "Baseline capture, not a tested unit."
+      },
+      "mutation_testing": {
+        "enabled": false,
+        "rationale_if_disabled": "No production code changed; measurement step only."
+      },
       "acceptance_criteria": [
         "A recorded table of broken-baseline metrics exists: day-1 NAV, terminal NAV, skewness, excess kurtosis, max single-day |return|.",
         "Day-1 NAV in the broken baseline is < 0.8x initial_nav (reproduces the ~$600k / ~-40% day-1 symptom on a $1M start), confirming the bug is reproduced before any fix."
@@ -159,7 +250,7 @@
         "Metrics stored in the PR/review notes for the before/after comparison."
       ],
       "edge_cases": [
-        "Parquet columns are '^IRX'/'^VIX' not 'IRX'/'VIX' — loader must read the prefixed names."
+        "Parquet columns are '^IRX'/'^VIX' not 'IRX'/'VIX' \u2014 loader must read the prefixed names."
       ],
       "clarification_needed": false,
       "clarification_notes": null
@@ -170,11 +261,17 @@
       "description": "Apply ONLY the event.roll_date <= current_date filter to the rolled_out set in _live_contracts (leverage.py:603). This is the entire cause of the day-1 and terminal symptoms. Ship in isolation; do not bundle the gtt/partial guards.",
       "phase": "1a",
       "priority": 1,
-      "status": "not_started",
+      "status": "pending_judge",
       "layer": "python",
-      "dependencies": ["F-0"],
-      "linked_schemas": ["S-ROLL-EVENT"],
-      "linked_apis": ["C-LIVE-CONTRACTS"],
+      "dependencies": [
+        "F-0"
+      ],
+      "linked_schemas": [
+        "S-ROLL-EVENT"
+      ],
+      "linked_apis": [
+        "C-LIVE-CONTRACTS"
+      ],
       "invariants": {
         "temporal_bounds": "live(ledger, T) = f(roll_events with roll_date <= T); no dependence on any roll_event dated > T (INV-1).",
         "accounting_oracle": "roll_contract net-proceeds continuity: old excluded and new (purchase_date==roll_date) live at T => no gap, no double-count.",
@@ -182,9 +279,21 @@
         "plausibility_range": null,
         "realism_requirements": "Multi-roll ledger; same-day roll boundary must be exercised."
       },
-      "performance_requirements": {"complexity_budget": "O(R)", "notes": "R = number of roll_events; one filtered set comprehension per call, no added asymptotic cost over the existing unfiltered comprehension."},
-      "property_based_testing": {"enabled": true, "framework": "hypothesis", "invariants": ["Live set at T invariant to appending any roll_event dated > T (validated in F-2B)."]},
-      "mutation_testing": {"enabled": false, "rationale_if_disabled": "Plan section 2 scopes testing to pytest + hypothesis; mutmut excluded by design."},
+      "performance_requirements": {
+        "complexity_budget": "O(R)",
+        "notes": "R = number of roll_events; one filtered set comprehension per call, no added asymptotic cost over the existing unfiltered comprehension."
+      },
+      "property_based_testing": {
+        "enabled": true,
+        "framework": "hypothesis",
+        "invariants": [
+          "Live set at T invariant to appending any roll_event dated > T (validated in F-2B)."
+        ]
+      },
+      "mutation_testing": {
+        "enabled": false,
+        "rationale_if_disabled": "Plan section 2 scopes testing to pytest + hypothesis; mutmut excluded by design."
+      },
       "acceptance_criteria": [
         "A contract purchased at t0 with a roll_event dated t2 IS present in _live_contracts(ledger, t1) for t0 < t1 < t2 (pre-fix: absent).",
         "The same contract is NOT present in _live_contracts(ledger, t3) for t3 > t2, and its replacement (purchase_date == t2) IS present at exactly t2 (same-day boundary, <= semantics).",
@@ -196,7 +305,7 @@
         "Full-suite before/after run confirming no existing test regresses."
       ],
       "edge_cases": [
-        "Roll exactly on T: with <=, old excluded and new live on T — no gap, no double-count.",
+        "Roll exactly on T: with <=, old excluded and new live on T \u2014 no gap, no double-count.",
         "Merged multi-window ledger (GTT): roll_events from multiple windows coexist; dates globally monotonic so the filter remains correct."
       ],
       "clarification_needed": false,
@@ -210,9 +319,16 @@
       "priority": 2,
       "status": "not_started",
       "layer": "python",
-      "dependencies": ["F-1A"],
-      "linked_schemas": ["S-GTT-CLOSE-EVENT", "S-PARTIAL-CLOSE-EVENT"],
-      "linked_apis": ["C-LIVE-CONTRACTS"],
+      "dependencies": [
+        "F-1A"
+      ],
+      "linked_schemas": [
+        "S-GTT-CLOSE-EVENT",
+        "S-PARTIAL-CLOSE-EVENT"
+      ],
+      "linked_apis": [
+        "C-LIVE-CONTRACTS"
+      ],
       "invariants": {
         "temporal_bounds": "live(ledger, T) = f(gtt_close/partial_close events with event_date <= T); no dependence on events dated > T (INV-1, extended).",
         "accounting_oracle": "Current call paths unchanged: in-loop event tuples are empty; sole post-hoc caller (compute_terminal_nav, metrics.py:383) queries at final_date.",
@@ -220,9 +336,21 @@
         "plausibility_range": null,
         "realism_requirements": "Ledger with gtt-close and partial-close events dated before the query date."
       },
-      "performance_requirements": {"complexity_budget": "O(G + P)", "notes": "G gtt-close + P partial-close events; two date-filtered comprehensions, no added asymptotic cost."},
-      "property_based_testing": {"enabled": true, "framework": "hypothesis", "invariants": ["Live set at T invariant to appending any gtt_close/partial_close event dated > T (validated in F-2B)."]},
-      "mutation_testing": {"enabled": false, "rationale_if_disabled": "Plan section 2 scopes testing to pytest + hypothesis; mutmut excluded by design."},
+      "performance_requirements": {
+        "complexity_budget": "O(G + P)",
+        "notes": "G gtt-close + P partial-close events; two date-filtered comprehensions, no added asymptotic cost."
+      },
+      "property_based_testing": {
+        "enabled": true,
+        "framework": "hypothesis",
+        "invariants": [
+          "Live set at T invariant to appending any gtt_close/partial_close event dated > T (validated in F-2B)."
+        ]
+      },
+      "mutation_testing": {
+        "enabled": false,
+        "rationale_if_disabled": "Plan section 2 scopes testing to pytest + hypothesis; mutmut excluded by design."
+      },
       "acceptance_criteria": [
         "A gtt-closed contract IS live before its close_date and NOT live on/after it, verified by unit test.",
         "The partial-close guard does NOT revert a partially-closed contract to full size at dates before its true close: EITHER the guard keys on true close semantics, OR (fallback) 1b is scoped to the gtt-close guard only and the partial-close guard is logged as a documented no-lookahead follow-up.",
@@ -233,7 +361,7 @@
         "Explicit verification note that current call paths are unaffected (regression safety)."
       ],
       "edge_cases": [
-        "partial_close_events carry synthetic close_date == final_date (portfolio.py:809): a naive guard reverts to the full-size original at any earlier date — must be handled or scoped out.",
+        "partial_close_events carry synthetic close_date == final_date (portfolio.py:809): a naive guard reverts to the full-size original at any earlier date \u2014 must be handled or scoped out.",
         "gtt_close_events close_date is genuine, so its guard is safe."
       ],
       "clarification_needed": false,
@@ -247,9 +375,17 @@
       "priority": 1,
       "status": "not_started",
       "layer": "python",
-      "dependencies": ["F-1A"],
-      "linked_schemas": ["S-ROLL-EVENT", "S-GTT-CLOSE-EVENT", "S-PARTIAL-CLOSE-EVENT"],
-      "linked_apis": ["C-LIVE-CONTRACTS"],
+      "dependencies": [
+        "F-1A"
+      ],
+      "linked_schemas": [
+        "S-ROLL-EVENT",
+        "S-GTT-CLOSE-EVENT",
+        "S-PARTIAL-CLOSE-EVENT"
+      ],
+      "linked_apis": [
+        "C-LIVE-CONTRACTS"
+      ],
       "invariants": {
         "temporal_bounds": "INV-1 example form: live(ledger,T) excludes exactly the events dated <= T; a future event never affects the set at T.",
         "accounting_oracle": null,
@@ -257,11 +393,21 @@
         "plausibility_range": null,
         "realism_requirements": "Hand-built minimal ledgers with explicit t0<t1<t2<t3 dates per guard."
       },
-      "performance_requirements": {"complexity_budget": "O(1)", "notes": "Tiny hand-built ledgers."},
-      "property_based_testing": {"enabled": false, "framework": null, "rationale": "Example-based unit tests; the property form is F-2B."},
-      "mutation_testing": {"enabled": false, "rationale_if_disabled": "Test code."},
+      "performance_requirements": {
+        "complexity_budget": "O(1)",
+        "notes": "Tiny hand-built ledgers."
+      },
+      "property_based_testing": {
+        "enabled": false,
+        "framework": null,
+        "rationale": "Example-based unit tests; the property form is F-2B."
+      },
+      "mutation_testing": {
+        "enabled": false,
+        "rationale_if_disabled": "Test code."
+      },
       "acceptance_criteria": [
-        "Test asserts contract live at t1 (t0<t1<t2) and excluded at t3>t2 for a roll_event dated t2 — fails on pre-F-1A code.",
+        "Test asserts contract live at t1 (t0<t1<t2) and excluded at t3>t2 for a roll_event dated t2 \u2014 fails on pre-F-1A code.",
         "Test asserts the same-day roll boundary (old excluded, new live at exactly roll_date) and equivalent live/excluded cases for gtt-close and partial-close events."
       ],
       "test_requirements": [
@@ -285,9 +431,17 @@
       "priority": 1,
       "status": "not_started",
       "layer": "python",
-      "dependencies": ["F-1A"],
-      "linked_schemas": ["S-ROLL-EVENT", "S-GTT-CLOSE-EVENT", "S-PARTIAL-CLOSE-EVENT"],
-      "linked_apis": ["C-LIVE-CONTRACTS"],
+      "dependencies": [
+        "F-1A"
+      ],
+      "linked_schemas": [
+        "S-ROLL-EVENT",
+        "S-GTT-CLOSE-EVENT",
+        "S-PARTIAL-CLOSE-EVENT"
+      ],
+      "linked_apis": [
+        "C-LIVE-CONTRACTS"
+      ],
       "invariants": {
         "temporal_bounds": "append_future_event_invariance: live(ledger, T) == live(ledger + event(date > T), T) for all generated ledgers.",
         "accounting_oracle": null,
@@ -295,9 +449,24 @@
         "plausibility_range": null,
         "realism_requirements": "Randomized purchase/roll/close dates and contract counts within a bounded window (hypothesis strategies)."
       },
-      "performance_requirements": {"complexity_budget": "O(n)", "notes": "n generated events per example; default hypothesis example budget."},
-      "property_based_testing": {"enabled": true, "framework": "hypothesis", "strategies": ["Random purchase/roll/close dates and contract counts within a bounded window."], "invariants": ["append_future_event_invariance: live(ledger, T) == live(ledger + event(date>T), T)."]},
-      "mutation_testing": {"enabled": false, "rationale_if_disabled": "Test code."},
+      "performance_requirements": {
+        "complexity_budget": "O(n)",
+        "notes": "n generated events per example; default hypothesis example budget."
+      },
+      "property_based_testing": {
+        "enabled": true,
+        "framework": "hypothesis",
+        "strategies": [
+          "Random purchase/roll/close dates and contract counts within a bounded window."
+        ],
+        "invariants": [
+          "append_future_event_invariance: live(ledger, T) == live(ledger + event(date>T), T)."
+        ]
+      },
+      "mutation_testing": {
+        "enabled": false,
+        "rationale_if_disabled": "Test code."
+      },
       "acceptance_criteria": [
         "Property holds across the default hypothesis example budget: appending any single event dated strictly after T never changes the live set at T.",
         "A deliberately reintroduced unfiltered rolled_out (pre-fix logic) makes the property test fail (test is falsifying, not vacuous)."
@@ -321,9 +490,16 @@
       "priority": 2,
       "status": "not_started",
       "layer": "python",
-      "dependencies": ["F-1A"],
-      "linked_schemas": ["S-PRICE-DATA", "S-ROLL-EVENT"],
-      "linked_apis": ["C-LIVE-CONTRACTS"],
+      "dependencies": [
+        "F-1A"
+      ],
+      "linked_schemas": [
+        "S-PRICE-DATA",
+        "S-ROLL-EVENT"
+      ],
+      "linked_apis": [
+        "C-LIVE-CONTRACTS"
+      ],
       "invariants": {
         "temporal_bounds": "Day-1 NAV depends only on day-1 information; the carved-out sleeve is visible on the first date (no future-roll suppression).",
         "accounting_oracle": "INV-2: nav_series.iloc[0] == config.initial_nav (input oracle), rel 1e-2. INV-3: total_nav == sum(base_holdings)+leaps_value+defensive_sleeve+leaps_pool at every date, and cumulative contributions + market P&L - realized tax ties to terminal NAV.",
@@ -331,9 +507,19 @@
         "plausibility_range": "Day-1 NAV in [0.99, 1.01] x initial_nav; no single-day |return| beyond the provisional gate.",
         "realism_requirements": "7-yr real parquet spanning >= 2 roll cycles; include at least one GTT-active variant for merged multi-window ledgers."
       },
-      "performance_requirements": {"complexity_budget": "O(n)", "notes": "One 1761-row LEAPS backtest per test; module-scoped fixture."},
-      "property_based_testing": {"enabled": false, "framework": null, "rationale": "Composition invariant on real data; not a pure-unit property."},
-      "mutation_testing": {"enabled": false, "rationale_if_disabled": "Test/fixture code and I/O boundary."},
+      "performance_requirements": {
+        "complexity_budget": "O(n)",
+        "notes": "One 1761-row LEAPS backtest per test; module-scoped fixture."
+      },
+      "property_based_testing": {
+        "enabled": false,
+        "framework": null,
+        "rationale": "Composition invariant on real data; not a pure-unit property."
+      },
+      "mutation_testing": {
+        "enabled": false,
+        "rationale_if_disabled": "Test/fixture code and I/O boundary."
+      },
       "acceptance_criteria": [
         "With a LEAPS-enabled config on the 7-yr parquet under constant IV, nav_series.iloc[0] == pytest.approx(config.initial_nav, rel=1e-2) (INV-2; pre-fix ~0.6x).",
         "total_nav at every date equals sum(base_holdings) + leaps_value + defensive_sleeve + leaps_pool within rel 1e-6 (INV-3), and the real-data fixture loads without KeyError (reads '^IRX'/'^VIX')."
@@ -345,7 +531,7 @@
       ],
       "edge_cases": [
         "vol_prices must NOT contain the underlying key or dynamic IV leaks into the primary-fix validation (defeats isolation).",
-        "Real-data smoke fixture previously read 'IRX'/'VIX' — must be corrected to '^IRX'/'^VIX'."
+        "Real-data smoke fixture previously read 'IRX'/'VIX' \u2014 must be corrected to '^IRX'/'^VIX'."
       ],
       "clarification_needed": false,
       "clarification_notes": null
@@ -358,8 +544,12 @@
       "priority": 3,
       "status": "not_started",
       "layer": "python",
-      "dependencies": ["F-2C"],
-      "linked_schemas": ["S-PRICE-DATA"],
+      "dependencies": [
+        "F-2C"
+      ],
+      "linked_schemas": [
+        "S-PRICE-DATA"
+      ],
       "linked_apis": [],
       "invariants": {
         "temporal_bounds": null,
@@ -368,11 +558,21 @@
         "plausibility_range": "Provisional starting gates (locked from corrected baseline + headroom): max single-day |return| < 0.50; annualized return in (-0.20, 0.60); |skewness| < 5; excess kurtosis < 50; terminal NAV in [0.5x, 20x] contributed capital.",
         "realism_requirements": "7-yr real parquet corrected-baseline run from F-2C."
       },
-      "performance_requirements": {"complexity_budget": "O(n)", "notes": "Reuses the F-2C backtest result."},
-      "property_based_testing": {"enabled": false, "framework": null, "rationale": "Fixed-bound assertions on a single real-data run."},
-      "mutation_testing": {"enabled": false, "rationale_if_disabled": "Test code."},
+      "performance_requirements": {
+        "complexity_budget": "O(n)",
+        "notes": "Reuses the F-2C backtest result."
+      },
+      "property_based_testing": {
+        "enabled": false,
+        "framework": null,
+        "rationale": "Fixed-bound assertions on a single real-data run."
+      },
+      "mutation_testing": {
+        "enabled": false,
+        "rationale_if_disabled": "Test code."
+      },
       "acceptance_criteria": [
-        "Hard-failing assertions exist for: max single-day |return| < bound; annualized return within [lo, hi]; |skewness| < bound; excess kurtosis < bound; terminal NAV within [0.5x, 20x] of contributed capital — with final numbers set from the corrected baseline plus headroom.",
+        "Hard-failing assertions exist for: max single-day |return| < bound; annualized return within [lo, hi]; |skewness| < bound; excess kurtosis < bound; terminal NAV within [0.5x, 20x] of contributed capital \u2014 with final numbers set from the corrected baseline plus headroom.",
         "Each locked bound comfortably passes on the corrected baseline AND fails when evaluated against the Phase-0 broken metrics (bounds discriminate the pathology from legitimate fat tails)."
       ],
       "test_requirements": [
@@ -380,7 +580,7 @@
         "Bound values and their headroom recorded alongside the corrected-baseline table."
       ],
       "edge_cases": [
-        "Bounds too tight → flaky CI on legitimately fat-tailed leveraged returns; prefer order-of-magnitude discrimination.",
+        "Bounds too tight \u2192 flaky CI on legitimately fat-tailed leveraged returns; prefer order-of-magnitude discrimination.",
         "Plan starting gates (|skew|<5, excess kurt<50, max 1-day<0.50, ann. return in [-0.20,0.60]) are provisional until this step confirms them against real output."
       ],
       "clarification_needed": false,
@@ -395,8 +595,12 @@
       "status": "complete",
       "layer": "python",
       "dependencies": [],
-      "linked_schemas": ["S-PRICE-DATA"],
-      "linked_apis": ["C-BUILD-PRICE-DATA-SPLICE"],
+      "linked_schemas": [
+        "S-PRICE-DATA"
+      ],
+      "linked_apis": [
+        "C-BUILD-PRICE-DATA-SPLICE"
+      ],
       "invariants": {
         "temporal_bounds": null,
         "accounting_oracle": "splice() precondition: post = primary.loc[splice_date:] is non-empty iff splice_date <= end_date.",
@@ -404,9 +608,19 @@
         "plausibility_range": null,
         "realism_requirements": "Windows on both sides of a SPLICE_MAP splice_date (before, straddling, and equal-to)."
       },
-      "performance_requirements": {"complexity_budget": "O(1)", "notes": "Boolean guard per splice-map entry."},
-      "property_based_testing": {"enabled": false, "framework": null, "rationale": "Deterministic boundary condition; example tests suffice."},
-      "mutation_testing": {"enabled": false, "rationale_if_disabled": "Plan scopes testing to pytest + hypothesis; also an I/O boundary."},
+      "performance_requirements": {
+        "complexity_budget": "O(1)",
+        "notes": "Boolean guard per splice-map entry."
+      },
+      "property_based_testing": {
+        "enabled": false,
+        "framework": null,
+        "rationale": "Deterministic boundary condition; example tests suffice."
+      },
+      "mutation_testing": {
+        "enabled": false,
+        "rationale_if_disabled": "Plan scopes testing to pytest + hypothesis; also an I/O boundary."
+      },
       "acceptance_criteria": [
         "A window with end_date < a ticker's splice_date returns primary-only prices with no ValueError (matches use_splice=False path).",
         "A window straddling the splice date (start_date < splice_date <= end_date) still produces the spliced series exactly as before (no regression to the normal case)."
@@ -430,9 +644,16 @@
       "priority": 1,
       "status": "not_started",
       "layer": "python",
-      "dependencies": ["F-2C", "F-2D"],
-      "linked_schemas": ["S-PRICE-DATA"],
-      "linked_apis": ["C-RUN-BACKTEST-IV-LOOKUP"],
+      "dependencies": [
+        "F-2C",
+        "F-2D"
+      ],
+      "linked_schemas": [
+        "S-PRICE-DATA"
+      ],
+      "linked_apis": [
+        "C-RUN-BACKTEST-IV-LOOKUP"
+      ],
       "invariants": {
         "temporal_bounds": "Daily MTM IV at date t uses only vol_prices up to t (rolling mean is trailing, VIX_MTM_WINDOW backward window); no forward IV leakage.",
         "accounting_oracle": "INV-5: MTM under underlying-keyed vol_prices differs from constant config.iv on >= 1 date; absent the column, IV is constant.",
@@ -440,9 +661,19 @@
         "plausibility_range": "Dynamic-IV backtest must still satisfy all locked INV-4 bounds from F-2D.",
         "realism_requirements": "7-yr real parquet with asset-ticker-keyed vol_prices ({'VTI': vix}); first VIX_MTM_WINDOW days floored at config.iv (no NaN MTM)."
       },
-      "performance_requirements": {"complexity_budget": "O(n)", "notes": "Rolling-mean over the daily index; single pass."},
-      "property_based_testing": {"enabled": false, "framework": null, "rationale": "Behavioral integration difference; not a pure-unit property."},
-      "mutation_testing": {"enabled": false, "rationale_if_disabled": "Plan scopes testing to pytest + hypothesis."},
+      "performance_requirements": {
+        "complexity_budget": "O(n)",
+        "notes": "Rolling-mean over the daily index; single pass."
+      },
+      "property_based_testing": {
+        "enabled": false,
+        "framework": null,
+        "rationale": "Behavioral integration difference; not a pure-unit property."
+      },
+      "mutation_testing": {
+        "enabled": false,
+        "rationale_if_disabled": "Plan scopes testing to pytest + hypothesis."
+      },
       "acceptance_criteria": [
         "With an underlying-keyed vol_prices, daily MTM IV differs from config.leaps_config.iv on at least one date; with the underlying column absent, IV is constant throughout (INV-5).",
         "The dynamic-IV backtest on the 7-yr parquet still satisfies all locked INV-4 plausibility bounds, and the lookup keys on the `underlying` variable rather than a hardcoded ticker (verified by a non-'VTI' underlying engaging its own column)."
@@ -453,7 +684,7 @@
         "Assertion that the first VIX_MTM_WINDOW days fall back to the config.iv floor (no NaN MTM)."
       ],
       "edge_cases": [
-        "rolling(VIX_MTM_WINDOW).mean() warm-up NaNs at series start — must ffill and floor at config.iv.",
+        "rolling(VIX_MTM_WINDOW).mean() warm-up NaNs at series start \u2014 must ffill and floor at config.iv.",
         "vol_prices empty vs present-but-missing-underlying-column both yield constant IV."
       ],
       "clarification_needed": false,
@@ -467,9 +698,22 @@
       "priority": 1,
       "status": "not_started",
       "layer": "python",
-      "dependencies": ["F-1A", "F-1B", "F-2A", "F-2B", "F-2C", "F-2D", "F-3", "F-4"],
+      "dependencies": [
+        "F-1A",
+        "F-1B",
+        "F-2A",
+        "F-2B",
+        "F-2C",
+        "F-2D",
+        "F-3",
+        "F-4"
+      ],
       "linked_schemas": [],
-      "linked_apis": ["C-LIVE-CONTRACTS", "C-RUN-BACKTEST-IV-LOOKUP", "C-BUILD-PRICE-DATA-SPLICE"],
+      "linked_apis": [
+        "C-LIVE-CONTRACTS",
+        "C-RUN-BACKTEST-IV-LOOKUP",
+        "C-BUILD-PRICE-DATA-SPLICE"
+      ],
       "invariants": {
         "temporal_bounds": null,
         "accounting_oracle": "Full-suite green + coverage >= repository threshold + regenerated figure shows smooth (no 5-10x spike) NAV path.",
@@ -477,9 +721,19 @@
         "plausibility_range": "All INV-4 bounds hold as hard CI gates.",
         "realism_requirements": "Full test suite on real + synthetic data; before/after evidence table across Phase-0, Phase-2, Phase-4."
       },
-      "performance_requirements": {"complexity_budget": "O(n)", "notes": "Full test suite; ~seconds."},
-      "property_based_testing": {"enabled": false, "framework": null, "rationale": "Aggregation/gate step."},
-      "mutation_testing": {"enabled": false, "rationale_if_disabled": "Plan scopes testing to pytest + hypothesis."},
+      "performance_requirements": {
+        "complexity_budget": "O(n)",
+        "notes": "Full test suite; ~seconds."
+      },
+      "property_based_testing": {
+        "enabled": false,
+        "framework": null,
+        "rationale": "Aggregation/gate step."
+      },
+      "mutation_testing": {
+        "enabled": false,
+        "rationale_if_disabled": "Plan scopes testing to pytest + hypothesis."
+      },
       "acceptance_criteria": [
         "`uv run pytest` is green including all INV-1..INV-5 tests; `uv run ruff check .` and `uv run mypy src/` are clean.",
         "Total coverage is >= the repository threshold, outputs/figures/leaps_tax_drag.png is regenerated showing a smooth NAV path, and a before/after metrics table (Phase-0 broken vs Phase-2 constant-IV vs Phase-4 dynamic-IV) is attached to the review."
@@ -490,7 +744,7 @@
         "Regenerated figure committed under outputs/figures/."
       ],
       "edge_cases": [
-        "No public dataclass/function signatures change — README/docstring edits limited to behavioral notes if any."
+        "No public dataclass/function signatures change \u2014 README/docstring edits limited to behavioral notes if any."
       ],
       "clarification_needed": false,
       "clarification_notes": null
@@ -502,49 +756,66 @@
       "description": "Off-by-one at the same-day roll boundary (< vs <=) silently drops the roll-date cohort or double-counts the replacement.",
       "severity": "high",
       "mitigation": "Explicit same-day boundary unit test (F-2A) asserting old excluded and new live at exactly roll_date; rationale for <= documented against roll_contract semantics.",
-      "linked_features": ["F-1A", "F-2A"]
+      "linked_features": [
+        "F-1A",
+        "F-2A"
+      ]
     },
     {
       "id": "R-02",
       "description": "Partial-close guard uses the synthetic close_date (== final_date) frozen at portfolio.py:809, reverting partially-closed contracts to full size at earlier dates.",
       "severity": "medium",
       "mitigation": "Verify-first in F-1B; either key the guard on true close semantics or scope 1b to the gtt-close guard and log the partial-close guard as a documented no-lookahead follow-up. Captured in S-PARTIAL-CLOSE-EVENT.",
-      "linked_features": ["F-1B"]
+      "linked_features": [
+        "F-1B"
+      ]
     },
     {
       "id": "R-03",
       "description": "Dynamic IV leaks into the primary-fix validation, conflating Fix 1 and Fix 2 so the NAV correction cannot be attributed to the date filter alone.",
       "severity": "medium",
       "mitigation": "Phase-2 constant-IV fixture must omit the underlying column entirely; dynamic IV is only activated in Phase 4 with a separate isolating test (F-4 / INV-5).",
-      "linked_features": ["F-2C", "F-4"]
+      "linked_features": [
+        "F-2C",
+        "F-4"
+      ]
     },
     {
       "id": "R-04",
-      "description": "Plausibility bounds too tight → flaky CI on legitimately fat-tailed leveraged returns; too loose → fails to catch the pathology.",
+      "description": "Plausibility bounds too tight \u2192 flaky CI on legitimately fat-tailed leveraged returns; too loose \u2192 fails to catch the pathology.",
       "severity": "medium",
       "mitigation": "Calibrate bounds against the corrected baseline with headroom (F-2D); require each bound to pass corrected output and fail Phase-0 broken metrics.",
-      "linked_features": ["F-2D"]
+      "linked_features": [
+        "F-2D"
+      ]
     },
     {
       "id": "R-05",
       "description": "GTT merged multi-window ledgers combine roll_events across windows; a date filter that assumed a single window could misbehave.",
       "severity": "low",
       "mitigation": "Dates are globally monotonic across windows so the <= filter remains correct; F-2C includes a GTT-active lifecycle variant to confirm.",
-      "linked_features": ["F-1A", "F-2C"]
+      "linked_features": [
+        "F-1A",
+        "F-2C"
+      ]
     },
     {
       "id": "R-06",
       "description": "Splice guard over-correction breaks the normal straddling-window splice.",
       "severity": "low",
-      "mitigation": "F-3 unit-tests both sides of the boundary (end<splice → primary-only; straddle → spliced), including end_date == splice_date.",
-      "linked_features": ["F-3"]
+      "mitigation": "F-3 unit-tests both sides of the boundary (end<splice \u2192 primary-only; straddle \u2192 spliced), including end_date == splice_date.",
+      "linked_features": [
+        "F-3"
+      ]
     },
     {
       "id": "R-PBT-01",
       "description": "Non-deterministic property-based test finds a no-lookahead counterexample that is not persisted, so the regression is not reproducible in CI.",
       "severity": "low",
       "mitigation": "Commit the hypothesis example database / add an explicit @example for any counterexample found; keep the property test falsifying (verified by reintroducing pre-fix logic in F-2B).",
-      "linked_features": ["F-2B"]
+      "linked_features": [
+        "F-2B"
+      ]
     }
   ],
   "implementation_phases": [
@@ -552,37 +823,53 @@
       "phase": 0,
       "name": "Reproduce & baseline",
       "description": "No code change. Reproduce the day-1 and terminal symptoms on the 7-yr parquet and record the broken-baseline metrics as before-evidence and the calibration anchor.",
-      "feature_ids": ["F-0"]
+      "feature_ids": [
+        "F-0"
+      ]
     },
     {
       "phase": 1,
       "name": "Primary fix (date-awareness)",
       "description": "Land the critical roll-guard date filter in isolation (1a), then add the defensive gtt-close/partial-close guards verify-first with the synthetic-date trap handled (1b).",
-      "feature_ids": ["F-1A", "F-1B"]
+      "feature_ids": [
+        "F-1A",
+        "F-1B"
+      ]
     },
     {
       "phase": 2,
       "name": "Validate primary fix under constant IV",
       "description": "Unit + property tests for no-lookahead (2a/2b), the constant-IV lifecycle integration test (2c), and calibrate/lock the plausibility gate (2d, depends on 2c). Dynamic IV intentionally NOT engaged.",
-      "feature_ids": ["F-2A", "F-2B", "F-2C", "F-2D"]
+      "feature_ids": [
+        "F-2A",
+        "F-2B",
+        "F-2C",
+        "F-2D"
+      ]
     },
     {
       "phase": 3,
       "name": "Splice guard",
       "description": "Tighten the splice-eligibility bound and unit-test both sides of the boundary.",
-      "feature_ids": ["F-3"]
+      "feature_ids": [
+        "F-3"
+      ]
     },
     {
       "phase": 4,
       "name": "Enable dynamic IV (isolated)",
       "description": "Activate the corrected vol_prices lookup, flip the fixture to asset-ticker keys, and isolate Fix 2's incremental effect while staying within the locked plausibility bounds.",
-      "feature_ids": ["F-4"]
+      "feature_ids": [
+        "F-4"
+      ]
     },
     {
       "phase": 5,
       "name": "Regression gate & cleanup",
       "description": "Hard-fail plausibility gate, green suite, lint/type clean, coverage threshold, regenerated figure, before/after evidence.",
-      "feature_ids": ["F-5"]
+      "feature_ids": [
+        "F-5"
+      ]
     }
   ]
 }
