@@ -523,3 +523,93 @@ class TestLeapsLifecycle:
             f"GTT day-1 NAV {result.nav_series.iloc[0]:,.0f} deviates > 1% from "
             f"initial_nav {cfg.initial_nav:,.0f}"
         )
+
+
+# ---------------------------------------------------------------------------
+# INV-4: Plausibility bounds (hard CI gate) — F-2D
+#
+# Bounds calibrated against the corrected constant-IV baseline (post-Fix-1):
+#   Day-1 NAV:     $1,001,679  (1.0017x — pre-fix was 0.602x)
+#   Terminal NAV:  3.62x
+#   Ann. return:   20.22%
+#   Skewness:      -0.60       (pre-fix: 36.71)
+#   Excess kurt:   11.67       (pre-fix: 1472.37)
+#   Max 1-day|ret|: 11.70%    (pre-fix: 80.2%)
+#
+# Headroom chosen so bounds pass on corrected output and fail on pre-fix pathology.
+# ---------------------------------------------------------------------------
+
+_INV4_MAX_SINGLE_DAY_ABS_RETURN = 0.50   # corrected: 11.7%;  pre-fix: 80.2%
+_INV4_ANN_RETURN_LO = -0.20              # corrected: 20.2%;  wide lower gate
+_INV4_ANN_RETURN_HI = 0.60              # corrected: 20.2%;  wide upper gate
+_INV4_ABS_SKEWNESS = 5.0                # corrected: 0.60;   pre-fix: 36.71
+_INV4_EXCESS_KURTOSIS = 50.0            # corrected: 11.67;  pre-fix: 1472.37
+_INV4_TERMINAL_MULTIPLE_LO = 0.5        # corrected: 3.62x;  structural floor
+_INV4_TERMINAL_MULTIPLE_HI = 20.0       # corrected: 3.62x;  structural ceiling
+_TRADING_DAYS_PER_YEAR = 252
+
+
+class TestLeapsPlausibilityBounds:
+    """INV-4: Hard CI gate — plausibility bounds on the 7-yr real-data LEAPS backtest.
+
+    Each bound passes on the corrected constant-IV output and would fail on the
+    pre-fix broken baseline (day-1 NAV 60.2% of initial, skewness 36.71,
+    excess kurtosis 1472.37, max single-day return 80.2%).
+    """
+
+    def test_inv4_max_single_day_abs_return(
+        self, leaps_pipeline: dict[str, object]
+    ) -> None:
+        """No single day should move the portfolio > 50% (structural bound)."""
+        result: BacktestResult = leaps_pipeline["result"]  # type: ignore[assignment]
+        rets = result.nav_series.pct_change().dropna()
+        max_abs = float(rets.abs().max())
+        assert max_abs < _INV4_MAX_SINGLE_DAY_ABS_RETURN, (
+            f"Max single-day |return| {max_abs:.4f} >= {_INV4_MAX_SINGLE_DAY_ABS_RETURN} — "
+            f"structural blowup detected (pre-fix: 80.2%)"
+        )
+
+    def test_inv4_annualized_return_in_range(
+        self, leaps_pipeline: dict[str, object]
+    ) -> None:
+        """Annualized return must be within leveraged-equity norms for 2018-2024."""
+        result: BacktestResult = leaps_pipeline["result"]  # type: ignore[assignment]
+        cfg: PortfolioConfig = leaps_pipeline["cfg"]  # type: ignore[assignment]
+        nav = result.nav_series
+        rets = nav.pct_change().dropna()
+        n_years = len(rets) / _TRADING_DAYS_PER_YEAR
+        ann_return = (nav.iloc[-1] / cfg.initial_nav) ** (1.0 / n_years) - 1.0
+        assert _INV4_ANN_RETURN_LO < ann_return < _INV4_ANN_RETURN_HI, (
+            f"Annualized return {ann_return:.4f} outside "
+            f"({_INV4_ANN_RETURN_LO}, {_INV4_ANN_RETURN_HI})"
+        )
+
+    def test_inv4_abs_skewness(self, leaps_pipeline: dict[str, object]) -> None:
+        """Return distribution skewness must be |skew| < 5 (pre-fix was 36.71)."""
+        result: BacktestResult = leaps_pipeline["result"]  # type: ignore[assignment]
+        rets = result.nav_series.pct_change().dropna()
+        skew = float(rets.skew())
+        assert abs(skew) < _INV4_ABS_SKEWNESS, (
+            f"|skewness| {abs(skew):.4f} >= {_INV4_ABS_SKEWNESS} — "
+            f"distribution pathology detected (pre-fix: 36.71)"
+        )
+
+    def test_inv4_excess_kurtosis(self, leaps_pipeline: dict[str, object]) -> None:
+        """Excess kurtosis must be < 50 (pre-fix was 1472.37)."""
+        result: BacktestResult = leaps_pipeline["result"]  # type: ignore[assignment]
+        rets = result.nav_series.pct_change().dropna()
+        kurt = float(rets.kurtosis())
+        assert kurt < _INV4_EXCESS_KURTOSIS, (
+            f"Excess kurtosis {kurt:.4f} >= {_INV4_EXCESS_KURTOSIS} — "
+            f"distribution pathology detected (pre-fix: 1472.37)"
+        )
+
+    def test_inv4_terminal_nav_multiple(self, leaps_pipeline: dict[str, object]) -> None:
+        """Terminal NAV multiple (vs initial) must be in [0.5x, 20x]."""
+        result: BacktestResult = leaps_pipeline["result"]  # type: ignore[assignment]
+        cfg: PortfolioConfig = leaps_pipeline["cfg"]  # type: ignore[assignment]
+        multiple = result.nav_series.iloc[-1] / cfg.initial_nav
+        assert _INV4_TERMINAL_MULTIPLE_LO < multiple < _INV4_TERMINAL_MULTIPLE_HI, (
+            f"Terminal NAV multiple {multiple:.4f}x outside "
+            f"({_INV4_TERMINAL_MULTIPLE_LO}x, {_INV4_TERMINAL_MULTIPLE_HI}x)"
+        )

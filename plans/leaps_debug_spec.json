@@ -542,7 +542,7 @@
       "description": "Depends on F-2C. Read the corrected constant-IV baseline (skew, excess kurtosis, annualized return, max 1-day return, terminal NAV multiple), set the final INV-4 bounds with headroom, and wire them as hard pytest assertions.",
       "phase": "2d",
       "priority": 3,
-      "status": "not_started",
+      "status": "pending_judge",
       "layer": "python",
       "dependencies": [
         "F-2C"
