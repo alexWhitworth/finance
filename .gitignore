@@ -13,6 +13,7 @@ __pycache__/
 # outputs
 outputs/figures/*
 !outputs/figures/fig5_1_strategy_equity_curve.png
+!outputs/figures/leaps_tax_drag.png
 analyses/
 analyses/gtt_library_validation.py
 

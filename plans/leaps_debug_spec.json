@@ -696,7 +696,7 @@
       "description": "Wire INV-4 plausibility assertions as hard CI failures, ensure full-suite green, lint/type clean, coverage >= threshold, regenerate the tax-drag figure as after-evidence, and refresh docstrings/README only if signatures changed (they do not).",
       "phase": "5",
       "priority": 1,
-      "status": "not_started",
+      "status": "pending_judge",
       "layer": "python",
       "dependencies": [
         "F-1A",

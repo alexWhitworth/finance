@@ -50,6 +50,10 @@ module = "yfinance.*"
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
+module = "fredapi.*"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
 module = ["plotnine.*", "mizani.*"]
 ignore_missing_imports = true
 ignore_errors = true

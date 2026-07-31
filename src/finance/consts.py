@@ -6,7 +6,7 @@ All modules import from here rather than defining constants locally.
 TICKERS: tuple[str, ...] = ("VTI", "VXUS", "GLD", "MUB", "KMLM", "VGIT")
 
 SPLICE_MAP: dict[str, tuple[str, str]] = {
-    # KMLM: proxy is a parquet file of MLMI total-return index history (1988–2020-12-01).
+    # KMLM: proxy is a parquet file of MLMI total-return index history (1988-2020-12-01).
     # Splice date = KMLM ETF inception. See data/kmlm_mlmi_pre.parquet.
     "KMLM": ("file:data/kmlm_mlmi_pre.parquet", "2020-12-02"),
     "VXUS": ("VGTSX", "2011-01-28"),
