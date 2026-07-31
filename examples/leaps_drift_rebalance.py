@@ -56,7 +56,7 @@ if __name__ == "__main__":
         target_weights=BASE_WEIGHTS,
         initial_nav=INITIAL_NAV,
         monthly_contribution=MONTHLY_CONTRIBUTION,
-        rebalance_rule=RebalanceRule.QUARTERLY,
+        rebalance_rule=RebalanceRule.DRIFT,
         weight_strategy=WeightStrategy.USER_SPECIFIED,
         leaps_config=LeapsConfig(
             iv=FLOOR_IV,
@@ -69,7 +69,7 @@ if __name__ == "__main__":
         target_weights=BASE_WEIGHTS,
         initial_nav=INITIAL_NAV,
         monthly_contribution=MONTHLY_CONTRIBUTION,
-        rebalance_rule=RebalanceRule.QUARTERLY,
+        rebalance_rule=RebalanceRule.DRIFT,
         weight_strategy=WeightStrategy.USER_SPECIFIED,
         leaps_config=LeapsConfig(
             iv=FLOOR_IV,

@@ -164,6 +164,7 @@ def plot_nav_growth(
             data=data, mapping=p9.aes(x="date", y="nav_millions", color="portfolio"), size=0.8
         )
         + p9.scale_x_datetime(date_labels="%Y", date_minor_breaks="1 year")
+        + p9.scale_y_log10()
         + p9.labs(
             title=f"Portfolio NAV Growth\n{subtitle}",
             x="Date",
@@ -383,6 +384,7 @@ def plot_leaps_tax_drag(
             data=data, mapping=p9.aes(x="date", y="nav_millions", color="account"), size=0.8
         )
         + p9.scale_x_datetime(date_labels="%Y", date_minor_breaks="1 year")
+        + p9.scale_y_log10()
         + p9.labs(
             title=f"LEAPS Tax Drag: Taxable vs. Tax-Sheltered\n{drag_label}  {subtitle}",
             x="Date",

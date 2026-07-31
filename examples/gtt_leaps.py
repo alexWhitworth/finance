@@ -77,7 +77,7 @@ if __name__ == "__main__":
     n_total = len(gtt_signal.position_mask)
     print(f"  Signal: {n_defensive}/{n_total} defensive days ({100.0 * n_defensive / n_total:.1f}%)")
 
-    base_leaps_config = PortfolioConfig(
+    base_leaps_qtr = PortfolioConfig(
             target_weights=WEIGHTS,
             initial_nav=INITIAL_NAV,
             monthly_contribution=MONTHLY_CONTRIBUTION,
@@ -91,11 +91,25 @@ if __name__ == "__main__":
             gtt_config=None,
         )
 
-    gtt_leaps_config = PortfolioConfig(
+    base_leaps_drfit = PortfolioConfig(
+        target_weights=WEIGHTS,
+        initial_nav=INITIAL_NAV,
+        monthly_contribution=MONTHLY_CONTRIBUTION,
+        rebalance_rule=RebalanceRule.DRIFT,
+        weight_strategy=WeightStrategy.USER_SPECIFIED,
+        leaps_config=LeapsConfig(
+            iv=FLOOR_IV,
+            ltcg_rate=LTCG_RATE,
+            account_type=AccountType.TAX_SHELTERED,
+        ),
+        gtt_config=None,
+    )
+
+    gtt_leaps_drift = PortfolioConfig(
         target_weights=WEIGHTS,
         initial_nav=1_000_000.0,
         monthly_contribution=10_000.0,
-        rebalance_rule=RebalanceRule.QUARTERLY,
+        rebalance_rule=RebalanceRule.DRIFT,
         weight_strategy=WeightStrategy.USER_SPECIFIED,
         leaps_config=LeapsConfig(
             iv=FLOOR_IV,
@@ -108,26 +122,36 @@ if __name__ == "__main__":
         ),
     )
 
-    print("=== Running Buy-and-Hold Backtest ===")
-    base_result = run_backtest(return_data, price_data, base_leaps_config)
-
-    print("=== Running GTT Backtest ===")
-    gtt_result = run_backtest(return_data, price_data, gtt_leaps_config, gtt_signal=gtt_signal)
+    print("=== Running Backtests ===")
+    base_qtr_result = run_backtest(return_data, price_data, base_leaps_qtr)
+    base_drift_result = run_backtest(return_data, price_data, base_leaps_drfit)
+    gtt_result = run_backtest(return_data, price_data, gtt_leaps_drift, gtt_signal=gtt_signal)
 
     print("=== Building Volatility Model ===")
     vol_model = build_volatility_model(return_data)
 
     print("=== Building Performance Reports ===")
-    base_report = build_performance_report(base_result, price_data, return_data, vol_model)
+    base_qtr_report = build_performance_report(base_qtr_result, price_data, return_data, vol_model)
+    base_drift_report = build_performance_report(base_drift_result, price_data, return_data, vol_model)
     gtt_report = build_performance_report(gtt_result, price_data, return_data, vol_model)
 
     print("=== Performance Comparison ===")
-    print(compare_performance_table([("LEAPS", base_report), ("GTT LEAPS", gtt_report)]))
+    print(compare_performance_table(
+        [
+            ("LEAPS QTR", base_qtr_report),
+            ("LEAPS DRIFT", base_drift_report),
+            ("GTT LEAPS DRIFT", gtt_report)
+        ]
+    ))
 
     print("=== Saving NAV Growth Chart ===")
     output_path = Path("outputs/figures/gtt_leaps_comparison_nav.png")
     plot_nav_growth(
-        {"LEAPS": base_result, "GTT LEAPS": gtt_result},
+        {
+            "LEAPS QTR": base_qtr_result,
+            "LEAPS Drift": base_drift_result,
+            "GTT LEAPS Drift": gtt_result
+        },
         output_path=output_path,
         position_mask=gtt_signal.position_mask,
     )
