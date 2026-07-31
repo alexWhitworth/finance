@@ -101,6 +101,7 @@ uv run examples/leaps_drift_rebalance.py  # LEAPS, drift rebalancing, + taxable 
 uv run examples/volatility_report.py      # vol contribution table + forward vol forecast
 uv run examples/crisis_analysis.py        # GFC / COVID / 2022 per-period metrics
 uv run examples/basic_gtt.py              # Basic backtest, with the GTT signal and comparison
+uv run examples/gtt_leaps.py              # GTT with Leaps, quarterly vs drift rebalancing
 ```
 
 ## Growth and Trend Timing
