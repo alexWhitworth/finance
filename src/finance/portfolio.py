@@ -409,10 +409,11 @@ def run_backtest(
       - LEAPS capital is carved out of NAV: initial_nav * leaps_fraction is
         deployed day-1 and the LEAPS share of each monthly contribution flows
         into run_leaps_simulation; base holdings hold the remainder.
-      - Dynamic IV: when price_data.vol_prices has a "^VIX" column, raw VIX drives
-        contract creation and rolls, while a VIX_MTM_WINDOW-day rolling mean drives
-        daily mark-to-market. config.leaps_config.iv is the floor throughout.
-        Absent "^VIX", config.leaps_config.iv is used everywhere.
+      - Dynamic IV: when price_data.vol_prices has a column keyed by the LEAPS
+        underlying ticker (e.g. 'VTI'), raw values drive contract creation and
+        rolls, while a VIX_MTM_WINDOW-day rolling mean drives daily MTM.
+        config.leaps_config.iv is the floor throughout. Absent that column (or
+        with an empty vol_prices), config.leaps_config.iv is used everywhere.
       - run_leaps_simulation is called internally; no external ledger accepted.
 
     Arguments:

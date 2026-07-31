@@ -716,6 +716,38 @@ def test_leaps_vix_above_floor_raises_premium() -> None:
     )
 
 
+def test_leaps_vix_lookup_uses_underlying_variable_not_hardcoded_ticker() -> None:
+    """vol_prices lookup uses `underlying` variable, not a hardcoded 'VTI' or '^VIX' string.
+
+    Uses GLD_LEAPS (underlying='GLD') with vol_prices keyed by 'GLD'.
+    A regression to any hardcoded ticker would leave dynamic IV disengaged,
+    so premium_paid must differ from the no-vol-prices baseline.
+    """
+    n = 120
+    base = _make_price_data(n)
+    rd = build_return_data(base, apply_tey=False)
+    gld_leaps_weights = {
+        "GLD_LEAPS": 0.30, "GLD": 0.10, "VTI": 0.15,
+        "VXUS": 0.15, "MUB": 0.10, "KMLM": 0.10, "VGIT": 0.10,
+    }
+    cfg = _config(weights=gld_leaps_weights, leaps_config=LeapsConfig(iv=0.18))
+    # vol_prices keyed by 'GLD' (the underlying), not 'VTI' or '^VIX'
+    gld_vix = pd.DataFrame({"GLD": 0.45}, index=base.prices.index)
+    pd_gld_vol = PriceData(
+        prices=base.prices, dividends=base.dividends, vol_prices=gld_vix,
+        tickers=base.tickers, start_date=base.start_date,
+        end_date=base.end_date, spliced=base.spliced,
+    )
+    result_vol = run_backtest(rd, pd_gld_vol, cfg)
+    result_novol = run_backtest(rd, base, cfg)  # no vol_prices → constant config.iv
+    assert result_vol.leaps_ledger is not None
+    assert result_novol.leaps_ledger is not None
+    assert (
+        result_vol.leaps_ledger.contracts[0].premium_paid
+        > result_novol.leaps_ledger.contracts[0].premium_paid
+    ), "GLD-keyed vol_prices did not engage — lookup may be hardcoded to a different ticker"
+
+
 def test_leaps_empty_vol_prices_falls_back_to_config_iv() -> None:
     """Empty vol_prices → identical NAV path to a config.iv-only run (regression)."""
     rd, pd_obj = _make_rd_and_pd(252)  # _make_price_data → vol_prices empty
