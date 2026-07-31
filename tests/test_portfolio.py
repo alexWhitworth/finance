@@ -665,9 +665,10 @@ def _make_pd_with_vix(
     vix_level: float = 0.25,
     seed: int = 42,
 ) -> PriceData:
-    """Synthetic PriceData with a constant '^VIX' vol_prices column."""
+    """Synthetic PriceData with a constant 'VTI'-keyed vol_prices column (asset-ticker convention).
+    """
     base = _make_price_data(n, seed=seed)
-    vix = pd.DataFrame({"^VIX": vix_level}, index=base.prices.index)
+    vix = pd.DataFrame({"VTI": vix_level}, index=base.prices.index)
     return PriceData(
         prices=base.prices, dividends=base.dividends, vol_prices=vix,
         tickers=base.tickers, start_date=base.start_date,
@@ -680,7 +681,7 @@ def test_leaps_vix_iv_floor_respected_on_creation() -> None:
     n = 120
     base = _make_price_data(n)
     rd = build_return_data(base, apply_tey=False)
-    low_vix = pd.DataFrame({"^VIX": 0.05}, index=base.prices.index)  # below 0.18 floor
+    low_vix = pd.DataFrame({"VTI": 0.05}, index=base.prices.index)  # below 0.18 floor
     pd_low_vix = PriceData(
         prices=base.prices, dividends=base.dividends, vol_prices=low_vix,
         tickers=base.tickers, start_date=base.start_date,
@@ -735,7 +736,7 @@ def test_leaps_vix_creation_uses_raw_not_smoothed() -> None:
     base = _make_price_data(n)
     rd = build_return_data(base, apply_tey=False)
     vix_vals = np.concatenate([np.full(45, 0.20), np.full(n + 1 - 45, 0.60)])
-    vix = pd.DataFrame({"^VIX": vix_vals[: len(base.prices)]}, index=base.prices.index)
+    vix = pd.DataFrame({"VTI": vix_vals[: len(base.prices)]}, index=base.prices.index)
     pd_vix = PriceData(
         prices=base.prices, dividends=base.dividends, vol_prices=vix,
         tickers=base.tickers, start_date=base.start_date,

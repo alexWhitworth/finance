@@ -552,8 +552,8 @@ def run_backtest(
 
         # VIX-based dynamic IV: raw VIX for contract creation/roll (via iv_series),
         # 30-day rolling mean for daily MTM. config.iv is the floor throughout.
-        if not price_data.vol_prices.empty and "^VIX" in price_data.vol_prices.columns:
-            raw_vix = price_data.vol_prices["^VIX"].reindex(idx, method="ffill")
+        if not price_data.vol_prices.empty and underlying in price_data.vol_prices.columns:
+            raw_vix = price_data.vol_prices[underlying].reindex(idx, method="ffill")
             mtm_iv_series = raw_vix.rolling(VIX_MTM_WINDOW).mean().ffill()
 
         initial_leaps_capital = config.initial_nav * leaps_fraction

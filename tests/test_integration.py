@@ -14,6 +14,7 @@ import pandas as pd
 import plotnine as p9  # type: ignore[import-untyped]
 import pytest
 
+from finance.consts import VIX_MTM_WINDOW
 from finance.data import PriceData
 from finance.figures import format_performance_table, plot_nav_growth
 from finance.gtt import GttSignalData, compute_position_mask, compute_vix_signal
@@ -612,4 +613,208 @@ class TestLeapsPlausibilityBounds:
         assert _INV4_TERMINAL_MULTIPLE_LO < multiple < _INV4_TERMINAL_MULTIPLE_HI, (
             f"Terminal NAV multiple {multiple:.4f}x outside "
             f"({_INV4_TERMINAL_MULTIPLE_LO}x, {_INV4_TERMINAL_MULTIPLE_HI}x)"
+        )
+
+
+# ---------------------------------------------------------------------------
+# INV-5: Dynamic-IV activation (F-4)
+#
+# vol_prices keyed by asset ticker ('VTI') so the corrected underlying-key
+# lookup engages dynamic IV.  Isolates Fix 2's incremental effect from Fix 1.
+# ---------------------------------------------------------------------------
+
+
+def _build_leaps_price_data_dynamic_iv(df: pd.DataFrame) -> tuple[PriceData, pd.Series]:  # type: ignore[type-arg]
+    """Build a dynamic-IV PriceData from the parquet DataFrame.
+
+    vol_prices is keyed by the LEAPS underlying ('VTI'), matching the production
+    convention (asset ticker, not vol-index ticker).  This activates the corrected
+    `underlying`-key lookup in portfolio.py.
+
+    The parquet stores ^VIX as a decimal IV already (0.09-0.83; mean ~0.20).
+    No /100 scaling is applied - raw values are passed directly so values above
+    the config.iv floor of 0.18 (e.g., during elevated volatility) cause dynamic
+    IV to engage and differ from constant IV.
+    Returns (PriceData, irx_series).
+    """
+    prices = df[list(_ASSET_TICKERS)]
+    irx: pd.Series[float] = df["^IRX"]
+    vix: pd.Series[float] = df["^VIX"]  # already a decimal IV (0.09-0.83), no /100
+    dividends = pd.DataFrame(0.0, index=prices.index, columns=list(_ASSET_TICKERS))
+    # Dynamic-IV: keyed by underlying ticker 'VTI', not '^VIX'.
+    vol_prices = pd.DataFrame({"VTI": vix}, index=prices.index)
+    return (
+        PriceData(
+            prices=prices,
+            dividends=dividends,
+            vol_prices=vol_prices,
+            tickers=_ASSET_TICKERS,
+            start_date=str(prices.index[0].date()),
+            end_date=str(prices.index[-1].date()),
+            spliced=False,
+        ),
+        irx,
+    )
+
+
+@pytest.fixture(scope="module")
+def leaps_dynamic_iv_pipeline() -> dict[str, object]:
+    """LEAPS backtest on 7-yr parquet, dynamic IV ('VTI'-keyed vol_prices), no GTT (F-4 / INV-5)."""
+    df = pd.read_parquet(_PARQUET_PATH)
+    pd_obj, irx = _build_leaps_price_data_dynamic_iv(df)
+    rd = build_return_data(pd_obj, apply_tey=False, risk_free_series=irx)
+
+    cfg = PortfolioConfig(
+        target_weights=_LEAPS_WEIGHTS,
+        initial_nav=_INITIAL_NAV,
+        monthly_contribution=_MONTHLY_CONTRIB,
+        rebalance_rule=RebalanceRule.QUARTERLY,
+        weight_strategy=WeightStrategy.USER_SPECIFIED,
+        leaps_config=LeapsConfig(
+            iv=0.18,
+            ltcg_rate=0.238,
+            account_type=AccountType.TAXABLE,
+        ),
+    )
+    result = run_backtest(rd, pd_obj, cfg)
+    return {"result": result, "cfg": cfg, "pd_obj": pd_obj}
+
+
+class TestDynamicIV:
+    """INV-5: Dynamic-IV activation tests (F-4).
+
+    Validates that:
+    - With underlying-keyed vol_prices ('VTI'), daily MTM IV differs from config.iv
+      on at least one date.
+    - Without the underlying column, IV is constant (confirmed by constant-IV fixture).
+    - The dynamic-IV backtest still satisfies all locked INV-4 plausibility bounds.
+    - The first VIX_MTM_WINDOW days fall back to the config.iv floor (no NaN MTM).
+    """
+
+    def test_inv5_vol_prices_contains_underlying(
+        self, leaps_dynamic_iv_pipeline: dict[str, object]
+    ) -> None:
+        """Dynamic-IV fixture: vol_prices must contain 'VTI' column (Fix 2 activates)."""
+        pd_obj: PriceData = leaps_dynamic_iv_pipeline["pd_obj"]  # type: ignore[assignment]
+        assert "VTI" in pd_obj.vol_prices.columns, (
+            "Dynamic-IV fixture must contain 'VTI' in vol_prices "
+            "for the underlying-key lookup to engage"
+        )
+
+    def test_inv5_dynamic_iv_differs_from_constant(
+        self,
+        leaps_pipeline: dict[str, object],
+        leaps_dynamic_iv_pipeline: dict[str, object],
+    ) -> None:
+        """INV-5: dynamic-IV NAV differs from constant-IV NAV on at least one date.
+
+        This proves the corrected 'underlying'-key lookup actually engages — if the
+        lookup were still hardcoded to '^VIX', the two NAV series would be identical.
+        """
+        constant_result: BacktestResult = leaps_pipeline["result"]  # type: ignore[assignment]
+        dynamic_result: BacktestResult = leaps_dynamic_iv_pipeline["result"]  # type: ignore[assignment]
+
+        # Align on the common index
+        common_idx = constant_result.nav_series.index.intersection(dynamic_result.nav_series.index)
+        nav_const = constant_result.nav_series.reindex(common_idx)
+        nav_dyn = dynamic_result.nav_series.reindex(common_idx)
+
+        n_different = int((nav_const != nav_dyn).sum())
+        assert n_different >= 1, (
+            "Dynamic-IV and constant-IV NAV series are identical — "
+            "the 'underlying'-key lookup did not engage (check vol_prices column name)"
+        )
+
+    def test_inv5_constant_iv_fixture_yields_constant_nav(
+        self,
+        leaps_pipeline: dict[str, object],
+    ) -> None:
+        """INV-5 (negative control): constant-IV fixture has no underlying column.
+
+        Confirmed by TestLeapsLifecycle.test_vol_prices_does_not_contain_underlying.
+        Verifies the constant-IV run is self-consistent: NAV is positive and finite,
+        establishing the baseline against which the dynamic-IV diff is meaningful.
+        """
+        result: BacktestResult = leaps_pipeline["result"]  # type: ignore[assignment]
+        assert (result.nav_series > 0).all(), "Constant-IV NAV baseline is not positive"
+        assert np.isfinite(result.nav_series.values).all(), "Constant-IV NAV baseline has inf"
+
+    def test_inv5_dynamic_iv_plausibility_max_daily_return(
+        self, leaps_dynamic_iv_pipeline: dict[str, object]
+    ) -> None:
+        """INV-4 under dynamic IV: max single-day |return| still < 50%."""
+        result: BacktestResult = leaps_dynamic_iv_pipeline["result"]  # type: ignore[assignment]
+        rets = result.nav_series.pct_change().dropna()
+        max_abs = float(rets.abs().max())
+        assert max_abs < _INV4_MAX_SINGLE_DAY_ABS_RETURN, (
+            f"Dynamic-IV max single-day |return| {max_abs:.4f} >= {_INV4_MAX_SINGLE_DAY_ABS_RETURN}"
+        )
+
+    def test_inv5_dynamic_iv_plausibility_ann_return(
+        self, leaps_dynamic_iv_pipeline: dict[str, object]
+    ) -> None:
+        """INV-4 under dynamic IV: annualized return within leveraged-equity norms."""
+        result: BacktestResult = leaps_dynamic_iv_pipeline["result"]  # type: ignore[assignment]
+        cfg: PortfolioConfig = leaps_dynamic_iv_pipeline["cfg"]  # type: ignore[assignment]
+        nav = result.nav_series
+        n_years = len(nav.pct_change().dropna()) / _TRADING_DAYS_PER_YEAR
+        ann_return = (nav.iloc[-1] / cfg.initial_nav) ** (1.0 / n_years) - 1.0
+        assert _INV4_ANN_RETURN_LO < ann_return < _INV4_ANN_RETURN_HI, (
+            f"Dynamic-IV annualized return {ann_return:.4f} outside "
+            f"({_INV4_ANN_RETURN_LO}, {_INV4_ANN_RETURN_HI})"
+        )
+
+    def test_inv5_dynamic_iv_plausibility_skewness(
+        self, leaps_dynamic_iv_pipeline: dict[str, object]
+    ) -> None:
+        """INV-4 under dynamic IV: |skewness| < 5."""
+        result: BacktestResult = leaps_dynamic_iv_pipeline["result"]  # type: ignore[assignment]
+        rets = result.nav_series.pct_change().dropna()
+        skew = float(rets.skew())
+        assert abs(skew) < _INV4_ABS_SKEWNESS, (
+            f"Dynamic-IV |skewness| {abs(skew):.4f} >= {_INV4_ABS_SKEWNESS}"
+        )
+
+    def test_inv5_dynamic_iv_plausibility_kurtosis(
+        self, leaps_dynamic_iv_pipeline: dict[str, object]
+    ) -> None:
+        """INV-4 under dynamic IV: excess kurtosis < 50."""
+        result: BacktestResult = leaps_dynamic_iv_pipeline["result"]  # type: ignore[assignment]
+        rets = result.nav_series.pct_change().dropna()
+        kurt = float(rets.kurtosis())
+        assert kurt < _INV4_EXCESS_KURTOSIS, (
+            f"Dynamic-IV excess kurtosis {kurt:.4f} >= {_INV4_EXCESS_KURTOSIS}"
+        )
+
+    def test_inv5_dynamic_iv_plausibility_terminal_multiple(
+        self, leaps_dynamic_iv_pipeline: dict[str, object]
+    ) -> None:
+        """INV-4 under dynamic IV: terminal NAV in [0.5x, 20x] of initial."""
+        result: BacktestResult = leaps_dynamic_iv_pipeline["result"]  # type: ignore[assignment]
+        cfg: PortfolioConfig = leaps_dynamic_iv_pipeline["cfg"]  # type: ignore[assignment]
+        multiple = result.nav_series.iloc[-1] / cfg.initial_nav
+        assert _INV4_TERMINAL_MULTIPLE_LO < multiple < _INV4_TERMINAL_MULTIPLE_HI, (
+            f"Dynamic-IV terminal NAV multiple {multiple:.4f}x outside "
+            f"({_INV4_TERMINAL_MULTIPLE_LO}x, {_INV4_TERMINAL_MULTIPLE_HI}x)"
+        )
+
+    def test_inv5_warmup_no_nan(
+        self, leaps_dynamic_iv_pipeline: dict[str, object]
+    ) -> None:
+        """Rolling-mean warm-up: first VIX_MTM_WINDOW days fall back to config.iv floor.
+
+        The first VIX_MTM_WINDOW days of the rolling mean are NaN before ffill.
+        portfolio.py floors the smoothed value at config.iv, so NAV must be
+        finite and positive from day 1 even during the warm-up window.
+        """
+        result: BacktestResult = leaps_dynamic_iv_pipeline["result"]  # type: ignore[assignment]
+        warmup = result.nav_series.iloc[: VIX_MTM_WINDOW]
+        assert warmup.isna().sum() == 0, (
+            f"NAV contains NaN during the first {VIX_MTM_WINDOW}-day rolling warm-up"
+        )
+        assert (warmup > 0).all(), (
+            f"NAV is non-positive during the first {VIX_MTM_WINDOW}-day rolling warm-up"
+        )
+        assert np.isfinite(warmup.values).all(), (
+            f"NAV contains inf during the first {VIX_MTM_WINDOW}-day rolling warm-up"
         )
