@@ -5,6 +5,7 @@ import pandas as pd
 import pytest
 
 from finance.data import PriceData
+from finance.consts import DRIFT_BAND_RELATIVE
 from finance.leverage import AccountType, LeapsConfig, RebalanceRule, WeightStrategy
 from finance.portfolio import (
     BacktestResult,
@@ -940,6 +941,9 @@ def test_drift_net_proceeds_added_to_base_tax_free() -> None:
     We compare against the QUARTERLY run on the same series: the DRIFT run must
     move value from the LEAPS sleeve into the base sleeve, so its final base
     holdings exceed the quarterly run's while its LEAPS MTM is capped.
+
+    Checks fire only at month-end, so the final date (mid-month) can be up to
+    one drift band above target before the next check would fire.
     """
     rd, pd_obj = _rising_vti_pd_rd(504, vti_daily=0.0020)
     cfg_drift = _config(
@@ -949,10 +953,11 @@ def test_drift_net_proceeds_added_to_base_tax_free() -> None:
     result = run_backtest(rd, pd_obj, cfg_drift)
     assert result.leaps_ledger is not None
     assert len(result.leaps_ledger.partial_close_events) > 0
-    # After trims, the LEAPS weight column should be at or below its target share.
+    # After trims, the LEAPS weight column should be within one drift band of target.
+    # Checks fire only at month-end, so intra-month drift is allowed up to the band.
     leaps_target_weight = 0.30
     final_leaps_weight = float(result.weight_history.iloc[-1]["VTI_LEAPS"])
-    assert final_leaps_weight <= leaps_target_weight + 1e-6
+    assert final_leaps_weight <= leaps_target_weight * (1 + DRIFT_BAND_RELATIVE) + 1e-6
 
 
 def test_drift_partial_close_one_event_per_trimmed_contract() -> None:

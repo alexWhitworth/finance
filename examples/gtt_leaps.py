@@ -22,7 +22,7 @@ from dotenv import load_dotenv
 from finance.data import build_price_data, fetch_risk_free_rate
 from finance.figures import compare_performance_table, plot_nav_growth
 from finance.gtt import fetch_gtt_signal_data
-from finance.leverage import RebalanceRule, WeightStrategy
+from finance.leverage import AccountType, LeapsConfig, RebalanceRule, WeightStrategy
 from finance.metrics import build_performance_report
 from finance.portfolio import GttConfig, PortfolioConfig, run_backtest
 from finance.returns import build_return_data
@@ -31,12 +31,13 @@ from finance.volatility import build_volatility_model
 load_dotenv()
 
 WEIGHTS = {
-    "VTI": 0.40,
+    "VTI": 0.0,
     "VXUS": 0.15,
     "GLD": 0.10,
-    "MUB": 0.15,
-    "KMLM": 0.10,
+    "MUB": 0.10,
+    "KMLM": 0.15,
     "VGIT": 0.10,
+    "VTI_LEAPS": 0.4,
 }
 
 DEFENSIVE_WEIGHTS = {
@@ -46,7 +47,11 @@ DEFENSIVE_WEIGHTS = {
     "GLD": 0.00,
 }
 
+INITIAL_NAV = 1_000_000.0
+MONTHLY_CONTRIBUTION = 10_000.0
 VIX_P90_THRESHOLD = 0.272
+LTCG_RATE = 0.238
+FLOOR_IV = 0.1
 
 if __name__ == "__main__":
     START, END = "2000-09-01", "2026-06-30"
@@ -72,23 +77,31 @@ if __name__ == "__main__":
     n_total = len(gtt_signal.position_mask)
     print(f"  Signal: {n_defensive}/{n_total} defensive days ({100.0 * n_defensive / n_total:.1f}%)")
 
-    base_config = PortfolioConfig(
-        target_weights=WEIGHTS,
-        initial_nav=1_000_000.0,
-        monthly_contribution=10_000.0,
-        rebalance_rule=RebalanceRule.QUARTERLY,
-        weight_strategy=WeightStrategy.USER_SPECIFIED,
-        leaps_config=None,
-        gtt_config=None,
-    )
+    base_leaps_config = PortfolioConfig(
+            target_weights=WEIGHTS,
+            initial_nav=INITIAL_NAV,
+            monthly_contribution=MONTHLY_CONTRIBUTION,
+            rebalance_rule=RebalanceRule.QUARTERLY,
+            weight_strategy=WeightStrategy.USER_SPECIFIED,
+            leaps_config=LeapsConfig(
+                iv=FLOOR_IV,
+                ltcg_rate=LTCG_RATE,
+                account_type=AccountType.TAX_SHELTERED,
+            ),
+            gtt_config=None,
+        )
 
-    gtt_config = PortfolioConfig(
+    gtt_leaps_config = PortfolioConfig(
         target_weights=WEIGHTS,
         initial_nav=1_000_000.0,
         monthly_contribution=10_000.0,
         rebalance_rule=RebalanceRule.QUARTERLY,
         weight_strategy=WeightStrategy.USER_SPECIFIED,
-        leaps_config=None,
+        leaps_config=LeapsConfig(
+            iv=FLOOR_IV,
+            ltcg_rate=LTCG_RATE,
+            account_type=AccountType.TAX_SHELTERED,
+        ),
         gtt_config=GttConfig(
             vix_p90_threshold=VIX_P90_THRESHOLD,
             defensive_weights=DEFENSIVE_WEIGHTS,
@@ -96,10 +109,10 @@ if __name__ == "__main__":
     )
 
     print("=== Running Buy-and-Hold Backtest ===")
-    base_result = run_backtest(return_data, price_data, base_config)
+    base_result = run_backtest(return_data, price_data, base_leaps_config)
 
     print("=== Running GTT Backtest ===")
-    gtt_result = run_backtest(return_data, price_data, gtt_config, gtt_signal=gtt_signal)
+    gtt_result = run_backtest(return_data, price_data, gtt_leaps_config, gtt_signal=gtt_signal)
 
     print("=== Building Volatility Model ===")
     vol_model = build_volatility_model(return_data)
@@ -109,12 +122,12 @@ if __name__ == "__main__":
     gtt_report = build_performance_report(gtt_result, price_data, return_data, vol_model)
 
     print("=== Performance Comparison ===")
-    print(compare_performance_table([("Buy-and-Hold", base_report), ("GTT", gtt_report)]))
+    print(compare_performance_table([("LEAPS", base_report), ("GTT LEAPS", gtt_report)]))
 
     print("=== Saving NAV Growth Chart ===")
-    output_path = Path("outputs/figures/gtt_comparison_nav.png")
+    output_path = Path("outputs/figures/gtt_leaps_comparison_nav.png")
     plot_nav_growth(
-        {"Buy-and-Hold": base_result, "GTT": gtt_result},
+        {"LEAPS": base_result, "GTT LEAPS": gtt_result},
         output_path=output_path,
         position_mask=gtt_signal.position_mask,
     )

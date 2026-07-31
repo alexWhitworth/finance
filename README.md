@@ -85,7 +85,7 @@ uv run ruff check src/ tests/  # lint
 uv run mypy src/               # type-check
 ```
 
-**449 tests · 98.5% line coverage · ruff clean · mypy strict clean**
+**449 tests · 98.46% line coverage · ruff clean · mypy strict clean**
 
 ## Examples
 

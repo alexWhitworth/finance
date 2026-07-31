@@ -596,7 +596,6 @@ def run_backtest(
     # without rebuilding the frozen ledger inside the loop (frozen once at return).
     leaps_scale: dict[LeapsContract, float] = {}
     partial_close_list: list[LeapsPartialCloseEvent] = []
-    target_leaps_value = config.initial_nav * leaps_fraction  # dollar target for LEAPS sleeve
 
     nav_values: list[float] = []
     return_values: list[float] = []
@@ -731,17 +730,18 @@ def run_backtest(
                 # Realign base assets to their targets within the base sleeve.
                 for a in base_assets:
                     holdings[a] = base_val * float(base_target_w[a])
-                # Trim LEAPS overshoot back to the target dollar sleeve, pro-rata.
-                if leaps_value > target_leaps_value and leaps_value > 0:
-                    close_scale = target_leaps_value / leaps_value
-                    net_proceeds = leaps_value - target_leaps_value
+                # Trim LEAPS overshoot back to the target weight at current NAV.
+                target_leaps_now = total_val * leaps_fraction
+                if leaps_value > target_leaps_now and leaps_value > 0:
+                    close_scale = target_leaps_now / leaps_value
+                    net_proceeds = leaps_value - target_leaps_now
                     for c in _live_contracts(leaps_ledger, date_ts):  # type: ignore[arg-type]
                         leaps_scale[c] = leaps_scale.get(c, 1.0) * close_scale
                     # Return proceeds to base holdings by base target weights (tax-free).
                     if base_assets:
                         for a in base_assets:
                             holdings[a] += net_proceeds * float(base_target_w[a])
-                    leaps_value = target_leaps_value
+                    leaps_value = target_leaps_now
 
         # (GTT close) Defensive -> Long re-entry (A9 forced rebalance): re-anchor the
         # whole portfolio to target_weights on the combined NAV (base holdings +

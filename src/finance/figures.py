@@ -13,7 +13,7 @@ from pathlib import Path
 import pandas as pd
 import plotnine as p9
 
-from finance.consts import CRISIS_PERIODS
+from finance.consts import CRISIS_PERIODS, NBER_RECESSION_PERIODS
 from finance.metrics import PerformanceMetrics, PerformanceReport
 from finance.portfolio import BacktestResult
 
@@ -33,6 +33,54 @@ def _save(plot: p9.ggplot, path: Path) -> None:
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     plot.save(str(path), verbose=False)
+
+
+def _nber_rects(
+    date_min: pd.Timestamp, date_max: pd.Timestamp, y_lo: float, y_hi: float
+) -> pd.DataFrame | None:
+    """Build a DataFrame of NBER recession rectangles clipped to [date_min, date_max].
+
+    Arguments:
+        date_min: Left clip boundary (inclusive).
+        date_max: Right clip boundary (inclusive).
+        y_lo: Bottom of each rectangle.
+        y_hi: Top of each rectangle.
+
+    Returns:
+        DataFrame with columns [xmin, xmax, ymin, ymax], or None if no overlap.
+    """
+    rows = []
+    for s, e in NBER_RECESSION_PERIODS:
+        xmin = max(pd.Timestamp(s), date_min)
+        xmax = min(pd.Timestamp(e), date_max)
+        if xmin < xmax:
+            rows.append({"xmin": xmin, "xmax": xmax, "ymin": y_lo, "ymax": y_hi})
+    return pd.DataFrame(rows) if rows else None
+
+
+def _gtt_defensive_rects(position_mask: pd.Series, y_lo: float, y_hi: float) -> pd.DataFrame | None:
+    """Build a DataFrame of GTT-defensive (position_mask == 0) rectangles.
+
+    Arguments:
+        position_mask: Daily 0/1 Series; 0 = defensive.
+        y_lo: Bottom of each rectangle.
+        y_hi: Top of each rectangle.
+
+    Returns:
+        DataFrame with columns [xmin, xmax, ymin, ymax], or None if mask never fires.
+    """
+    is_def = position_mask == 0
+    starts = position_mask.index[is_def & ~is_def.shift(1, fill_value=False)]
+    ends = position_mask.index[is_def & ~is_def.shift(-1, fill_value=False)]
+    n = min(len(starts), len(ends))
+    if n == 0:
+        return None
+    return pd.DataFrame({
+        "xmin": starts[:n],
+        "xmax": ends[:n],
+        "ymin": y_lo,
+        "ymax": y_hi,
+    })
 
 
 def _compute_drawdown_series(nav: pd.Series) -> pd.Series:
@@ -56,12 +104,18 @@ def _compute_drawdown_series(nav: pd.Series) -> pd.Series:
 def plot_nav_growth(
     results: dict[str, BacktestResult],
     output_path: Path | None = _FIGURES_DIR / "nav_growth.png",
+    position_mask: pd.Series | None = None,
 ) -> p9.ggplot:
     """Line chart comparing NAV growth across multiple portfolio configurations.
+
+    Grey bands mark NBER recession periods. When *position_mask* is supplied,
+    yellow bands mark GTT-defensive periods (position_mask == 0).
 
     Arguments:
         results: Mapping of label → BacktestResult.
         output_path: Destination PNG path, or None to skip saving.
+        position_mask: Optional daily 0/1 Series from GttSignalData; 0 = defensive.
+            When provided, defensive periods are shaded yellow.
 
     Returns:
         A plotnine ggplot object.
@@ -76,12 +130,42 @@ def plot_nav_growth(
     data = pd.concat(frames, ignore_index=True)
     data["nav_millions"] = data["nav"] / 1_000_000
 
+    date_min = data["date"].min()
+    date_max = data["date"].max()
+    y_lo = float(data["nav_millions"].min() * 0.95)
+    y_hi = float(data["nav_millions"].max() * 1.05)
+
+    base = p9.ggplot()
+
+    nber = _nber_rects(date_min, date_max, y_lo, y_hi)
+    if nber is not None:
+        base = base + p9.geom_rect(
+            data=nber,
+            mapping=p9.aes(xmin="xmin", xmax="xmax", ymin="ymin", ymax="ymax"),
+            fill="#d0d0d0", alpha=0.6, inherit_aes=False,
+        )
+
+    if position_mask is not None:
+        gtt = _gtt_defensive_rects(position_mask, y_lo, y_hi)
+        if gtt is not None:
+            base = base + p9.geom_rect(
+                data=gtt,
+                mapping=p9.aes(xmin="xmin", xmax="xmax", ymin="ymin", ymax="ymax"),
+                fill="#f5c242", alpha=0.45, inherit_aes=False,
+            )
+
+    subtitle = "Gray = NBER recession"
+    if position_mask is not None:
+        subtitle += "  |  Yellow = GTT defensive"
+
     plot = (
-        p9.ggplot(data, p9.aes(x="date", y="nav_millions", color="portfolio"))
-        + p9.geom_line(size=0.8)
+        base
+        + p9.geom_line(
+            data=data, mapping=p9.aes(x="date", y="nav_millions", color="portfolio"), size=0.8
+        )
         + p9.scale_x_datetime(date_labels="%Y", date_minor_breaks="1 year")
         + p9.labs(
-            title="Portfolio NAV Growth",
+            title=f"Portfolio NAV Growth\n{subtitle}",
             x="Date",
             y="NAV ($ millions)",
             color="Portfolio",
@@ -232,13 +316,19 @@ def plot_leaps_tax_drag(
     taxable_result: BacktestResult,
     sheltered_result: BacktestResult,
     output_path: Path | None = _FIGURES_DIR / "leaps_tax_drag.png",
+    position_mask: pd.Series | None = None,
 ) -> p9.ggplot:
     """Compare taxable vs. tax-sheltered LEAPS NAV trajectories.
+
+    Grey bands mark NBER recession periods. When *position_mask* is supplied,
+    yellow bands mark GTT-defensive periods (position_mask == 0).
 
     Arguments:
         taxable_result: BacktestResult from a TAXABLE account simulation.
         sheltered_result: BacktestResult from a TAX_SHELTERED account simulation.
         output_path: Destination PNG path, or None to skip saving.
+        position_mask: Optional daily 0/1 Series from GttSignalData; 0 = defensive.
+            When provided, defensive periods are shaded yellow.
 
     Returns:
         A plotnine ggplot object.
@@ -250,21 +340,51 @@ def plot_leaps_tax_drag(
     data = pd.concat(frames, ignore_index=True)
     data["nav_millions"] = data["nav"] / 1_000_000
 
+    date_min = data["date"].min()
+    date_max = data["date"].max()
+    y_lo = float(data["nav_millions"].min() * 0.95)
+    y_hi = float(data["nav_millions"].max() * 1.05)
+
     t_nav = taxable_result.nav_series
     s_nav = sheltered_result.nav_series
     common_idx = t_nav.index.intersection(s_nav.index)
-    if len(common_idx):
-        final_drag = float(s_nav.loc[common_idx[-1]] - t_nav.loc[common_idx[-1]])
-        drag_label = f"Tax drag: ${final_drag:,.0f}"
-    else:
-        drag_label = ""
+    drag_label = (
+        f"Tax drag: ${float(s_nav.loc[common_idx[-1]] - t_nav.loc[common_idx[-1]]):,.0f}"
+        if len(common_idx) else ""
+    )
+
+    base = p9.ggplot()
+
+    nber = _nber_rects(date_min, date_max, y_lo, y_hi)
+    if nber is not None:
+        base = base + p9.geom_rect(
+            data=nber,
+            mapping=p9.aes(xmin="xmin", xmax="xmax", ymin="ymin", ymax="ymax"),
+            fill="#d0d0d0", alpha=0.6, inherit_aes=False,
+        )
+
+    if position_mask is not None:
+        gtt = _gtt_defensive_rects(position_mask, y_lo, y_hi)
+        if gtt is not None:
+            base = base + p9.geom_rect(
+                data=gtt,
+                mapping=p9.aes(xmin="xmin", xmax="xmax", ymin="ymin", ymax="ymax"),
+                fill="#f5c242", alpha=0.45, inherit_aes=False,
+            )
+
+    subtitle_parts = ["Gray = NBER recession"]
+    if position_mask is not None:
+        subtitle_parts.append("Yellow = GTT defensive")
+    subtitle = "  |  ".join(subtitle_parts)
 
     plot = (
-        p9.ggplot(data, p9.aes(x="date", y="nav_millions", color="account"))
-        + p9.geom_line(size=0.8)
+        base
+        + p9.geom_line(
+            data=data, mapping=p9.aes(x="date", y="nav_millions", color="account"), size=0.8
+        )
         + p9.scale_x_datetime(date_labels="%Y", date_minor_breaks="1 year")
         + p9.labs(
-            title=f"LEAPS Tax Drag: Taxable vs. Tax-Sheltered\n{drag_label}",
+            title=f"LEAPS Tax Drag: Taxable vs. Tax-Sheltered\n{drag_label}  {subtitle}",
             x="Date",
             y="NAV ($ millions)",
             color="Account Type",

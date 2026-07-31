@@ -33,7 +33,7 @@ BASE_WEIGHTS = {
 
 INITIAL_NAV = 1_000_000.0
 MONTHLY_CONTRIBUTION = 10_000.0
-IV = 0.18
+FLOOR_IV = 0.1
 LTCG_RATE = 0.238
 
 
@@ -59,7 +59,7 @@ if __name__ == "__main__":
         rebalance_rule=RebalanceRule.QUARTERLY,
         weight_strategy=WeightStrategy.USER_SPECIFIED,
         leaps_config=LeapsConfig(
-            iv=IV,
+            iv=FLOOR_IV,
             ltcg_rate=LTCG_RATE,
             account_type=AccountType.TAXABLE,
         ),
@@ -72,7 +72,7 @@ if __name__ == "__main__":
         rebalance_rule=RebalanceRule.QUARTERLY,
         weight_strategy=WeightStrategy.USER_SPECIFIED,
         leaps_config=LeapsConfig(
-            iv=IV,
+            iv=FLOOR_IV,
             ltcg_rate=LTCG_RATE,
             account_type=AccountType.TAX_SHELTERED,
         ),
