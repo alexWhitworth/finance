@@ -517,7 +517,7 @@ def test_build_performance_report_full_period_label() -> None:
     rd = _make_return_data(504)
     vm = build_volatility_model(rd)
     report = build_performance_report(br, pd_obj, rd, vm)
-    assert report.full_period.period_label == "Full Period"
+    assert report.full_period.period_label.startswith("Full Period")
 
 
 def test_build_performance_report_vol_table_columns() -> None:

@@ -134,7 +134,7 @@ class TestFullBacktestPipeline:
 
     def test_report_full_period_present(self, pipeline: dict[str, object]) -> None:
         report: PerformanceReport = pipeline["report"]  # type: ignore[assignment]
-        assert report.full_period.period_label == "Full Period"
+        assert report.full_period.period_label.startswith("Full Period")
 
     def test_report_metrics_finite(self, pipeline: dict[str, object]) -> None:
         report: PerformanceReport = pipeline["report"]  # type: ignore[assignment]

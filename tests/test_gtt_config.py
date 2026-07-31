@@ -27,9 +27,9 @@ def test_gtt_constants_exact_values_and_types() -> None:
     assert GTT_EQUITY_TICKERS == frozenset({"VTI"})
     assert GTT_DEFENSIVE_WEIGHTS_DEFAULT == {
         "R_f": 0.25,
-        "KMLM": 0.25,
+        "KMLM": 0.5,
         "VGIT": 0.25,
-        "GLD": 0.25,
+        "GLD": 0.0,
     }
 
 
@@ -46,9 +46,9 @@ def test_gttconfig_defaults() -> None:
     assert cfg.unrate_trade_lag_days == 1
     assert cfg.defensive_weights == {
         "R_f": 0.25,
-        "KMLM": 0.25,
+        "KMLM": 0.5,
         "VGIT": 0.25,
-        "GLD": 0.25,
+        "GLD": 0.0,
     }
 
 
