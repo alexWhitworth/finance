@@ -642,7 +642,7 @@
       "description": "Replace the literal '^VIX' vol_prices lookup with the LEAPS underlying key (portfolio.py:555). Flip the integration fixture to asset-ticker-keyed vol_prices so dynamic IV engages; re-run plausibility (INV-4) and add a focused test proving dynamic IV changes MTM vs constant IV (INV-5), isolating Fix 2's incremental effect from F-1A.",
       "phase": "4",
       "priority": 1,
-      "status": "pending_judge",
+      "status": "complete",
       "layer": "python",
       "dependencies": [
         "F-2C",
