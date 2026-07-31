@@ -664,12 +664,16 @@ def run_backtest(
 
         # (e) LEAPS gross mark-to-market (carved-out capital value), scaled by prior
         # closes. During a GTT defensive window all contracts are closed (parked in
-        # leaps_pool), so live MTM is naturally 0.
+        # leaps_pool), so live MTM is naturally 0. On re-entry days (prev_regime == 0,
+        # regime_t == 1) the old per-window ledger has gtt_close_events=() so
+        # _live_contracts would return already-force-closed contracts as live — their
+        # economic value is already in leaps_pool, so skip to avoid double-counting.
         leaps_value = 0.0
         if (
             leaps_ledger is not None
             and underlying_prices is not None
             and not (gtt_active and regime_t == 0)
+            and not (gtt_active and use_leaps and prev_regime == 0 and regime_t == 1)
         ):
             spot = float(underlying_prices.loc[date_ts])
             rfr = float(rfr_series.loc[date_ts]) if rfr_series is not None else 0.0

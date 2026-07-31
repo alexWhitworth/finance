@@ -829,6 +829,35 @@ def test_gtt_leaps_with_dynamic_vix_closes_and_reenters() -> None:
     assert r.weight_history["VTI_LEAPS"].iloc[200:250].abs().max() == 0.0
 
 
+def test_reentry_return_not_double_counted() -> None:
+    """On the re-entry day the daily return must not double-count LEAPS value.
+
+    Before the fix, leaps_value was computed from the old per-window ledger whose
+    gtt_close_events is () — so _live_contracts returned already-force-closed
+    contracts as still live.  Their economic value was already in leaps_pool, so
+    nav_before_contrib double-counted them and port_return spiked artificially.
+
+    The NAV series is self-consistent (it is computed after the re-entry rebalance
+    correctly zeros leaps_pool and re-prices from the fresh ledger), so the test
+    verifies that the compounded return series and the NAV series agree: compounding
+    initial_nav by every (1 + return[t]) must reproduce nav[-1].  Uses a
+    zero-contribution config so contributions do not appear in return_series.
+
+    Anchor: prev_total_nav is initialized to initial_nav, so
+    (1+r[0]) = nav[0]/initial_nav, and initial_nav * prod(1+r[t]) = nav[-1].
+    """
+    rd, pd_obj = _make_rd_and_pd(504)
+    idx = pd.DatetimeIndex(rd.returns.index)
+    r = run_backtest(
+        rd, pd_obj, _leaps_only_config(AccountType.TAX_SHELTERED),
+        gtt_signal=_window_signal(idx, 200, 250),
+    )
+    initial_nav = 1_000_000.0  # matches _leaps_only_config
+    compounded_nav = initial_nav * float((1.0 + r.return_series).prod())
+    # Without the fix this differs by the double-counted LEAPS value on re-entry.
+    assert r.nav_series.iloc[-1] == pytest.approx(compounded_nav, rel=1e-9)
+
+
 def test_gtt_leaps_never_long_opens_no_contracts() -> None:
     """An all-Defensive mask with a LEAPS carve-out opens no contracts."""
     rd, pd_obj = _make_rd_and_pd(252)
