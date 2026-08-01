@@ -10,7 +10,8 @@ a "Lifecycle Investing" framework. Optionally supports market timing signal for 
 
 Multi-asset portfolio construction follows standard Modern Portfolio Theory, All-Weather, 
 and/or Risk Parity frameworks:
-                       
+
+```                       
               RISING GROWTH                 FALLING GROWTH
         ┌────────────────────────────┬──────────────────────────────┐
         │                            │                              │
@@ -23,6 +24,7 @@ and/or Risk Parity frameworks:
  INFL   │  • VXUS (Ex-US Equity      │  • MUB (Muni TEY Yield/Cash  │
         │          Delta)            │       Taxable Accounts)      │
         └────────────────────────────┴──────────────────────────────┘
+```
 
 ## Features
 
