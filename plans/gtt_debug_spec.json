@@ -1,0 +1,1355 @@
+{
+  "spec_version": "1.0.0",
+  "generated_at": "2026-07-31T00:00:00Z",
+  "project": {
+    "name": "run_backtest Decomposition",
+    "description": "Refactor the monolithic run_backtest() into a sequenced pipeline of pure step functions over an explicit PortfolioState frozen dataclass, fixing two GTT LEAPS accounting bugs and enabling atomic unit-testing of each day-step in isolation.",
+    "overview": "run_backtest() in src/finance/portfolio.py is ~400 lines of interleaved mutable state. Two production bugs (LEAPS double-count on re-entry, IV mismatch on re-entry) were both caused by leaps_value being read, overwritten, and re-read within the same loop iteration with no invariant boundary. The redesign introduces PortfolioState (frozen dataclass encapsulating all loop-local state), DayInputs (per-day read-only inputs), and BacktestContext (immutable precomputed config/series). The external run_backtest signature and BacktestResult are frozen. All downstream contracts (metrics.py, figures.py, leverage.py) are unchanged."
+  },
+  "tech_stack": {
+    "language": "Python",
+    "python_version": "3.13",
+    "rust": {
+      "enabled": false,
+      "edition": null,
+      "pyo3_version": null,
+      "build_tool": null
+    },
+    "frameworks": ["pandas", "numpy", "scipy"],
+    "testing": {
+      "unit": "pytest",
+      "property_based": "hypothesis",
+      "mutation": "mutmut",
+      "type_checking": "mypy --strict",
+      "linting": "ruff"
+    },
+    "key_libraries": [
+      "finance.leverage",
+      "finance.returns",
+      "finance.data",
+      "finance.gtt",
+      "finance.consts"
+    ],
+    "graphics": null
+  },
+  "build": {
+    "dev_install_cmd": "uv pip install -e .",
+    "requires_rust_toolchain": false
+  },
+  "data_schemas": [
+    {
+      "id": "DS-001",
+      "name": "PortfolioState",
+      "description": "Immutable snapshot of all mutable per-day loop state. Every mutation produces a new instance via dataclasses.replace(). Accumulators (all_window_ledgers, all_gtt_closes) are tuples to ensure pure step functions.",
+      "immutable": true,
+      "layer": "python",
+      "fields": [
+        {"name": "holdings", "type": "dict[str, float]", "required": true, "description": "Dollar value per base asset; governed assets zeroed during defensive windows. Dict reference is frozen; step functions construct new dicts."},
+        {"name": "defensive_sleeve", "type": "float", "required": true, "description": "Governed equity capital swept in during GTT defensive windows."},
+        {"name": "leaps_pool", "type": "float", "required": true, "description": "Force-closed LEAPS net proceeds parked during defensive windows."},
+        {"name": "leaps_value", "type": "float", "required": true, "description": "Current LEAPS mark-to-market. Set by _compute_leaps_mtm (suppressed on re-entry days) or overwritten by _apply_gtt_reentry."},
+        {"name": "prev_total_nav", "type": "float", "required": true, "description": "End-of-day NAV from t-1; denominator of port_return calculation."},
+        {"name": "prev_regime", "type": "int", "required": true, "description": "GTT regime on t-1: 1=Long, 0=Defensive. Drives transition detection."},
+        {"name": "prev_date_ts", "type": "pd.Timestamp | None", "required": true, "description": "Trading date of t-1; used for force-close spot/IV lookup on Long->Defensive day."},
+        {"name": "leaps_ledger", "type": "LeapsLedger | None", "required": true, "description": "Active per-window LEAPS simulation ledger; replaced on each GTT re-entry."},
+        {"name": "leaps_scale", "type": "dict[LeapsContract, float]", "required": true, "description": "Surviving fraction per contract after drift partial-closes; keyed by original contract, value in (0, 1]."},
+        {"name": "all_window_ledgers", "type": "tuple[LeapsLedger, ...]", "required": true, "description": "Immutable accumulator: one ledger per Long window for final assembly."},
+        {"name": "all_gtt_closes", "type": "tuple[LeapsGttCloseEvent, ...]", "required": true, "description": "Immutable accumulator: all GTT force-close events across all defensive transitions."}
+      ]
+    },
+    {
+      "id": "DS-002",
+      "name": "DayInputs",
+      "description": "Per-day read-only inputs extracted from precomputed series before the step pipeline runs. No field contains data with timestamp > date_ts (temporal invariant T1).",
+      "immutable": true,
+      "layer": "python",
+      "fields": [
+        {"name": "date_ts", "type": "pd.Timestamp", "required": true, "description": "Current trading day."},
+        {"name": "day_ret", "type": "pd.Series", "required": true, "description": "Asset returns for this day, indexed by ticker."},
+        {"name": "regime_t", "type": "int", "required": true, "description": "GTT regime for today: 0=Defensive, 1=Long (from mask_aligned)."},
+        {"name": "def_gross_return", "type": "float", "required": true, "description": "Blended defensive sleeve return for today (0.0 if GTT inactive)."},
+        {"name": "spot", "type": "float | None", "required": true, "description": "Underlying LEAPS spot price at date_ts (None if no LEAPS)."},
+        {"name": "raw_vix_value", "type": "float | None", "required": true, "description": "Raw VIX at date_ts (None if no vol_prices). Used as creation IV on re-entry."},
+        {"name": "mtm_iv_value", "type": "float | None", "required": true, "description": "30-day rolling mean VIX at date_ts (None or NaN during 29-day warmup). Used for daily MTM."},
+        {"name": "rfr", "type": "float", "required": true, "description": "Risk-free rate at date_ts."},
+        {"name": "is_month_end", "type": "bool", "required": true, "description": "True if date_ts is the last trading day of a calendar month."},
+        {"name": "is_rebal_date", "type": "bool", "required": true, "description": "True if date_ts is a scheduled quarterly rebalance date."}
+      ]
+    },
+    {
+      "id": "DS-003",
+      "name": "BacktestContext",
+      "description": "Immutable per-backtest configuration and precomputed series. Constructed once before the loop. Contains no per-day state (PortfolioState) or per-day scalars (DayInputs).",
+      "immutable": true,
+      "layer": "python",
+      "fields": [
+        {"name": "base_assets", "type": "tuple[str, ...]", "required": true, "description": "Asset tickers that are NOT LEAPS carve-outs."},
+        {"name": "leaps_keys", "type": "tuple[str, ...]", "required": true, "description": "Asset keys ending in _LEAPS suffix."},
+        {"name": "leaps_fraction", "type": "float", "required": true, "description": "Sum of target weights for leaps_keys; fraction of NAV allocated to LEAPS."},
+        {"name": "base_target_w", "type": "pd.Series", "required": true, "description": "Normalized weights over base_assets only (sums to 1.0)."},
+        {"name": "governed_base", "type": "tuple[str, ...]", "required": true, "description": "Subset of base_assets governed by GTT signal (VTI and any GTT_EQUITY_TICKERS)."},
+        {"name": "gtt_active", "type": "bool", "required": true, "description": "True when gtt_signal is provided and portfolio holds a governed ticker."},
+        {"name": "defensive_weights", "type": "dict[str, float]", "required": true, "description": "Weights for the defensive sleeve; may include R_f sentinel key."},
+        {"name": "use_leaps", "type": "bool", "required": true, "description": "True when any leaps_keys are present in target_weights."},
+        {"name": "iv", "type": "float", "required": true, "description": "IV floor: config.leaps_config.iv or DEFAULT_IV."},
+        {"name": "leaps_monthly", "type": "float", "required": true, "description": "Monthly contribution fraction allocated to LEAPS."},
+        {"name": "base_contribution", "type": "float", "required": true, "description": "Monthly contribution fraction allocated to base holdings."},
+        {"name": "config", "type": "PortfolioConfig", "required": true, "description": "Full portfolio config; passed through for run_leaps_simulation calls."},
+        {"name": "return_data", "type": "ReturnData", "required": true, "description": "Return data; passed through for risk_free_rate in run_leaps_simulation."},
+        {"name": "underlying_prices", "type": "pd.Series | None", "required": true, "description": "LEAPS underlying spot prices aligned to backtest index."},
+        {"name": "raw_vix", "type": "pd.Series | None", "required": true, "description": "Raw VIX series aligned to backtest index (unsmoothed)."},
+        {"name": "mtm_iv_series", "type": "pd.Series | None", "required": true, "description": "30-day rolling mean of raw_vix; NaN for first 29 days."},
+        {"name": "rfr_series", "type": "pd.Series | None", "required": true, "description": "Risk-free rate series aligned to backtest index."},
+        {"name": "mask_aligned", "type": "pd.Series | None", "required": true, "description": "0/1 GTT position mask aligned to backtest index."},
+        {"name": "def_gross", "type": "pd.Series | None", "required": true, "description": "Blended daily defensive sleeve return series."},
+        {"name": "rebal_dates", "type": "frozenset[pd.Timestamp]", "required": true, "description": "O(1)-lookup set of scheduled quarterly rebalance dates."},
+        {"name": "month_end_dates", "type": "frozenset[pd.Timestamp]", "required": true, "description": "O(1)-lookup set of last trading days of each calendar month."},
+        {"name": "long_window_end", "type": "dict[pd.Timestamp, pd.Timestamp]", "required": true, "description": "Maps each Long-window start date to its end date; used to slice prices for re-entry LEAPS simulations."},
+        {"name": "w", "type": "pd.Series", "required": true, "description": "Full target weight Series (including LEAPS keys); used for drift check and weight_row assembly."}
+      ]
+    }
+  ],
+  "api_contracts": [
+    {
+      "id": "AC-001",
+      "name": "_build_context",
+      "description": "Validate all run_backtest inputs and precompute all series and index sets. Contains all current ValueError guards. Returns immutable BacktestContext.",
+      "layer": "python",
+      "pure": true,
+      "inputs": [
+        {"name": "return_data", "type": "ReturnData"},
+        {"name": "price_data", "type": "PriceData"},
+        {"name": "config", "type": "PortfolioConfig"},
+        {"name": "gtt_signal", "type": "GttSignalData | None"}
+      ],
+      "outputs": [{"name": "ctx", "type": "BacktestContext"}],
+      "raises": ["ValueError: if gtt_signal/config.gtt_config mismatch", "ValueError: if assets missing from return_data", "ValueError: if LEAPS underlying absent from price_data", "ValueError: if multiple LEAPS underlyings", "ValueError: if leaps_config is None when LEAPS keys present"],
+      "ffi_notes": null
+    },
+    {
+      "id": "AC-002",
+      "name": "_build_initial_state",
+      "description": "Construct the day-0 PortfolioState: deploy initial capital into holdings, run first LEAPS simulation scoped to the first Long window.",
+      "layer": "python",
+      "pure": true,
+      "inputs": [{"name": "ctx", "type": "BacktestContext"}],
+      "outputs": [{"name": "state", "type": "PortfolioState"}],
+      "raises": [],
+      "ffi_notes": null
+    },
+    {
+      "id": "AC-003",
+      "name": "_extract_day_inputs",
+      "description": "Pure index lookup: extract per-day scalar values from precomputed series in ctx for the given date. No computation beyond index access and None guards.",
+      "layer": "python",
+      "pure": true,
+      "inputs": [
+        {"name": "date", "type": "pd.Timestamp"},
+        {"name": "ctx", "type": "BacktestContext"}
+      ],
+      "outputs": [{"name": "inputs", "type": "DayInputs"}],
+      "raises": [],
+      "ffi_notes": null
+    },
+    {
+      "id": "AC-004",
+      "name": "_apply_gtt_open",
+      "description": "Sweep governed equity holdings into defensive_sleeve at open of a defensive day. No-op on Long days or when GTT inactive.",
+      "layer": "python",
+      "pure": true,
+      "inputs": [
+        {"name": "state", "type": "PortfolioState"},
+        {"name": "inputs", "type": "DayInputs"},
+        {"name": "ctx", "type": "BacktestContext"}
+      ],
+      "outputs": [{"name": "state", "type": "PortfolioState"}],
+      "raises": [],
+      "ffi_notes": null
+    },
+    {
+      "id": "AC-005",
+      "name": "_apply_gtt_force_close",
+      "description": "Force-close all live LEAPS contracts on Long->Defensive transition. Appends LeapsGttCloseEvent to all_gtt_closes; adds net_proceeds to leaps_pool. No-op if not a transition day.",
+      "layer": "python",
+      "pure": true,
+      "inputs": [
+        {"name": "state", "type": "PortfolioState"},
+        {"name": "inputs", "type": "DayInputs"},
+        {"name": "ctx", "type": "BacktestContext"}
+      ],
+      "outputs": [{"name": "state", "type": "PortfolioState"}],
+      "raises": [],
+      "ffi_notes": null
+    },
+    {
+      "id": "AC-006",
+      "name": "_apply_returns",
+      "description": "Compound base holdings by today's asset returns: holdings[a] *= (1 + day_ret[a]) for each base asset.",
+      "layer": "python",
+      "pure": true,
+      "inputs": [
+        {"name": "state", "type": "PortfolioState"},
+        {"name": "inputs", "type": "DayInputs"},
+        {"name": "ctx", "type": "BacktestContext"}
+      ],
+      "outputs": [{"name": "state", "type": "PortfolioState"}],
+      "raises": [],
+      "ffi_notes": null
+    },
+    {
+      "id": "AC-007",
+      "name": "_apply_defensive_compounding",
+      "description": "Compound defensive_sleeve and leaps_pool by blended defensive return. Fires on defensive days and re-entry day (prev_regime=0). No-op when GTT inactive.",
+      "layer": "python",
+      "pure": true,
+      "inputs": [
+        {"name": "state", "type": "PortfolioState"},
+        {"name": "inputs", "type": "DayInputs"},
+        {"name": "ctx", "type": "BacktestContext"}
+      ],
+      "outputs": [{"name": "state", "type": "PortfolioState"}],
+      "raises": [],
+      "ffi_notes": null
+    },
+    {
+      "id": "AC-008",
+      "name": "_compute_leaps_mtm",
+      "description": "Mark live LEAPS contracts to market using smoothed MTM IV; stores result in state.leaps_value. Suppressed (leaps_value=0.0) on defensive days and re-entry days (Bug 1 fix: old ledger would return stale contracts). Uses max(mtm_iv_value, ctx.iv) if mtm_iv_value is not NaN; else ctx.iv.",
+      "layer": "python",
+      "pure": true,
+      "inputs": [
+        {"name": "state", "type": "PortfolioState"},
+        {"name": "inputs", "type": "DayInputs"},
+        {"name": "ctx", "type": "BacktestContext"}
+      ],
+      "outputs": [{"name": "state", "type": "PortfolioState"}],
+      "raises": [],
+      "ffi_notes": null
+    },
+    {
+      "id": "AC-009",
+      "name": "_compute_nav_before_contrib",
+      "description": "Return sum(holdings) + leaps_value + defensive_sleeve + leaps_pool. Pure arithmetic, no mutation. Used as pre-contribution NAV for port_return and contribution sizing.",
+      "layer": "python",
+      "pure": true,
+      "inputs": [{"name": "state", "type": "PortfolioState"}],
+      "outputs": [{"name": "nav_before", "type": "float"}],
+      "raises": [],
+      "ffi_notes": null
+    },
+    {
+      "id": "AC-010",
+      "name": "_compute_port_return",
+      "description": "Return nav_before / prev_total_nav - 1.0. Excludes contributions by design (nav_before is pre-contribution). Pure arithmetic.",
+      "layer": "python",
+      "pure": true,
+      "inputs": [
+        {"name": "nav_before", "type": "float"},
+        {"name": "prev_total_nav", "type": "float"}
+      ],
+      "outputs": [{"name": "port_return", "type": "float"}],
+      "raises": [],
+      "ffi_notes": null
+    },
+    {
+      "id": "AC-011",
+      "name": "_apply_contribution",
+      "description": "Add monthly contribution to holdings on month-end days. Base share proportional to base_target_w. On defensive days: governed-ticker share to defensive_sleeve; LEAPS share to leaps_pool. No-op if not month-end.",
+      "layer": "python",
+      "pure": true,
+      "inputs": [
+        {"name": "state", "type": "PortfolioState"},
+        {"name": "inputs", "type": "DayInputs"},
+        {"name": "ctx", "type": "BacktestContext"},
+        {"name": "nav_before", "type": "float"}
+      ],
+      "outputs": [{"name": "state", "type": "PortfolioState"}],
+      "raises": [],
+      "ffi_notes": null
+    },
+    {
+      "id": "AC-012",
+      "name": "_apply_rebalance",
+      "description": "Realign base holdings to base_target_w. QUARTERLY: fires on is_rebal_date, NAV-neutral. DRIFT: fires on is_month_end if drift band breached; also handles LEAPS overshoot via leaps_scale.",
+      "layer": "python",
+      "pure": true,
+      "inputs": [
+        {"name": "state", "type": "PortfolioState"},
+        {"name": "inputs", "type": "DayInputs"},
+        {"name": "ctx", "type": "BacktestContext"}
+      ],
+      "outputs": [{"name": "state", "type": "PortfolioState"}],
+      "raises": [],
+      "ffi_notes": null
+    },
+    {
+      "id": "AC-013",
+      "name": "_apply_gtt_reentry",
+      "description": "Defensive->Long forced rebalance: redeploy full NAV to target_weights. Step order is load-bearing: (1) compute total, (2) set holdings, (3) zero sleeve/pool, (4) run fresh LEAPS simulation, (5) compute leaps_value at CREATION IV (max(raw_vix_value, ctx.iv)) — NOT smoothed MTM IV (Bug 2 fix). No-op if not a re-entry day.",
+      "layer": "python",
+      "pure": true,
+      "inputs": [
+        {"name": "state", "type": "PortfolioState"},
+        {"name": "inputs", "type": "DayInputs"},
+        {"name": "ctx", "type": "BacktestContext"}
+      ],
+      "outputs": [{"name": "state", "type": "PortfolioState"}],
+      "raises": [],
+      "ffi_notes": null
+    },
+    {
+      "id": "AC-014",
+      "name": "_compute_total_nav",
+      "description": "Return sum(holdings) + leaps_value + defensive_sleeve + leaps_pool after all mutations. Identical formula to _compute_nav_before_contrib but called post-mutation. Separation makes the pre/post distinction explicit.",
+      "layer": "python",
+      "pure": true,
+      "inputs": [{"name": "state", "type": "PortfolioState"}],
+      "outputs": [{"name": "total_nav", "type": "float"}],
+      "raises": [],
+      "ffi_notes": null
+    },
+    {
+      "id": "AC-015",
+      "name": "_build_weight_row",
+      "description": "Compute end-of-day realized weights for weight_history. Base assets: holdings[a]/total_nav. LEAPS: leaps_value*(w[k]/leaps_fraction)/total_nav. Defensive decomposition: parked*(dw)/total_nav for each defensive_weight.",
+      "layer": "python",
+      "pure": true,
+      "inputs": [
+        {"name": "state", "type": "PortfolioState"},
+        {"name": "total_nav", "type": "float"},
+        {"name": "ctx", "type": "BacktestContext"}
+      ],
+      "outputs": [{"name": "weight_row", "type": "dict[str, float]"}],
+      "raises": [],
+      "ffi_notes": null
+    },
+    {
+      "id": "AC-016",
+      "name": "_advance_state",
+      "description": "Update prev_total_nav, prev_regime, prev_date_ts for next iteration. Only these three fields change; all others carry forward unchanged.",
+      "layer": "python",
+      "pure": true,
+      "inputs": [
+        {"name": "state", "type": "PortfolioState"},
+        {"name": "total_nav", "type": "float"},
+        {"name": "inputs", "type": "DayInputs"}
+      ],
+      "outputs": [{"name": "state", "type": "PortfolioState"}],
+      "raises": [],
+      "ffi_notes": null
+    },
+    {
+      "id": "AC-017",
+      "name": "_assemble_leaps_ledger",
+      "description": "Post-loop: freeze leaps_scale into partial_close_events; if GTT+LEAPS active, concatenate all_window_ledgers into one LeapsLedger with gtt_close_events=all_gtt_closes.",
+      "layer": "python",
+      "pure": true,
+      "inputs": [
+        {"name": "state", "type": "PortfolioState"},
+        {"name": "ctx", "type": "BacktestContext"},
+        {"name": "final_date", "type": "pd.Timestamp"}
+      ],
+      "outputs": [{"name": "ledger", "type": "LeapsLedger | None"}],
+      "raises": [],
+      "ffi_notes": null
+    },
+    {
+      "id": "AC-018",
+      "name": "run_backtest",
+      "description": "Public orchestrator — thin shell: _build_context -> _build_initial_state -> loop over step functions -> _assemble_leaps_ledger -> BacktestResult. Signature and return type frozen.",
+      "layer": "python",
+      "pure": true,
+      "inputs": [
+        {"name": "return_data", "type": "ReturnData"},
+        {"name": "price_data", "type": "PriceData"},
+        {"name": "config", "type": "PortfolioConfig"},
+        {"name": "gtt_signal", "type": "GttSignalData | None", "default": "None"}
+      ],
+      "outputs": [{"name": "result", "type": "BacktestResult"}],
+      "raises": ["ValueError: (delegated to _build_context)"],
+      "ffi_notes": null
+    }
+  ],
+  "features": [
+    {
+      "id": "F-001",
+      "name": "PortfolioState dataclass",
+      "description": "Define PortfolioState as @dataclass(frozen=True) with all 11 fields. No methods. Constructable independently for unit testing.",
+      "phase": "1a",
+      "priority": 1,
+      "status": "not_started",
+      "layer": "python",
+      "dependencies": [],
+      "linked_schemas": ["DS-001"],
+      "linked_apis": [],
+      "invariants": {
+        "temporal_bounds": null,
+        "accounting_oracle": null,
+        "composition_scope": "ATOMIC",
+        "plausibility_range": null,
+        "realism_requirements": null
+      },
+      "performance_requirements": {
+        "complexity_budget": "O(1) construction"
+      },
+      "property_based_testing": {
+        "enabled": false,
+        "rationale_if_disabled": "Pure data container; no logic to property-test at this phase."
+      },
+      "mutation_testing": {
+        "enabled": false,
+        "rationale_if_disabled": "No logic in dataclass definition; mutation testing applies to step functions."
+      },
+      "acceptance_criteria": [
+        "mypy --strict passes on PortfolioState definition with zero errors",
+        "PortfolioState(...) is constructable in a pytest fixture with injected values for all 11 fields without raising"
+      ],
+      "test_requirements": [
+        {"file": "tests/test_portfolio_state.py", "description": "Construct PortfolioState with known field values; assert each field is accessible and frozen (assignment raises FrozenInstanceError)."}
+      ],
+      "edge_cases": [
+        "holdings is an empty dict (no base assets)",
+        "all_window_ledgers and all_gtt_closes are empty tuples (no GTT)"
+      ],
+      "clarification_needed": false,
+      "clarification_notes": null
+    },
+    {
+      "id": "F-002",
+      "name": "DayInputs dataclass",
+      "description": "Define DayInputs as @dataclass(frozen=True) with all 10 fields. No field may contain data with timestamp > date_ts.",
+      "phase": "1b",
+      "priority": 1,
+      "status": "not_started",
+      "layer": "python",
+      "dependencies": [],
+      "linked_schemas": ["DS-002"],
+      "linked_apis": [],
+      "invariants": {
+        "temporal_bounds": "No field of DayInputs[t] has timestamp > date_ts. Enforced by construction in _extract_day_inputs.",
+        "accounting_oracle": null,
+        "composition_scope": "ATOMIC",
+        "plausibility_range": null,
+        "realism_requirements": null
+      },
+      "performance_requirements": {
+        "complexity_budget": "O(1) construction"
+      },
+      "property_based_testing": {
+        "enabled": false,
+        "rationale_if_disabled": "Pure data container."
+      },
+      "mutation_testing": {
+        "enabled": false,
+        "rationale_if_disabled": "No logic in dataclass definition."
+      },
+      "acceptance_criteria": [
+        "mypy --strict passes on DayInputs definition with zero errors",
+        "DayInputs(...) is constructable in a pytest fixture with all fields populated"
+      ],
+      "test_requirements": [
+        {"file": "tests/test_portfolio_state.py", "description": "Construct DayInputs with known values; assert frozen (FrozenInstanceError on assignment)."}
+      ],
+      "edge_cases": [
+        "spot=None when no LEAPS configured",
+        "raw_vix_value=None when no vol_prices",
+        "mtm_iv_value=None during 29-day warmup window"
+      ],
+      "clarification_needed": false,
+      "clarification_notes": null
+    },
+    {
+      "id": "F-003",
+      "name": "BacktestContext dataclass",
+      "description": "Define BacktestContext as @dataclass(frozen=True) with all 22 fields. rebal_dates and month_end_dates use frozenset for O(1) lookup.",
+      "phase": "1c",
+      "priority": 1,
+      "status": "not_started",
+      "layer": "python",
+      "dependencies": [],
+      "linked_schemas": ["DS-003"],
+      "linked_apis": [],
+      "invariants": {
+        "temporal_bounds": "All precomputed series are computed before the loop begins. No series is mutated during iteration.",
+        "accounting_oracle": null,
+        "composition_scope": "ATOMIC",
+        "plausibility_range": null,
+        "realism_requirements": null
+      },
+      "performance_requirements": {
+        "complexity_budget": "O(1) membership test on rebal_dates and month_end_dates"
+      },
+      "property_based_testing": {
+        "enabled": false,
+        "rationale_if_disabled": "Pure data container."
+      },
+      "mutation_testing": {
+        "enabled": false,
+        "rationale_if_disabled": "No logic in dataclass definition."
+      },
+      "acceptance_criteria": [
+        "mypy --strict passes on BacktestContext definition with zero errors",
+        "rebal_dates and month_end_dates are frozenset; membership test is O(1)"
+      ],
+      "test_requirements": [
+        {"file": "tests/test_portfolio_state.py", "description": "Construct BacktestContext with known values; assert rebal_dates is frozenset instance."}
+      ],
+      "edge_cases": [
+        "governed_base is empty tuple (no GTT equity tickers in portfolio)",
+        "long_window_end is empty dict (all-Long signal)"
+      ],
+      "clarification_needed": false,
+      "clarification_notes": null
+    },
+    {
+      "id": "F-004",
+      "name": "_build_context extraction",
+      "description": "Extract all pre-loop validation and precomputed series logic from run_backtest into _build_context. All ValueError guards move here. Returns BacktestContext.",
+      "phase": "2a",
+      "priority": 2,
+      "status": "not_started",
+      "layer": "python",
+      "dependencies": ["F-001", "F-002", "F-003"],
+      "linked_schemas": ["DS-003"],
+      "linked_apis": ["AC-001"],
+      "invariants": {
+        "temporal_bounds": "mtm_iv_series[t] = rolling_mean(raw_vix[t-29:t]). Causal: only VIX values <= t are used.",
+        "accounting_oracle": null,
+        "composition_scope": "ATOMIC",
+        "plausibility_range": null,
+        "realism_requirements": null
+      },
+      "performance_requirements": {
+        "complexity_budget": "O(n) in length of return series for series alignment and rolling mean"
+      },
+      "property_based_testing": {
+        "enabled": false,
+        "rationale_if_disabled": "Validation and alignment logic; behavior tested via explicit error cases."
+      },
+      "mutation_testing": {
+        "enabled": true
+      },
+      "acceptance_criteria": [
+        "All existing run_backtest ValueError guard tests pass when routed through _build_context",
+        "mtm_iv_series[t] equals manual rolling_mean(raw_vix[t-29:t]) within 1e-12 tolerance for a spot-checked date"
+      ],
+      "test_requirements": [
+        {"file": "tests/test_portfolio_step_functions.py", "description": "Unit tests for all ValueError cases. Spot-check mtm_iv_series causality."}
+      ],
+      "edge_cases": [
+        "gtt_signal provided but config.gtt_config is None (raises ValueError)",
+        "LEAPS keys present but leaps_config is None (raises ValueError)",
+        "vol_prices is empty DataFrame (raw_vix and mtm_iv_series remain None)"
+      ],
+      "clarification_needed": false,
+      "clarification_notes": null
+    },
+    {
+      "id": "F-005",
+      "name": "_build_initial_state extraction",
+      "description": "Extract day-0 capital deployment from run_backtest. Sets holdings from initial_nav * (1 - leaps_fraction) * base_target_w. Runs first LEAPS simulation scoped to first Long window.",
+      "phase": "2b",
+      "priority": 2,
+      "status": "not_started",
+      "layer": "python",
+      "dependencies": ["F-003", "F-004"],
+      "linked_schemas": ["DS-001", "DS-003"],
+      "linked_apis": ["AC-002"],
+      "invariants": {
+        "temporal_bounds": null,
+        "accounting_oracle": "sum(state.holdings.values()) == initial_nav * (1 - leaps_fraction) within 1e-9",
+        "composition_scope": "ATOMIC",
+        "plausibility_range": null,
+        "realism_requirements": null
+      },
+      "performance_requirements": {
+        "complexity_budget": "O(|base_assets|)"
+      },
+      "property_based_testing": {
+        "enabled": false,
+        "rationale_if_disabled": "Deterministic initialization; exact values tested directly."
+      },
+      "mutation_testing": {
+        "enabled": true
+      },
+      "acceptance_criteria": [
+        "sum(state.holdings.values()) == initial_nav * (1 - leaps_fraction) within tolerance 1e-9",
+        "state.prev_total_nav == config.initial_nav exactly"
+      ],
+      "test_requirements": [
+        {"file": "tests/test_portfolio_step_functions.py", "description": "Inject BacktestContext; assert holdings sum and prev_total_nav."}
+      ],
+      "edge_cases": [
+        "leaps_fraction = 0.0 (no LEAPS; all capital in holdings)",
+        "All-defensive first window (long_wins is empty; no initial LEAPS contracts)"
+      ],
+      "clarification_needed": false,
+      "clarification_notes": null
+    },
+    {
+      "id": "F-006",
+      "name": "_extract_day_inputs extraction",
+      "description": "Pure index lookup function. Extracts per-day scalars from precomputed context series. No computation beyond index access and None guards.",
+      "phase": "2c",
+      "priority": 2,
+      "status": "not_started",
+      "layer": "python",
+      "dependencies": ["F-002", "F-003"],
+      "linked_schemas": ["DS-002"],
+      "linked_apis": ["AC-003"],
+      "invariants": {
+        "temporal_bounds": "All extracted values are from ctx series at index date_ts or earlier (no forward-fill beyond date_ts). Verified by asserting NaN beyond win_end does not affect extracted value.",
+        "accounting_oracle": null,
+        "composition_scope": "ATOMIC",
+        "plausibility_range": null,
+        "realism_requirements": null
+      },
+      "performance_requirements": {
+        "complexity_budget": "O(1) per call (index lookup)"
+      },
+      "property_based_testing": {
+        "enabled": false,
+        "rationale_if_disabled": "Pure lookup; exact field values tested directly."
+      },
+      "mutation_testing": {
+        "enabled": true
+      },
+      "acceptance_criteria": [
+        "For a known date, all DayInputs fields match expected values from precomputed series within 1e-12",
+        "When mtm_iv_series has NaN at date_ts (warmup period), DayInputs.mtm_iv_value is None or NaN (not a filled value)"
+      ],
+      "test_requirements": [
+        {"file": "tests/test_portfolio_step_functions.py", "description": "Inject BacktestContext with known series; assert all DayInputs fields for a specific date."}
+      ],
+      "edge_cases": [
+        "date_ts in first 29 days (mtm_iv_value is NaN)",
+        "raw_vix is None (raw_vix_value returns None)"
+      ],
+      "clarification_needed": false,
+      "clarification_notes": null
+    },
+    {
+      "id": "F-007",
+      "name": "_apply_gtt_open extraction",
+      "description": "Sweep governed equity holdings into defensive_sleeve at open of a defensive day. No-op on Long days or GTT-inactive portfolios.",
+      "phase": "2d",
+      "priority": 2,
+      "status": "not_started",
+      "layer": "python",
+      "dependencies": ["F-001", "F-002", "F-003"],
+      "linked_schemas": ["DS-001"],
+      "linked_apis": ["AC-004"],
+      "invariants": {
+        "temporal_bounds": null,
+        "accounting_oracle": "defensive_sleeve_out == defensive_sleeve_in + sum(holdings_in[k] for k in governed_base). holdings_out[k] == 0.0 for k in governed_base.",
+        "composition_scope": "ATOMIC",
+        "plausibility_range": null,
+        "realism_requirements": null
+      },
+      "performance_requirements": {
+        "complexity_budget": "O(|governed_base|)"
+      },
+      "property_based_testing": {
+        "enabled": true,
+        "strategy": "hypothesis: random holdings dict, random governed_base subset. Assert total (holdings + sleeve) is conserved."
+      },
+      "mutation_testing": {
+        "enabled": true
+      },
+      "acceptance_criteria": [
+        "After _apply_gtt_open on a defensive day: holdings[k] == 0.0 for all k in governed_base",
+        "After _apply_gtt_open on a Long day: state is unchanged (identity)"
+      ],
+      "test_requirements": [
+        {"file": "tests/test_portfolio_step_functions.py", "description": "Inject PortfolioState with non-zero governed holdings. Assert sweep and no-op cases."}
+      ],
+      "edge_cases": [
+        "governed_base is empty (no VTI in portfolio; GTT is no-op)",
+        "holdings[k] == 0.0 already (double-sweep does not go negative)"
+      ],
+      "clarification_needed": false,
+      "clarification_notes": null
+    },
+    {
+      "id": "F-008",
+      "name": "_apply_gtt_force_close extraction",
+      "description": "Force-close all live LEAPS contracts on Long->Defensive transition. Invariant A3: leaps_pool_delta == sum(evt.net_proceeds for new events).",
+      "phase": "2e",
+      "priority": 2,
+      "status": "not_started",
+      "layer": "python",
+      "dependencies": ["F-001", "F-002", "F-003"],
+      "linked_schemas": ["DS-001"],
+      "linked_apis": ["AC-005"],
+      "invariants": {
+        "temporal_bounds": "Force-close is priced at prev_date_ts spot/IV — the last Long day's close. No future data used.",
+        "accounting_oracle": "leaps_pool_out == leaps_pool_in + sum(evt.net_proceeds for evt in new_events). len(state.all_gtt_closes) increases by number of live contracts closed.",
+        "composition_scope": "ATOMIC",
+        "plausibility_range": null,
+        "realism_requirements": null
+      },
+      "performance_requirements": {
+        "complexity_budget": "O(|live_contracts|)"
+      },
+      "property_based_testing": {
+        "enabled": true,
+        "strategy": "hypothesis: vary n_contracts, spot, IV. Assert pool conservation invariant A3."
+      },
+      "mutation_testing": {
+        "enabled": true
+      },
+      "acceptance_criteria": [
+        "leaps_pool_out == leaps_pool_in + sum(evt.net_proceeds) within tolerance 1e-9 (invariant A3)",
+        "No-op when prev_regime == 1 or leaps_ledger is None: state returned unchanged"
+      ],
+      "test_requirements": [
+        {"file": "tests/test_portfolio_step_functions.py", "description": "Inject state with live contracts and prev_regime=1, regime_t=0. Assert A3. Test no-op conditions."}
+      ],
+      "edge_cases": [
+        "leaps_ledger has no live contracts (already expired or rolled; no events added)",
+        "TAX_SHELTERED account: tax_paid == 0.0 for all events"
+      ],
+      "clarification_needed": false,
+      "clarification_notes": null
+    },
+    {
+      "id": "F-009",
+      "name": "_apply_returns and _apply_defensive_compounding extraction",
+      "description": "Compound base holdings by asset returns. Compound defensive_sleeve and leaps_pool by blended defensive return on defensive and re-entry days.",
+      "phase": "2f",
+      "priority": 2,
+      "status": "not_started",
+      "layer": "python",
+      "dependencies": ["F-001", "F-002", "F-003"],
+      "linked_schemas": ["DS-001"],
+      "linked_apis": ["AC-006", "AC-007"],
+      "invariants": {
+        "temporal_bounds": "day_ret uses only returns from date_ts. def_gross_return uses only series values <= date_ts.",
+        "accounting_oracle": "holdings_out[a] == holdings_in[a] * (1 + day_ret[a]) for all a in base_assets",
+        "composition_scope": "ATOMIC",
+        "plausibility_range": null,
+        "realism_requirements": null
+      },
+      "performance_requirements": {
+        "complexity_budget": "O(|base_assets|)"
+      },
+      "property_based_testing": {
+        "enabled": true,
+        "strategy": "hypothesis: random returns in [-0.5, 0.5]. Assert holdings compounding formula exactly."
+      },
+      "mutation_testing": {
+        "enabled": true
+      },
+      "acceptance_criteria": [
+        "Flat returns (day_ret[a]=0.0 for all a): holdings unchanged within 1e-14",
+        "Defensive day with def_gross_return=r: defensive_sleeve_out == defensive_sleeve_in * (1 + r) within 1e-12"
+      ],
+      "test_requirements": [
+        {"file": "tests/test_portfolio_step_functions.py", "description": "Test flat-return no-op, known-return scaling, defensive compounding."}
+      ],
+      "edge_cases": [
+        "def_gross_return is 0.0 (R_f sleeve with zero rate): no compounding",
+        "regime_t=1 and prev_regime=1 (Long day): _apply_defensive_compounding is no-op"
+      ],
+      "clarification_needed": false,
+      "clarification_notes": null
+    },
+    {
+      "id": "F-010",
+      "name": "_compute_leaps_mtm extraction (Bug 1 fix location)",
+      "description": "Mark live LEAPS contracts to market. Suppressed on defensive days and re-entry days (Bug 1 fix: prevents stale ledger double-count). Uses smoothed MTM IV (NaN-guarded fallback to ctx.iv).",
+      "phase": "2g",
+      "priority": 1,
+      "status": "not_started",
+      "layer": "python",
+      "dependencies": ["F-001", "F-002", "F-003"],
+      "linked_schemas": ["DS-001"],
+      "linked_apis": ["AC-008"],
+      "invariants": {
+        "temporal_bounds": "mtm_iv_value = rolling_mean(raw_vix[t-29:t]). Causal. NaN during first 29 days falls back to ctx.iv.",
+        "accounting_oracle": null,
+        "composition_scope": "ATOMIC",
+        "plausibility_range": null,
+        "realism_requirements": null
+      },
+      "performance_requirements": {
+        "complexity_budget": "O(|live_contracts|)"
+      },
+      "property_based_testing": {
+        "enabled": true,
+        "strategy": "hypothesis: vary spot, IV, n_contracts. Assert leaps_value >= 0.0 always."
+      },
+      "mutation_testing": {
+        "enabled": true
+      },
+      "acceptance_criteria": [
+        "Re-entry day (prev_regime=0, regime_t=1): leaps_value == 0.0 exactly (Bug 1 regression)",
+        "Defensive day (regime_t=0): leaps_value == 0.0 exactly",
+        "Normal Long day with known contracts: leaps_value matches manual BS price within 1e-9"
+      ],
+      "test_requirements": [
+        {"file": "tests/test_portfolio_step_functions.py", "description": "Inject state with live contracts. Test all three suppression conditions and the MTM path. Include NaN mtm_iv_value fallback test."}
+      ],
+      "edge_cases": [
+        "mtm_iv_value is NaN (warmup): falls back to ctx.iv without error",
+        "leaps_ledger is None: leaps_value = 0.0 without error"
+      ],
+      "clarification_needed": false,
+      "clarification_notes": null
+    },
+    {
+      "id": "F-011",
+      "name": "_compute_nav_before_contrib and _compute_port_return extraction",
+      "description": "Pure arithmetic helpers. nav_before = sum(holdings) + leaps_value + defensive_sleeve + leaps_pool. port_return = nav_before / prev_total_nav - 1.",
+      "phase": "2h",
+      "priority": 2,
+      "status": "not_started",
+      "layer": "python",
+      "dependencies": ["F-001"],
+      "linked_schemas": ["DS-001"],
+      "linked_apis": ["AC-009", "AC-010"],
+      "invariants": {
+        "temporal_bounds": null,
+        "accounting_oracle": "port_return == nav_before / prev_total_nav - 1.0 exactly (pure arithmetic)",
+        "composition_scope": "ATOMIC",
+        "plausibility_range": "port_return in (-1.0, +inf) for any valid NAV",
+        "realism_requirements": null
+      },
+      "performance_requirements": {
+        "complexity_budget": "O(|base_assets|)"
+      },
+      "property_based_testing": {
+        "enabled": true,
+        "strategy": "hypothesis: random positive holdings, leaps_value, sleeve, pool. Assert nav_before == sum of all components."
+      },
+      "mutation_testing": {
+        "enabled": true
+      },
+      "acceptance_criteria": [
+        "Known state: nav_before == sum(holdings) + leaps_value + defensive_sleeve + leaps_pool within 1e-12",
+        "port_return == nav_before / prev_total_nav - 1.0 within 1e-14"
+      ],
+      "test_requirements": [
+        {"file": "tests/test_portfolio_step_functions.py", "description": "Inject known PortfolioState; assert exact arithmetic."}
+      ],
+      "edge_cases": [
+        "defensive_sleeve and leaps_pool both 0.0 (no GTT): sum still correct",
+        "leaps_value == 0.0 (no LEAPS or defensive window)"
+      ],
+      "clarification_needed": false,
+      "clarification_notes": null
+    },
+    {
+      "id": "F-012",
+      "name": "_apply_contribution extraction",
+      "description": "Add monthly contribution to holdings on month-end days. Routes governed-ticker share to defensive_sleeve on defensive days. Routes LEAPS share to leaps_pool on defensive days.",
+      "phase": "2i",
+      "priority": 2,
+      "status": "not_started",
+      "layer": "python",
+      "dependencies": ["F-001", "F-002", "F-003"],
+      "linked_schemas": ["DS-001"],
+      "linked_apis": ["AC-011"],
+      "invariants": {
+        "temporal_bounds": null,
+        "accounting_oracle": "total_out == total_in + monthly_contribution on month-end days; total_out == total_in on non-month-end days",
+        "composition_scope": "ATOMIC",
+        "plausibility_range": null,
+        "realism_requirements": null
+      },
+      "performance_requirements": {
+        "complexity_budget": "O(|base_assets|)"
+      },
+      "property_based_testing": {
+        "enabled": false,
+        "rationale_if_disabled": "Deterministic routing logic; all branches tested by explicit cases."
+      },
+      "mutation_testing": {
+        "enabled": true
+      },
+      "acceptance_criteria": [
+        "Month-end Long day: sum(holdings_out) == sum(holdings_in) + base_contribution within 1e-9",
+        "Non-month-end day: state returned unchanged (identity)"
+      ],
+      "test_requirements": [
+        {"file": "tests/test_portfolio_step_functions.py", "description": "Test month-end Long, month-end defensive, and non-month-end cases."}
+      ],
+      "edge_cases": [
+        "Month-end AND re-entry day (regime_t=1, is_month_end=True): base contribution goes to holdings, not sleeve",
+        "monthly_contribution == 0.0: no-op regardless of is_month_end"
+      ],
+      "clarification_needed": false,
+      "clarification_notes": null
+    },
+    {
+      "id": "F-013",
+      "name": "_apply_rebalance extraction",
+      "description": "Realign base holdings to base_target_w. QUARTERLY fires on is_rebal_date; DRIFT fires on is_month_end if band breached. Both are NAV-neutral. Drift also handles LEAPS overshoot via leaps_scale.",
+      "phase": "2j",
+      "priority": 2,
+      "status": "not_started",
+      "layer": "python",
+      "dependencies": ["F-001", "F-002", "F-003"],
+      "linked_schemas": ["DS-001"],
+      "linked_apis": ["AC-012"],
+      "invariants": {
+        "temporal_bounds": null,
+        "accounting_oracle": "sum(holdings_out) == sum(holdings_in) (rebalance is NAV-neutral for base holdings). Invariant A5.",
+        "composition_scope": "ATOMIC",
+        "plausibility_range": null,
+        "realism_requirements": null
+      },
+      "performance_requirements": {
+        "complexity_budget": "O(|base_assets|)"
+      },
+      "property_based_testing": {
+        "enabled": true,
+        "strategy": "hypothesis: random holdings, random base_target_w (normalized). Assert sum conservation (A5) after quarterly rebalance."
+      },
+      "mutation_testing": {
+        "enabled": true
+      },
+      "acceptance_criteria": [
+        "QUARTERLY rebalance: sum(holdings_out) == sum(holdings_in) within 1e-9 (A5)",
+        "DRIFT not triggered: state returned unchanged (identity)"
+      ],
+      "test_requirements": [
+        {"file": "tests/test_portfolio_step_functions.py", "description": "Test quarterly rebalance NAV-neutrality, drift trigger/no-trigger, LEAPS overshoot trim."}
+      ],
+      "edge_cases": [
+        "DRIFT triggered on a GTT defensive day: governed holdings are already 0; rebalance only affects non-governed base assets",
+        "leaps_value == 0.0 during drift check (defensive window): overshoot cannot fire"
+      ],
+      "clarification_needed": false,
+      "clarification_notes": null
+    },
+    {
+      "id": "F-014",
+      "name": "_apply_gtt_reentry extraction (Bug 2 fix location)",
+      "description": "Defensive->Long forced rebalance. Steps are load-bearing in fixed order. leaps_value priced at CREATION IV (max(raw_vix_value, ctx.iv)), NOT smoothed MTM IV. Bug 2 fix: ensures leaps_value == capital_deployed on creation day.",
+      "phase": "2k",
+      "priority": 1,
+      "status": "not_started",
+      "layer": "python",
+      "dependencies": ["F-001", "F-002", "F-003"],
+      "linked_schemas": ["DS-001"],
+      "linked_apis": ["AC-013"],
+      "invariants": {
+        "temporal_bounds": "creation_iv = max(raw_vix_value, ctx.iv) uses only VIX at date_ts (not smoothed). No future data.",
+        "accounting_oracle": "sum(new_holdings.values()) + new_leaps_value == pre_reentry_total within 1e-9 (invariant A2). new_leaps_value == total * leaps_fraction for initial contract priced at creation_iv (invariant A4).",
+        "composition_scope": "ATOMIC",
+        "plausibility_range": null,
+        "realism_requirements": null
+      },
+      "performance_requirements": {
+        "complexity_budget": "O(|base_assets| + |live_contracts|)"
+      },
+      "property_based_testing": {
+        "enabled": true,
+        "strategy": "hypothesis: vary leaps_fraction, total NAV, raw_vix_value. Assert A2 and A4 invariants."
+      },
+      "mutation_testing": {
+        "enabled": true
+      },
+      "acceptance_criteria": [
+        "Re-entry day: sum(new_holdings) + new_leaps_value == pre_reentry_total within 1e-9 (A2)",
+        "Re-entry day with elevated-then-dropped VIX: new_leaps_value == total * leaps_fraction within 1e-6 (A4, Bug 2 regression)"
+      ],
+      "test_requirements": [
+        {"file": "tests/test_portfolio_step_functions.py", "description": "Inject state with defensive_sleeve and leaps_pool. Assert A2 and A4. Test elevated-then-dropped VIX scenario (Bug 2 regression). Test no-op when not re-entry day."}
+      ],
+      "edge_cases": [
+        "Re-entry day coincides with month-end: leaps_value may exceed leaps_fraction due to monthly contribution contract (documented assumption AS6)",
+        "leaps_scale has orphaned keys from previous window: cleanup to only current-window contracts (risk R7 mitigation)"
+      ],
+      "clarification_needed": false,
+      "clarification_notes": null
+    },
+    {
+      "id": "F-015",
+      "name": "_advance_state, _build_weight_row, _compute_total_nav, _assemble_leaps_ledger extraction",
+      "description": "Remaining step functions: advance state (update prev_* fields only), build weight row (must sum to 1.0), compute total NAV post-mutation, assemble final ledger from all windows.",
+      "phase": "2l",
+      "priority": 2,
+      "status": "not_started",
+      "layer": "python",
+      "dependencies": ["F-001", "F-002", "F-003"],
+      "linked_schemas": ["DS-001"],
+      "linked_apis": ["AC-014", "AC-015", "AC-016", "AC-017"],
+      "invariants": {
+        "temporal_bounds": null,
+        "accounting_oracle": "sum(weight_row.values()) == 1.0 within 1e-9. _assemble_leaps_ledger: len(final_ledger.gtt_close_events) == len(all_gtt_closes).",
+        "composition_scope": "ATOMIC",
+        "plausibility_range": "weight_row values in [0.0, 1.0]",
+        "realism_requirements": null
+      },
+      "performance_requirements": {
+        "complexity_budget": "O(|base_assets| + |leaps_keys| + |defensive_weights|) for weight_row"
+      },
+      "property_based_testing": {
+        "enabled": false,
+        "rationale_if_disabled": "Deterministic arithmetic; exact values tested directly."
+      },
+      "mutation_testing": {
+        "enabled": true
+      },
+      "acceptance_criteria": [
+        "sum(weight_row.values()) == 1.0 within 1e-9 for any valid state",
+        "After _assemble_leaps_ledger: len(result.gtt_close_events) == len(all_gtt_closes) across two windows"
+      ],
+      "test_requirements": [
+        {"file": "tests/test_portfolio_step_functions.py", "description": "Test weight row sum-to-1 invariant. Test ledger assembly with two windows and known gtt_close_events count."}
+      ],
+      "edge_cases": [
+        "All holdings and sleeve/pool are zero (edge: division by zero in weight_row — guard with total_nav > 0 check)",
+        "GTT active but no LEAPS: gtt_close_events is empty tuple"
+      ],
+      "clarification_needed": false,
+      "clarification_notes": null
+    },
+    {
+      "id": "F-016",
+      "name": "Loop body rewrite",
+      "description": "Replace monolithic run_backtest loop body with the 13-call step function sequence. run_backtest becomes a thin orchestrator. All 450 existing tests must pass with zero test-file changes.",
+      "phase": "3",
+      "priority": 1,
+      "status": "not_started",
+      "layer": "python",
+      "dependencies": ["F-004", "F-005", "F-006", "F-007", "F-008", "F-009", "F-010", "F-011", "F-012", "F-013", "F-014", "F-015"],
+      "linked_schemas": ["DS-001", "DS-002", "DS-003"],
+      "linked_apis": ["AC-018"],
+      "invariants": {
+        "temporal_bounds": "PortfolioState[t] = f(PortfolioState[t-1], DayInputs[t]). No cross-day state leakage.",
+        "accounting_oracle": null,
+        "composition_scope": "INTEGRATION",
+        "plausibility_range": null,
+        "realism_requirements": "All 450 existing tests pass without modification"
+      },
+      "performance_requirements": {
+        "complexity_budget": "O(n * |base_assets|) in number of trading days — same as current"
+      },
+      "property_based_testing": {
+        "enabled": false,
+        "rationale_if_disabled": "Integration correctness verified by existing test suite regression."
+      },
+      "mutation_testing": {
+        "enabled": false,
+        "rationale_if_disabled": "Thin orchestrator only; mutations tested at step-function level."
+      },
+      "acceptance_criteria": [
+        "All 450 existing tests pass with zero changes to test files",
+        "run_backtest loop body is <= 25 lines (13 step calls + output appends + state advance)"
+      ],
+      "test_requirements": [
+        {"file": "tests/test_portfolio.py", "description": "Existing tests — no changes required. All must pass."},
+        {"file": "tests/test_gtt_backtest.py", "description": "Existing GTT tests — no changes required. All must pass."}
+      ],
+      "edge_cases": [
+        "Step function ordering must not be changed during Phase 3 (ordering is load-bearing; see risk R6)"
+      ],
+      "clarification_needed": false,
+      "clarification_notes": null
+    },
+    {
+      "id": "F-017",
+      "name": "Integration test: NAV-return accounting identity (Scenario A)",
+      "description": "For all 4 configs {no GTT, GTT} x {no LEAPS, LEAPS}: nav[-1] == initial_nav * prod(1+r) + sum(contributions). Uses zero-contribution and non-zero contribution variants.",
+      "phase": "4a",
+      "priority": 1,
+      "status": "not_started",
+      "layer": "python",
+      "dependencies": ["F-016"],
+      "linked_schemas": [],
+      "linked_apis": ["AC-018"],
+      "invariants": {
+        "temporal_bounds": null,
+        "accounting_oracle": "nav[-1] == initial_nav * prod(1 + return_series) + sum(monthly_contribution for each month_end_date in backtest). Oracle is deterministic from config and trading calendar.",
+        "composition_scope": "INTEGRATION",
+        "plausibility_range": null,
+        "realism_requirements": "Synthetic corpus with known calendar (fixed seed, deterministic month-end dates)"
+      },
+      "performance_requirements": {
+        "complexity_budget": "O(n) per parametrized case"
+      },
+      "property_based_testing": {
+        "enabled": false,
+        "rationale_if_disabled": "Deterministic accounting identity; parametrized over 4 configs."
+      },
+      "mutation_testing": {
+        "enabled": false,
+        "rationale_if_disabled": "Integration test; mutations caught at step-function level."
+      },
+      "acceptance_criteria": [
+        "All 8 parametrized cases (4 configs x 2 contribution variants) pass within tolerance 1e-9",
+        "Test fails if any step function introduces a contribution that appears in return_series (double-count)"
+      ],
+      "test_requirements": [
+        {"file": "tests/test_backtest_integration.py", "description": "Parametrized integration test over all 4 config combinations. Verify accounting identity I1."}
+      ],
+      "edge_cases": [
+        "GTT+LEAPS with month-end re-entry: must still satisfy identity (verifies R4 risk)"
+      ],
+      "clarification_needed": false,
+      "clarification_notes": null
+    },
+    {
+      "id": "F-018",
+      "name": "Integration test: same-day state consistency (Scenario B)",
+      "description": "For every day t: nav_series[t] == nav_series[t-1] * (1 + return_series[t]) + contribution_on_t. Runs full GTT+LEAPS backtest with step-level assertion hook.",
+      "phase": "4b",
+      "priority": 1,
+      "status": "not_started",
+      "layer": "python",
+      "dependencies": ["F-016"],
+      "linked_schemas": [],
+      "linked_apis": ["AC-018"],
+      "invariants": {
+        "temporal_bounds": null,
+        "accounting_oracle": "nav[t] == nav[t-1] * (1 + r[t]) + contribution_on_t for all t. contribution_on_t = monthly_contribution if is_month_end else 0.",
+        "composition_scope": "INTEGRATION",
+        "plausibility_range": null,
+        "realism_requirements": "504-day synthetic corpus covering at least one defensive window and one re-entry"
+      },
+      "performance_requirements": {
+        "complexity_budget": "O(n) assertions across all trading days"
+      },
+      "property_based_testing": {
+        "enabled": false,
+        "rationale_if_disabled": "Deterministic sequential verification."
+      },
+      "mutation_testing": {
+        "enabled": false,
+        "rationale_if_disabled": "Integration test."
+      },
+      "acceptance_criteria": [
+        "Invariant I2 holds for all ~504 days within tolerance 1e-9",
+        "Test catches Bug 1 if the _compute_leaps_mtm suppression is removed (regression guard)"
+      ],
+      "test_requirements": [
+        {"file": "tests/test_backtest_integration.py", "description": "Run GTT+LEAPS backtest with step-level hook. Assert I2 at every day including month-end re-entry coincidences."}
+      ],
+      "edge_cases": [
+        "Month-end re-entry day: contribution_on_t = monthly_contribution (both base and LEAPS shares)",
+        "First day: nav[0] == initial_nav * (1 + r[0]) (no contribution)"
+      ],
+      "clarification_needed": false,
+      "clarification_notes": null
+    },
+    {
+      "id": "F-019",
+      "name": "Integration test: whipsaw multi-regime lifecycle (Scenario C)",
+      "description": "Two defensive windows, VIX elevated during each and dropped at each re-entry. Verifies no cross-window contract leakage, NAV-return identity at both re-entries, target weights restored, no spike day after re-entry.",
+      "phase": "4c",
+      "priority": 1,
+      "status": "not_started",
+      "layer": "python",
+      "dependencies": ["F-016"],
+      "linked_schemas": [],
+      "linked_apis": ["AC-018"],
+      "invariants": {
+        "temporal_bounds": null,
+        "accounting_oracle": "No contract from window k appears in _live_contracts(ledger, t) for t in window k+1 (invariant I3).",
+        "composition_scope": "INTEGRATION",
+        "plausibility_range": "|return_series[reentry_day + 1]| < 0.05 (no return spike the day after re-entry)",
+        "realism_requirements": "Synthetic corpus >= 504 days with two non-overlapping defensive windows and elevated-then-dropped VIX at each re-entry"
+      },
+      "performance_requirements": {
+        "complexity_budget": "O(n)"
+      },
+      "property_based_testing": {
+        "enabled": false,
+        "rationale_if_disabled": "Scenario requires specific calendar structure; not amenable to pure property generation."
+      },
+      "mutation_testing": {
+        "enabled": false,
+        "rationale_if_disabled": "Integration test."
+      },
+      "acceptance_criteria": [
+        "No contract from window 1 appears as live in window 2 (I3)",
+        "|return_series[reentry_1 + 1]| < 0.05 and |return_series[reentry_2 + 1]| < 0.05 (no spike)"
+      ],
+      "test_requirements": [
+        {"file": "tests/test_backtest_integration.py", "description": "Two-window whipsaw test with elevated VIX. Assert I3, weight restoration, return spike bounds, NAV-return identity at both re-entries."}
+      ],
+      "edge_cases": [
+        "Second re-entry coincides with month-end (tests R4 interaction)",
+        "VIX drops from 0.50 to 0.15 on re-entry (maximum smoothed/raw divergence scenario)"
+      ],
+      "clarification_needed": false,
+      "clarification_notes": null
+    },
+    {
+      "id": "F-020",
+      "name": "Fix test_reentry_creation_iv_matches_mtm_iv_no_gap",
+      "description": "The failing regression test asserts weight == leaps_fraction on re-entry, but hi=250 is a month-end causing two contracts. Fix: assert only on initial capital contract MTM == capital_deployed, not on weight.",
+      "phase": "5",
+      "priority": 1,
+      "status": "not_started",
+      "layer": "python",
+      "dependencies": ["F-017", "F-018", "F-019"],
+      "linked_schemas": [],
+      "linked_apis": [],
+      "invariants": {
+        "temporal_bounds": null,
+        "accounting_oracle": "price_leaps_contract(initial_c, spot, reentry_date, creation_iv, rfr) == total * leaps_fraction within 1e-6 (invariant A4 for initial contract only).",
+        "composition_scope": "ATOMIC",
+        "plausibility_range": null,
+        "realism_requirements": null
+      },
+      "performance_requirements": {
+        "complexity_budget": "O(1)"
+      },
+      "property_based_testing": {
+        "enabled": false,
+        "rationale_if_disabled": "Targeted regression for specific scenario."
+      },
+      "mutation_testing": {
+        "enabled": false,
+        "rationale_if_disabled": "Test-only change."
+      },
+      "acceptance_criteria": [
+        "test_reentry_creation_iv_matches_mtm_iv_no_gap passes (currently failing)",
+        "All 450+ other tests continue to pass"
+      ],
+      "test_requirements": [
+        {"file": "tests/test_gtt_backtest.py", "description": "Update assertion to use price_leaps_contract on initial_c at creation_iv rather than weight check."}
+      ],
+      "edge_cases": [
+        "Multiple contracts purchased on reentry_date (month-end coincidence): use initial_c = contract with largest n_contracts or filter by expected capital"
+      ],
+      "clarification_needed": false,
+      "clarification_notes": null
+    },
+    {
+      "id": "F-021",
+      "name": "End-to-end real corpus validation",
+      "description": "Re-run examples/gtt_leaps.py on 2000-2026 real corpus. Verify plausibility bounds P1-P3: skewness in [-2,+2], excess kurtosis in [-5,+30], GTT LEAPS DRIFT terminal NAV between LEAPS QTR and LEAPS DRIFT.",
+      "phase": "6",
+      "priority": 1,
+      "status": "not_started",
+      "layer": "python",
+      "dependencies": ["F-020"],
+      "linked_schemas": [],
+      "linked_apis": ["AC-018"],
+      "invariants": {
+        "temporal_bounds": null,
+        "accounting_oracle": null,
+        "composition_scope": "INTEGRATION",
+        "plausibility_range": "GTT LEAPS DRIFT skewness in [-2, +2]; excess kurtosis in [-5, +30]; terminal NAV in (LEAPS_QTR_NAV, LEAPS_DRIFT_NAV)",
+        "realism_requirements": "Real 2000-2026 corpus with live VIX data via yfinance. Cannot be verified on synthetic data."
+      },
+      "performance_requirements": {
+        "complexity_budget": "O(n) — ~6500 trading days"
+      },
+      "property_based_testing": {
+        "enabled": false,
+        "rationale_if_disabled": "Requires live market data; not automatable in CI."
+      },
+      "mutation_testing": {
+        "enabled": false,
+        "rationale_if_disabled": "End-to-end validation only."
+      },
+      "acceptance_criteria": [
+        "GTT LEAPS DRIFT skewness in [-2.0, +2.0] on 2000-2026 real corpus",
+        "GTT LEAPS DRIFT terminal NAV is strictly between LEAPS QTR and LEAPS DRIFT terminal NAVs"
+      ],
+      "test_requirements": [
+        {"file": "examples/gtt_leaps.py", "description": "Manual validation run. Not automated CI. Requires FRED_API_KEY and live market data."}
+      ],
+      "edge_cases": [
+        "NAV chart shows no visible step discontinuities at re-entry dates (~2001, ~2009, ~2020)"
+      ],
+      "clarification_needed": false,
+      "clarification_notes": null
+    }
+  ],
+  "risks": [
+    {
+      "id": "R-001",
+      "description": "Mutation through aliased dict: a step function receives state.holdings and mutates it in-place instead of constructing a new dict, silently corrupting the previous PortfolioState. mypy cannot catch this.",
+      "severity": "medium",
+      "mitigation": "Code review gate: every step function that produces a new holdings dict must use a dict literal or dict() constructor. Add a mutation-detection fixture in test_portfolio_step_functions.py that deep-copies state before calling each step function and asserts the copy is unchanged after the call.",
+      "linked_features": ["F-007", "F-008", "F-009", "F-012", "F-013", "F-014"]
+    },
+    {
+      "id": "R-002",
+      "description": "_apply_gtt_reentry reordered before _apply_contribution: if a future developer reorders these calls in run_backtest, NAV on month-end re-entry days changes (contribution would seed into a smaller pre-rebalance total). The ordering is load-bearing.",
+      "severity": "medium",
+      "mitigation": "Document the step sequence in run_backtest with an explicit comment block explaining why each step precedes the next. I2 integration invariant (Scenario B) would catch most ordering violations.",
+      "linked_features": ["F-016", "F-018"]
+    },
+    {
+      "id": "R-003",
+      "description": "O(n^2) tuple accumulation: moving all_window_ledgers and all_gtt_closes to PortfolioState as tuples means each append creates a new tuple. O(n^2) in number of windows. Acceptable for typical 2-8 windows over 26 years; not acceptable if windows become frequent.",
+      "severity": "low",
+      "mitigation": "Document the O(n^2) concern in PortfolioState docstring. If window count exceeds ~50 in a future configuration, switch to a mutable list held in a non-frozen accumulator wrapper outside PortfolioState.",
+      "linked_features": ["F-001", "F-008", "F-014"]
+    },
+    {
+      "id": "R-004",
+      "description": "Month-end re-entry contribution double-count: on a month-end re-entry day, _apply_contribution runs after _apply_gtt_reentry. The interaction between rebalance NAV (computed from pre-contribution total) and the subsequent contribution has never been formally tested.",
+      "severity": "low",
+      "mitigation": "Phase 4b (Scenario B, invariant I2) directly verifies nav[t] == nav[t-1]*(1+r[t]) + contribution[t] for every day including month-end re-entry coincidences.",
+      "linked_features": ["F-018", "F-012", "F-014"]
+    },
+    {
+      "id": "R-005",
+      "description": "NaN in mtm_iv_value during warmup: mtm_iv_series has NaN for the first 29 days. _compute_leaps_mtm must handle NaN gracefully (fall back to ctx.iv). Absence of this guard causes a TypeError.",
+      "severity": "medium",
+      "mitigation": "Preserve existing pd.notna(smoothed) guard in _compute_leaps_mtm. Add explicit unit test for NaN mtm_iv_value input in F-010.",
+      "linked_features": ["F-010"]
+    },
+    {
+      "id": "R-006",
+      "description": "Bug 1 suppression removed by future contributor: if _compute_leaps_mtm loses the re-entry suppression condition (prev_regime==0, regime_t==1), Bug 1 recurs silently. The condition is now named and documented but could be considered 'unnecessary' by a reader unfamiliar with the bug history.",
+      "severity": "low",
+      "mitigation": "The A2 atomic invariant test in F-014 (re-entry NAV-neutrality) would catch this: if stale leaps_value is added, sum(holdings)+leaps_value > pre-reentry total. Document the suppression condition with an explicit comment referencing Bug 1.",
+      "linked_features": ["F-010", "F-014"]
+    },
+    {
+      "id": "R-007",
+      "description": "leaps_scale orphaned keys: on GTT re-entry, a fresh leaps_ledger is created but leaps_scale carries forward keys from the previous window. Orphaned keys are never read (live_contracts returns only new-window contracts) but pollute the dict and could confuse future readers.",
+      "severity": "low",
+      "mitigation": "In _apply_gtt_reentry, return a new leaps_scale dict keyed only to contracts in the new ledger. Alternatively, document the orphaned-key behavior as an accepted invariant in PortfolioState docstring.",
+      "linked_features": ["F-014"]
+    }
+  ],
+  "implementation_phases": [
+    {
+      "phase": 1,
+      "name": "Define dataclasses",
+      "description": "Define PortfolioState, DayInputs, and BacktestContext as @dataclass(frozen=True). No behavior. All must be constructable in isolation for unit testing.",
+      "feature_ids": ["F-001", "F-002", "F-003"]
+    },
+    {
+      "phase": 2,
+      "name": "Extract and unit-test step functions",
+      "description": "Extract each step function from run_backtest, write with _ prefix, add unit tests that inject PortfolioState directly. Includes both bug fix locations: _compute_leaps_mtm (Bug 1 suppression) and _apply_gtt_reentry (Bug 2 creation IV).",
+      "feature_ids": ["F-004", "F-005", "F-006", "F-007", "F-008", "F-009", "F-010", "F-011", "F-012", "F-013", "F-014", "F-015"]
+    },
+    {
+      "phase": 3,
+      "name": "Rewrite loop body",
+      "description": "Replace monolithic run_backtest loop with 13-call step function sequence. run_backtest becomes a thin orchestrator. All 450 existing tests must pass without modification.",
+      "feature_ids": ["F-016"]
+    },
+    {
+      "phase": 4,
+      "name": "Add integration tests",
+      "description": "Three integration scenarios: NAV-return accounting identity across all 4 configs, same-day consistency for every day, whipsaw multi-regime lifecycle with elevated VIX.",
+      "feature_ids": ["F-017", "F-018", "F-019"]
+    },
+    {
+      "phase": 5,
+      "name": "Fix failing regression test",
+      "description": "Fix test_reentry_creation_iv_matches_mtm_iv_no_gap: replace weight assertion with direct MTM check on initial capital contract only.",
+      "feature_ids": ["F-020"]
+    },
+    {
+      "phase": 6,
+      "name": "End-to-end real corpus validation",
+      "description": "Manual validation run of examples/gtt_leaps.py on 2000-2026 real corpus. Verify plausibility bounds P1-P3.",
+      "feature_ids": ["F-021"]
+    }
+  ]
+}
