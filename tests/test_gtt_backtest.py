@@ -858,6 +858,47 @@ def test_reentry_return_not_double_counted() -> None:
     assert r.nav_series.iloc[-1] == pytest.approx(compounded_nav, rel=1e-9)
 
 
+def test_reentry_creation_iv_matches_mtm_iv_no_gap() -> None:
+    """Re-entry day leaps_value must equal the capital deployed (no IV gap).
+
+    Before the fix, re-entry MTM used the 30-day smoothed VIX while contracts
+    were created with raw VIX.  After a defensive window with elevated VIX,
+    smoothed IV >> raw IV on re-entry, so leaps_value > capital_deployed,
+    inflating total_nav and creating a spurious negative return spike the
+    following day as the smoothed IV decayed.
+
+    Setup: VIX is elevated (0.50) through the defensive window and drops to
+    normal (0.20) on re-entry.  The 30-day rolling mean on re-entry day still
+    reflects the elevated window, so smoothed IV >> raw IV.  The fix prices
+    freshly created contracts at creation IV, making leaps_value == capital.
+    """
+    base = _make_price_data(n=504)
+    idx = pd.DatetimeIndex(base.prices.index)
+    lo, hi = 200, 250  # defensive window
+
+    # VIX elevated during defensive window, drops to normal at re-entry
+    vix_vals = np.full(len(idx), 0.20)
+    vix_vals[lo:hi] = 0.50
+    vix = pd.DataFrame({"VTI": vix_vals}, index=idx)
+    pd_obj = PriceData(
+        prices=base.prices, dividends=base.dividends, vol_prices=vix,
+        tickers=base.tickers, start_date=base.start_date,
+        end_date=base.end_date, spliced=base.spliced,
+    )
+    rd = build_return_data(pd_obj, apply_tey=False)
+
+    r = run_backtest(
+        rd, pd_obj, _leaps_only_config(AccountType.TAX_SHELTERED),
+        gtt_signal=_window_signal(idx, lo, hi),
+    )
+    # On re-entry day (hi) the LEAPS weight must equal leaps_fraction (0.5)
+    # within floating-point tolerance.  A valuation gap would push it away
+    # from target and cause a spike in return_series.iloc[hi + 1].
+    assert r.weight_history["VTI_LEAPS"].iloc[hi] == pytest.approx(0.5, abs=1e-6)
+    # The day after re-entry must not show an anomalously large return.
+    assert abs(r.return_series.iloc[hi + 1]) < 0.10
+
+
 def test_gtt_leaps_never_long_opens_no_contracts() -> None:
     """An all-Defensive mask with a LEAPS carve-out opens no contracts."""
     rd, pd_obj = _make_rd_and_pd(252)

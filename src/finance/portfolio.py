@@ -773,17 +773,17 @@ def run_backtest(
                     initial_capital=total * leaps_fraction,
                 )
                 all_window_ledgers.append(leaps_ledger)
-                # Recompute this day's LEAPS MTM from the freshly opened contracts so
-                # the re-entry weight reflects the seeded position immediately.
+                # Price freshly seeded contracts at creation IV (raw VIX floor config.iv),
+                # matching what run_leaps_simulation used. Using smoothed MTM IV here
+                # would make leaps_value != capital_deployed, introducing a valuation gap
+                # that manifests as a spurious return spike on the following day.
                 spot = float(underlying_prices.loc[date_ts])
                 rfr = float(rfr_series.loc[date_ts]) if rfr_series is not None else 0.0
-                day_iv = iv
-                if mtm_iv_series is not None:
-                    smoothed = mtm_iv_series.loc[date_ts]
-                    if pd.notna(smoothed):
-                        day_iv = max(float(smoothed), iv)
+                creation_iv = iv
+                if raw_vix is not None:
+                    creation_iv = max(float(raw_vix.loc[date_ts]), iv)
                 leaps_value = sum(
-                    price_leaps_contract(c, spot, date_ts, day_iv, rfr)
+                    price_leaps_contract(c, spot, date_ts, creation_iv, rfr)
                     for c in _live_contracts(leaps_ledger, date_ts)
                 )
 

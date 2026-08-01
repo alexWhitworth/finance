@@ -26,13 +26,20 @@ and/or Risk Parity frameworks:
 
 ## Features
 
-- **Performance metrics:** annualized return, max drawdown, Sharpe, Sortino, Calmar, Omega ratios, skew, and excess-kurtosis over full period and pre-defined crisis windows (GFC, COVID, 2022 rate hike)
+- **Performance metrics:** annualized return, max drawdown, Sharpe, Sortino, Calmar, Omega ratios,
+skew, and excess-kurtosis over full period and pre-defined crisis windows (GFC, COVID, 2022 rate 
+hike)
 - **TEY adjustment:** muni returns scaled to tax-equivalent yield at 40.8% NIIT
-- **LEAPS leverage:** DITM VTI LEAPS (50% strike, Black-Scholes pricing), with tax-aware biannual roll with LTCG preservation, and taxable vs. tax-sheltered scenarios
-- **Rebalancing** — Quarterly to user-specified weights or monthly threshold-drift (extensible to risk parity)
-- **Portfolio Volatility Forecasting/Attribution:** EWMA vol (λ=0.95), 36-month rolling weekly correlations, per-asset contribution table summing to 1
-- **Asset Splicing** - For commonly used ETFs (eg VTI, MUB), automatic splicing the the oldest available time series of the asset (e.g. VGTSX, VWITX)
-- **Growth Trend Timing (GTT):** Empirically and theoretically justifiable market timing signal for US Equities. 
+- **LEAPS leverage:** DITM VTI LEAPS (50% strike, Black-Scholes pricing), with tax-aware biannual
+roll with LTCG preservation, and taxable vs. tax-sheltered scenarios
+- **Rebalancing** — Quarterly to user-specified weights or monthly threshold-drift (extensible to
+risk parity)
+- **Portfolio Volatility Forecasting/Attribution:** EWMA vol (λ=0.95), 36-month rolling weekly
+correlations, per-asset contribution table summing to 1
+- **Asset Splicing** - For commonly used ETFs (eg VTI, MUB), automatic splicing the the oldest 
+available time series of the asset (e.g. VGTSX, VWITX)
+- **Growth Trend Timing (GTT):** Empirically and theoretically justifiable market timing signal
+for US Equities. 
     - Requires a FRED API Key. [Request one here](https://fred.stlouisfed.org/docs/api/api_key.html).
     - Save your API key in a `.env` file `FRED_API_KEY=<your key>` so that `dotenv` can load it
 
@@ -161,7 +168,8 @@ See [`examples/basic_gtt.py`](examples/basic_gtt.py) for the full runnable versi
 
 ```bibtex
 @book{ayres2010lifecycle,
-  title = {Lifecycle Investing: A New, Safe, and Audacious Way to Improve the Performance of Your Retirement Portfolio},
+  title = {Lifecycle Investing: A New, Safe, and Audacious Way to Improve the Performance of 
+  Your Retirement Portfolio},
   author = {Ayres, Ian and Nalebuff, Barry},
   year = {2010},
   publisher = {Basic Books}
