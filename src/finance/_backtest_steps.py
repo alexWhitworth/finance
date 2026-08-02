@@ -29,6 +29,12 @@ from dataclasses import replace
 
 import pandas as pd
 
+from finance._portfolio_types import (
+    BacktestContext,
+    DayInputs,
+    PortfolioConfig,
+    PortfolioState,
+)
 from finance.consts import (
     DEFAULT_IV,
     DRIFT_BAND_RELATIVE,
@@ -50,13 +56,8 @@ from finance.leverage import (
     price_leaps_contract,
     run_leaps_simulation,
 )
-from finance._portfolio_types import (
-    BacktestContext,
-    DayInputs,
-    PortfolioConfig,
-    PortfolioState,
-)
 from finance.returns import ReturnData
+
 
 # ---------------------------------------------------------------------------
 # Pure helper functions
@@ -122,25 +123,6 @@ def _should_rebalance(
             return True
     return False
 
-
-def apply_contribution(
-    nav: float,
-    contribution: float,
-    weights: pd.Series,
-) -> dict[str, float]:
-    """Allocate a dollar contribution across assets proportional to weights.
-
-    Arguments:
-        nav: Current portfolio NAV (unused in USER_SPECIFIED mode; present for
-            future risk-parity strategies that need the NAV context).
-        contribution: Dollar amount to allocate.
-        weights: Unit-normed asset weights (must sum to 1.0).
-
-    Returns:
-        Mapping of asset → dollar amount allocated from the contribution.
-    """
-    _ = nav  # reserved for future weight strategies that use NAV context
-    return {str(a): contribution * float(weights[a]) for a in weights.index}
 
 # ---------------------------------------------------------------------------
 # GTT pre-compute helpers (pure; used by the run_backtest GTT branch)
@@ -806,7 +788,10 @@ def _apply_contribution(
     if not inputs.is_month_end or not ctx.base_assets:
         return state
 
-    alloc = apply_contribution(nav_before, ctx.base_contribution, ctx.base_target_w)
+    alloc = {
+        str(a): ctx.base_contribution * float(ctx.base_target_w[a])
+        for a in ctx.base_target_w.index
+    }
     new_holdings = dict(state.holdings)
     new_sleeve = state.defensive_sleeve
     new_pool = state.leaps_pool
@@ -968,7 +953,7 @@ def _apply_gtt_reentry(
             iv_series=ctx.raw_vix,
             initial_capital=total * ctx.leaps_fraction,
         )
-        new_window_ledgers = state.all_window_ledgers + (new_ledger,)
+        new_window_ledgers = (*state.all_window_ledgers, new_ledger)
 
         # Bug 2 fix: price at CREATION IV (raw VIX), NOT smoothed MTM IV.
         creation_iv = (

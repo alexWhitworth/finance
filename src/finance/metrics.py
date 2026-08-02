@@ -10,6 +10,7 @@ import numpy as np
 import pandas as pd
 from scipy import stats as scipy_stats
 
+from finance._portfolio_types import BacktestResult
 from finance.consts import (
     CRISIS_PERIODS,
     LEAPS_KEY_SUFFIX,
@@ -23,7 +24,6 @@ from finance.leverage import (
     compute_leaps_tax_summary,
     compute_terminal_nav,
 )
-from finance.portfolio import BacktestResult
 from finance.returns import ReturnData
 from finance.volatility import VolatilityModel, build_vol_contribution_table, forecast_portfolio_vol
 

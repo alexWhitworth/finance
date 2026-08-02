@@ -10,7 +10,6 @@ from finance.leverage import AccountType, LeapsConfig, RebalanceRule, WeightStra
 from finance.portfolio import (
     BacktestResult,
     PortfolioConfig,
-    apply_contribution,
     _get_rebalance_dates,
     run_backtest,
     _should_rebalance,
@@ -141,33 +140,6 @@ def test_rebalance_dates_sorted() -> None:
     idx = pd.bdate_range("2015-01-02", periods=504)
     dates = _get_rebalance_dates(idx, RebalanceRule.QUARTERLY)
     assert dates == sorted(dates)
-
-# ---------------------------------------------------------------------------
-# apply_contribution
-# ---------------------------------------------------------------------------
-
-
-def test_apply_contribution_total_equals_contribution() -> None:
-    """Sum of allocated amounts equals the contribution."""
-    weights = pd.Series({"A": 0.6, "B": 0.4})
-    alloc = apply_contribution(nav=500_000.0, contribution=10_000.0, weights=weights)
-    assert sum(alloc.values()) == pytest.approx(10_000.0, rel=1e-9)
-
-
-def test_apply_contribution_proportional_to_weights() -> None:
-    """Each asset receives weight[a] * contribution."""
-    weights = pd.Series({"A": 0.7, "B": 0.3})
-    alloc = apply_contribution(nav=1_000.0, contribution=5_000.0, weights=weights)
-    assert alloc["A"] == pytest.approx(3_500.0, rel=1e-9)
-    assert alloc["B"] == pytest.approx(1_500.0, rel=1e-9)
-
-
-def test_apply_contribution_zero_contribution() -> None:
-    """Zero contribution allocates zero to every asset."""
-    weights = pd.Series({"A": 0.5, "B": 0.5})
-    alloc = apply_contribution(nav=1_000.0, contribution=0.0, weights=weights)
-    assert sum(alloc.values()) == pytest.approx(0.0)
-
 
 # ---------------------------------------------------------------------------
 # run_backtest — basic structure
