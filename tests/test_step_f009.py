@@ -11,13 +11,8 @@ import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from finance._step_f009 import (
-    BacktestContext,
-    DayInputs,
-    PortfolioState,
-    _apply_defensive_compounding,
-    _apply_returns,
-)
+from finance._step_f009 import _apply_defensive_compounding, _apply_returns
+from finance.portfolio import BacktestContext, DayInputs, PortfolioState
 from finance.leverage import (
     AccountType,
     LeapsConfig,

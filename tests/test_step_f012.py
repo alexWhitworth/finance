@@ -13,14 +13,9 @@ Covers all seven required test cases:
 import pandas as pd
 import pytest
 
-from finance._step_f012 import (
-    BacktestContext,
-    DayInputs,
-    PortfolioState,
-    _apply_contribution,
-)
+from finance._step_f012 import _apply_contribution
 from finance.leverage import RebalanceRule, WeightStrategy
-from finance.portfolio import PortfolioConfig
+from finance.portfolio import BacktestContext, DayInputs, PortfolioConfig, PortfolioState
 from finance.returns import ReturnData
 
 # ---------------------------------------------------------------------------
@@ -172,6 +167,10 @@ def _make_ctx(
         rfr_series=None,
         mask_aligned=None,
         def_gross=None,
+        rebal_dates=frozenset(),
+        month_end_dates=frozenset(),
+        long_window_end={},
+        w=w_series,
     )
 
 

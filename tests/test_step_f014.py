@@ -29,12 +29,8 @@ from finance.leverage import (
 from finance.portfolio import PortfolioConfig, RebalanceRule, WeightStrategy
 from finance.returns import ReturnData
 
-from finance._step_f014 import (
-    BacktestContext,
-    DayInputs,
-    PortfolioState,
-    _apply_gtt_reentry,
-)
+from finance._step_f014 import _apply_gtt_reentry
+from finance.portfolio import BacktestContext, DayInputs, PortfolioState
 
 # ---------------------------------------------------------------------------
 # Shared test corpus

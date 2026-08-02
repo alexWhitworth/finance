@@ -10,11 +10,8 @@ import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
-from finance._step_f011 import (
-    PortfolioState,
-    _compute_nav_before_contrib,
-    _compute_port_return,
-)
+from finance._step_f011 import _compute_nav_before_contrib, _compute_port_return
+from finance.portfolio import PortfolioState
 
 
 # ---------------------------------------------------------------------------
