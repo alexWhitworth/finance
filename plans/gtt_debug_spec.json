@@ -420,7 +420,7 @@
       "description": "Define DayInputs as @dataclass(frozen=True) with all 10 fields. No field may contain data with timestamp > date_ts.",
       "phase": "1b",
       "priority": 1,
-      "status": "not_started",
+      "status": "pending_judge",
       "layer": "python",
       "dependencies": [],
       "linked_schemas": ["DS-002"],
