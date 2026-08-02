@@ -803,7 +803,7 @@
       "description": "Pure arithmetic helpers. nav_before = sum(holdings) + leaps_value + defensive_sleeve + leaps_pool. port_return = nav_before / prev_total_nav - 1.",
       "phase": "2h",
       "priority": 2,
-      "status": "not_started",
+      "status": "pending_judge",
       "layer": "python",
       "dependencies": ["F-001"],
       "linked_schemas": ["DS-001"],
