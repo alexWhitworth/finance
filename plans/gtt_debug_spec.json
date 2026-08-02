@@ -1582,7 +1582,7 @@
       "description": "Remaining step functions: advance state (update prev_* fields only), build weight row (must sum to 1.0), compute total NAV post-mutation, assemble final ledger from all windows.",
       "phase": "2l",
       "priority": 2,
-      "status": "not_started",
+      "status": "pending_judge",
       "layer": "python",
       "dependencies": [
         "F-001",
