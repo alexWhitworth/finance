@@ -1317,7 +1317,7 @@
       "description": "Mark live LEAPS contracts to market. Suppressed on defensive days and re-entry days (Bug 1 fix: prevents stale ledger double-count). Uses smoothed MTM IV (NaN-guarded fallback to ctx.iv).",
       "phase": "2g",
       "priority": 1,
-      "status": "not_started",
+      "status": "pending_judge",
       "layer": "python",
       "dependencies": [
         "F-001",

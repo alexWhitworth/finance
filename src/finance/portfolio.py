@@ -207,6 +207,7 @@ class BacktestContext:
     long_window_end: dict[pd.Timestamp, pd.Timestamp]
     w: pd.Series
 
+
 @dataclass(frozen=True)
 class BacktestResult:
     """Output of a completed backtest simulation.
