@@ -140,6 +140,74 @@ class PortfolioConfig:
 
 
 @dataclass(frozen=True)
+class BacktestContext:
+    """Immutable per-backtest configuration and precomputed series.
+
+    Constructed once before the main loop. Contains no per-day state
+    (PortfolioState) or per-day scalars (DayInputs).
+
+    Attributes:
+        base_assets: Asset tickers that are NOT LEAPS carve-outs.
+        leaps_keys: Asset keys ending in _LEAPS suffix.
+        leaps_fraction: Sum of target weights for leaps_keys; fraction of NAV
+            allocated to LEAPS.
+        base_target_w: Normalized weights over base_assets only (sums to 1.0).
+        governed_base: Subset of base_assets governed by GTT signal.
+        gtt_active: True when gtt_signal is provided and portfolio holds a
+            governed ticker.
+        defensive_weights: Weights for the defensive sleeve; may include R_f
+            sentinel key.
+        use_leaps: True when any leaps_keys are present in target_weights.
+        iv: IV floor: config.leaps_config.iv or DEFAULT_IV.
+        leaps_monthly: Monthly contribution fraction allocated to LEAPS.
+        base_contribution: Monthly contribution fraction allocated to base
+            holdings.
+        config: Full portfolio config; passed through for run_leaps_simulation
+            calls.
+        return_data: Return data; passed through for risk_free_rate in
+            run_leaps_simulation.
+        underlying_prices: LEAPS underlying spot prices aligned to backtest
+            index.
+        raw_vix: Raw VIX series aligned to backtest index (unsmoothed).
+        mtm_iv_series: 30-day rolling mean of raw_vix; NaN for first 29 days.
+        rfr_series: Risk-free rate series aligned to backtest index.
+        mask_aligned: 0/1 GTT position mask aligned to backtest index.
+        def_gross: Blended daily defensive sleeve return series.
+        rebal_dates: O(1)-lookup frozenset of scheduled quarterly rebalance
+            dates.
+        month_end_dates: O(1)-lookup frozenset of last trading days of each
+            calendar month.
+        long_window_end: Maps each Long-window start date to its end date; used
+            to slice prices for re-entry LEAPS simulations.
+        w: Full target weight Series (including LEAPS keys); used for drift
+            check and weight_row assembly.
+    """
+
+    base_assets: tuple[str, ...]
+    leaps_keys: tuple[str, ...]
+    leaps_fraction: float
+    base_target_w: pd.Series
+    governed_base: tuple[str, ...]
+    gtt_active: bool
+    defensive_weights: dict[str, float]
+    use_leaps: bool
+    iv: float
+    leaps_monthly: float
+    base_contribution: float
+    config: PortfolioConfig
+    return_data: ReturnData
+    underlying_prices: pd.Series | None
+    raw_vix: pd.Series | None
+    mtm_iv_series: pd.Series | None
+    rfr_series: pd.Series | None
+    mask_aligned: pd.Series | None
+    def_gross: pd.Series | None
+    rebal_dates: frozenset[pd.Timestamp]
+    month_end_dates: frozenset[pd.Timestamp]
+    long_window_end: dict[pd.Timestamp, pd.Timestamp]
+    w: pd.Series
+
+@dataclass(frozen=True)
 class BacktestResult:
     """Output of a completed backtest simulation.
 

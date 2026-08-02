@@ -950,7 +950,7 @@
       "description": "Define BacktestContext as @dataclass(frozen=True) with all 22 fields. rebal_dates and month_end_dates use frozenset for O(1) lookup.",
       "phase": "1c",
       "priority": 1,
-      "status": "not_started",
+      "status": "pending_judge",
       "layer": "python",
       "dependencies": [],
       "linked_schemas": [
