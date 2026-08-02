@@ -73,6 +73,9 @@ VIX_MTM_WINDOW: int = 30  # rolling-mean window (days) for VIX-smoothed daily MT
 
 MIN_CRISIS_OBSERVATIONS: int = 20
 RISK_FREE_RATE_DEFAULT: float = 0.0
+# Sentinel key in defensive_weights meaning T-bill cash (earns risk_free_rate/252
+# per day). Exempt from the target_weights membership check.
+GTT_RISK_FREE_KEY: str = "R_f"
 
 CRISIS_PERIODS: dict[str, tuple[str, str]] = {
     "GFC": ("2007-10-01", "2009-03-31"),

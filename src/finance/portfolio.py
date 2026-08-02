@@ -4,20 +4,35 @@ All business logic is pure. Receives ReturnData + PriceData + PortfolioConfig
 and produces BacktestResult consumed by metrics.py.
 """
 
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 
 import pandas as pd
 
+from finance._backtest_steps import (
+    _build_context,
+    _build_initial_state,
+    _extract_day_inputs,
+    _apply_gtt_open,
+    _apply_gtt_force_close,
+    _apply_defensive_compounding, 
+    _apply_returns,
+    _compute_leaps_mtm,
+    _compute_nav_before_contrib, 
+    _compute_port_return,
+    _apply_contribution,
+    _apply_rebalance,
+    _apply_gtt_reentry,
+    _advance_state,
+    _assemble_leaps_ledger,
+    _build_weight_row,
+    _compute_total_nav,
+)
+
 from finance.consts import (
-    DEFAULT_IV,
-    DRIFT_BAND_RELATIVE,
     GTT_DEFENSIVE_WEIGHTS_DEFAULT,
-    GTT_EQUITY_TICKERS,
     GTT_SMA_WINDOW,
     GTT_UNRATE_TRADE_LAG_DAYS,
     GTT_VIX_CONSECUTIVE_DAYS,
-    LEAPS_KEY_SUFFIX,
-    VIX_MTM_WINDOW,
 )
 from finance.data import PriceData
 from finance.gtt import GttSignalData
@@ -26,12 +41,8 @@ from finance.leverage import (
     LeapsContract,
     LeapsGttCloseEvent,
     LeapsLedger,
-    LeapsPartialCloseEvent,
     RebalanceRule,
     WeightStrategy,
-    _live_contracts,
-    close_leaps_contract,
-    price_leaps_contract,
 )
 from finance.returns import ReturnData
 
@@ -304,33 +315,6 @@ class DayInputs:
 # Pure helper functions
 # ---------------------------------------------------------------------------
 
-
-def get_rebalance_dates(
-    index: pd.DatetimeIndex,
-    rule: RebalanceRule,
-) -> list[pd.Timestamp]:
-    """Return all rebalancing dates within index for the given rule.
-
-    QUARTERLY: last trading day of each quarter-end month (Mar / Jun / Sep / Dec).
-
-    Arguments:
-        index: DatetimeIndex of trading days in the backtest window.
-        rule: RebalanceRule controlling the rebalancing schedule.
-
-    Returns:
-        Sorted list of Timestamp rebalance dates, all within index.
-    """
-    if rule == RebalanceRule.QUARTERLY:
-        quarter_end_months = {3, 6, 9, 12}
-        dates: list[pd.Timestamp] = []
-        for period, grp in pd.Series(index, index=index).groupby(index.to_period("M")):
-            if period.month in quarter_end_months:
-                dates.append(pd.Timestamp(grp.iloc[-1]))
-        return sorted(dates)
-    # Unreachable with current enum, but guards future extensions
-    return []  # pragma: no cover
-
-
 def compute_target_weights(
     config: PortfolioConfig,
     current_weights: pd.Series,
@@ -355,167 +339,6 @@ def compute_target_weights(
         return raw / raw.sum()
     raw = pd.Series(config.target_weights)  # pragma: no cover
     return raw / raw.sum()  # pragma: no cover
-
-
-def should_rebalance(
-    current_weights: pd.Series,
-    target_weights: pd.Series,
-    rule: RebalanceRule,
-    band: float = DRIFT_BAND_RELATIVE,
-) -> bool:
-    """Return True if rebalancing should be triggered under the given rule.
-
-    QUARTERLY: always returns False — schedule is handled by get_rebalance_dates().
-    DRIFT: returns True if any asset's relative weight deviation exceeds band.
-
-    Relative deviation for asset i: |w_i - t_i| / t_i > band.
-    Only assets present in both current_weights and target_weights are checked.
-    Assets with a target weight of zero are skipped (division by zero guard).
-
-    Arguments:
-        current_weights: Realized portfolio weights at the check date.
-        target_weights: Target weights from PortfolioConfig (need not be normalized).
-        rule: RebalanceRule controlling the check logic.
-        band: Relative drift threshold. Default DRIFT_BAND_RELATIVE (0.10 = ±10%).
-
-    Returns:
-        True if rebalancing is triggered, False otherwise.
-    """
-    if rule == RebalanceRule.QUARTERLY:
-        return False
-    common = current_weights.index.intersection(target_weights.index)
-    for a in common:
-        t = float(target_weights[a])
-        if t == 0.0:
-            continue
-        if abs(float(current_weights[a]) - t) / t > band:
-            return True
-    return False
-
-
-def apply_contribution(
-    nav: float,
-    contribution: float,
-    weights: pd.Series,
-) -> dict[str, float]:
-    """Allocate a dollar contribution across assets proportional to weights.
-
-    Arguments:
-        nav: Current portfolio NAV (unused in USER_SPECIFIED mode; present for
-            future risk-parity strategies that need the NAV context).
-        contribution: Dollar amount to allocate.
-        weights: Unit-normed asset weights (must sum to 1.0).
-
-    Returns:
-        Mapping of asset → dollar amount allocated from the contribution.
-    """
-    _ = nav  # reserved for future weight strategies that use NAV context
-    return {str(a): contribution * float(weights[a]) for a in weights.index}
-
-
-# ---------------------------------------------------------------------------
-# GTT pre-compute helpers (pure; used by the run_backtest GTT branch)
-# ---------------------------------------------------------------------------
-
-
-def _gtt_governed_keys(target_weights: dict[str, float]) -> set[str]:
-    """Return the target_weights keys governed by the GTT signal.
-
-    A key is governed when it is a GTT_EQUITY_TICKERS ticker present in
-    target_weights, or a "<ticker>_LEAPS" carve-out of such a ticker. When
-    target_weights holds no governed ticker the result is empty and the GTT
-    overlay is a no-op.
-
-    Arguments:
-        target_weights: Portfolio target-weight mapping (asset -> weight).
-
-    Returns:
-        Set of governed keys (subset of target_weights). Empty if none.
-    """
-    governed: set[str] = set()
-    for key in target_weights:
-        base = key.removesuffix(LEAPS_KEY_SUFFIX) if key.endswith(LEAPS_KEY_SUFFIX) else key
-        if base in GTT_EQUITY_TICKERS:
-            governed.add(key)
-    return governed
-
-
-def _reindex_position_mask(mask: pd.Series, index: pd.DatetimeIndex) -> pd.Series:
-    """Align a position mask to the backtest index, defaulting gaps to Long.
-
-    Missing dates (holiday misalignment) are forward-filled from the last known
-    signal; leading dates before any signal exists default to 1 (Long), so the
-    overlay never forces a defensive posture on unknown data.
-
-    Arguments:
-        mask: 0/1 position mask (1=Long, 0=Defensive), DatetimeIndex.
-        index: Target backtest trading-day index.
-
-    Returns:
-        Int Series aligned to index, values in {0, 1}, no NaN.
-    """
-    return mask.reindex(index, method="ffill").fillna(1).astype(int)
-
-
-def _long_windows(mask: pd.Series) -> list[tuple[pd.Timestamp, pd.Timestamp]]:
-    """Return the (start, end) date bounds of each contiguous Long (mask==1) run.
-
-    Scans the aligned position mask chronologically and groups maximal runs of
-    Long days. Defensive (mask==0) runs are skipped. Each returned tuple gives the
-    first and last date (both inclusive) of one Long window, so a caller can slice
-    a price series to that window for a per-window LEAPS simulation.
-
-    Arguments:
-        mask: Int position mask (1=Long, 0=Defensive) with a DatetimeIndex.
-
-    Returns:
-        List of (start_date, end_date) inclusive Long-window bounds, in
-        chronological order. Empty if the mask never equals 1.
-    """
-    windows: list[tuple[pd.Timestamp, pd.Timestamp]] = []
-    dates = mask.index
-    regimes = mask.to_numpy()
-    start_i: int | None = None
-    for i in range(len(regimes)):
-        if regimes[i] == 1 and start_i is None:
-            start_i = i
-        elif regimes[i] == 0 and start_i is not None:
-            windows.append((pd.Timestamp(dates[start_i]), pd.Timestamp(dates[i - 1])))
-            start_i = None
-    if start_i is not None:
-        windows.append((pd.Timestamp(dates[start_i]), pd.Timestamp(dates[-1])))
-    return windows
-
-
-def _defensive_gross_return(
-    returns: pd.DataFrame,
-    rfr_series: pd.Series,
-    defensive_weights: dict[str, float],
-) -> pd.Series:
-    """Compute the daily blended gross return of the defensive sleeve.
-
-    The sleeve return on day t is Sum_i w_i * r_i(t), where the sentinel key
-    "R_f" contributes w_Rf * rfr(t)/252 (a date-varying T-bill day return) and
-    every other key contributes its own asset return. This is the single factor
-    by which the parked defensive capital (and the LEAPS pool) compounds.
-
-    Arguments:
-        returns: Daily simple returns (DatetimeIndex x asset columns).
-        rfr_series: Daily annualized risk-free rate (decimal), aligned to returns.
-        defensive_weights: Sleeve weights summing to 1.0; may contain "R_f".
-
-    Returns:
-        Daily float Series of blended sleeve returns, indexed like returns.
-    """
-    blended = pd.Series(0.0, index=returns.index, name="defensive_gross_return")
-    rfr_aligned = rfr_series.reindex(returns.index, method="ffill").fillna(0.0)
-    for key, weight in defensive_weights.items():
-        if key == GTT_RISK_FREE_KEY:
-            blended = blended + weight * (rfr_aligned / 252.0)
-        else:
-            blended = blended + weight * returns[key]
-    return blended
-
 
 # ---------------------------------------------------------------------------
 # Backtest orchestrator
@@ -579,26 +402,6 @@ def run_backtest(
         ValueError: If gtt_signal is set and a non-R_f defensive_weights ticker is
             absent from return_data.
     """
-    from finance._backtest_steps import (
-        _build_context,
-        _build_initial_state,
-        _extract_day_inputs,
-        _apply_gtt_open,
-        _apply_gtt_force_close,
-        _apply_defensive_compounding, 
-        _apply_returns,
-        _compute_leaps_mtm,
-        _compute_nav_before_contrib, 
-        _compute_port_return,
-        _apply_contribution,
-        _apply_rebalance,
-        _apply_gtt_reentry,
-        _advance_state,
-        _assemble_leaps_ledger,
-        _build_weight_row,
-        _compute_total_nav,
-    )
-
     ctx = _build_context(return_data, price_data, config, gtt_signal)
     state = _build_initial_state(ctx)
 
