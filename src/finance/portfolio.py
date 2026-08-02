@@ -579,414 +579,59 @@ def run_backtest(
         ValueError: If gtt_signal is set and a non-R_f defensive_weights ticker is
             absent from return_data.
     """
-    from finance.leverage import run_leaps_simulation
+    from finance._step_f004 import _build_context
+    from finance._step_f005 import _build_initial_state
+    from finance._step_f006 import _extract_day_inputs
+    from finance._step_f007 import _apply_gtt_open
+    from finance._step_f008 import _apply_gtt_force_close
+    from finance._step_f009 import _apply_defensive_compounding, _apply_returns
+    from finance._step_f010 import _compute_leaps_mtm
+    from finance._step_f011 import _compute_nav_before_contrib, _compute_port_return
+    from finance._step_f012 import _apply_contribution
+    from finance._step_f013 import _apply_rebalance
+    from finance._step_f014 import _apply_gtt_reentry
+    from finance._step_f015 import (
+        _advance_state,
+        _assemble_leaps_ledger,
+        _build_weight_row,
+        _compute_total_nav,
+    )
 
-    # GTT opt-in requires a matched (gtt_signal, config.gtt_config) pair.
-    if (gtt_signal is None) != (config.gtt_config is None):
-        raise ValueError(
-            "gtt_signal and config.gtt_config must both be set or both be None; got "
-            f"gtt_signal={'set' if gtt_signal is not None else 'None'}, "
-            f"config.gtt_config={'set' if config.gtt_config is not None else 'None'}"
-        )
-
-    returns = return_data.returns
-
-    if gtt_signal is not None:
-        assert config.gtt_config is not None  # guaranteed by the paired check above
-        missing_def = [
-            k
-            for k in config.gtt_config.defensive_weights
-            if k != GTT_RISK_FREE_KEY and k not in returns.columns
-        ]
-        if missing_def:
-            raise ValueError(
-                f"defensive_weights tickers absent from return_data: {missing_def}"
-            )
-
-    # Split target weights into base assets and carved-out LEAPS keys (Model B)
-    leaps_keys = [k for k in config.target_weights if k.endswith(LEAPS_KEY_SUFFIX)]
-    base_assets = [k for k in config.target_weights if k not in leaps_keys]
-
-    missing = [a for a in base_assets if a not in returns.columns]
-    if missing:
-        raise ValueError(f"Assets missing from return_data: {missing}")
-
-    use_leaps = len(leaps_keys) > 0
-    if use_leaps and config.leaps_config is None:
-        raise ValueError("LEAPS keys present in target_weights but leaps_config is None")
-
-    w = pd.Series(config.target_weights)
-    leaps_fraction = float(w[leaps_keys].sum()) if leaps_keys else 0.0
-
-    # Base-only target weights, renormalized among base assets (sum to 1.0)
-    base_target_w = w[base_assets]
-    if len(base_assets) > 0 and base_target_w.sum() > 0:
-        base_target_w = base_target_w / base_target_w.sum()
-
-    idx = pd.DatetimeIndex(returns.index)
-
-    # Rebalance date set (O(1) lookups)
-    rebal_dates: set[pd.Timestamp] = set(get_rebalance_dates(idx, config.rebalance_rule))
-
-    # Month-end date set: last trading day of each calendar month
-    month_end_dates: set[pd.Timestamp] = {
-        pd.Timestamp(grp.index[-1])
-        for _, grp in returns.groupby(idx.to_period("M"))
-    }
-
-    # GTT overlay state. When active, the governed (VTI / VTI_LEAPS) leg is moved
-    # into a single defensive-sleeve scalar on defensive days and re-anchored to
-    # target on re-entry. The sleeve compounds by the blended defensive return and
-    # is decomposed at defensive_weights proportions for weight_history.
-    # The overlay only engages when the signal is present AND the portfolio holds a
-    # governed ticker; otherwise GTT is a complete no-op (no forced rebalance fires).
-    # Computed before the LEAPS setup so the initial ledger can be scoped to the
-    # first Long window (LEAPS is force-closed across defensive windows).
-    defensive_sleeve = 0.0
-    leaps_pool = 0.0  # parked LEAPS-origin capital during defensive windows
-    prev_regime = 1
-    governed_base: list[str] = []
-    defensive_weights: dict[str, float] = {}
-    mask_aligned: pd.Series | None = None
-    def_gross: pd.Series | None = None
-    gtt_active = False
-    if gtt_signal is not None:
-        assert config.gtt_config is not None  # paired above
-        governed = _gtt_governed_keys(config.target_weights)
-        governed_base = [k for k in governed if k in base_assets]
-        gtt_active = len(governed) > 0
-    long_window_end: dict[pd.Timestamp, pd.Timestamp] = {}
-    if gtt_active:
-        assert gtt_signal is not None and config.gtt_config is not None
-        defensive_weights = config.gtt_config.defensive_weights
-        mask_aligned = _reindex_position_mask(gtt_signal.position_mask, idx)
-        def_gross = _defensive_gross_return(
-            returns, return_data.risk_free_rate, defensive_weights
-        )
-        # start-date -> end-date for each Long window, so re-entry can slice the
-        # new window's prices for a fresh LEAPS simulation.
-        long_window_end = dict(_long_windows(mask_aligned))
-
-    # LEAPS setup — carve capital out of NAV and run a fresh simulation (Model B).
-    # Under GTT the ledger is segmented: the initial simulation covers only the
-    # first Long window; later windows are (re-)opened inside the loop on re-entry.
-    leaps_ledger: LeapsLedger | None = None
-    underlying_prices: pd.Series | None = None
-    iv = DEFAULT_IV
-    rfr_series: pd.Series | None = None
-    mtm_iv_series: pd.Series | None = None  # 30-day smoothed VIX for daily MTM
-    raw_vix: pd.Series | None = None
-    leaps_monthly = 0.0
-    all_window_ledgers: list[LeapsLedger] = []
-    all_gtt_closes: list[LeapsGttCloseEvent] = []
-
-    if use_leaps:
-        underlyings = {k.removesuffix(LEAPS_KEY_SUFFIX) for k in leaps_keys}
-        if len(underlyings) > 1:
-            raise ValueError(f"Only one LEAPS underlying is supported; got {sorted(underlyings)}")
-        underlying = next(iter(underlyings))
-        if underlying not in price_data.prices.columns:
-            raise ValueError(f"LEAPS underlying '{underlying}' absent from price_data.prices")
-
-        assert config.leaps_config is not None  # guarded above
-        iv = config.leaps_config.iv
-        underlying_prices = price_data.prices[underlying].reindex(idx, method="ffill")
-        rfr_series = return_data.risk_free_rate.reindex(idx, method="ffill").fillna(0.0)
-
-        # VIX-based dynamic IV: raw VIX for contract creation/roll (via iv_series),
-        # 30-day rolling mean for daily MTM. config.iv is the floor throughout.
-        if not price_data.vol_prices.empty and underlying in price_data.vol_prices.columns:
-            raw_vix = price_data.vol_prices[underlying].reindex(idx, method="ffill")
-            mtm_iv_series = raw_vix.rolling(VIX_MTM_WINDOW).mean().ffill()
-
-        initial_leaps_capital = config.initial_nav * leaps_fraction
-        leaps_monthly = config.monthly_contribution * leaps_fraction
-
-        # Under GTT, scope the initial simulation to the first Long window; the
-        # LEAPS position is force-closed at its end and re-opened on re-entry.
-        init_prices = underlying_prices
-        if gtt_active and mask_aligned is not None:
-            long_wins = _long_windows(mask_aligned)
-            if long_wins:
-                first_start, first_end = long_wins[0]
-                init_prices = underlying_prices.loc[first_start:first_end]
-            else:
-                init_prices = underlying_prices.iloc[0:0]  # never Long -> no contracts
-
-        leaps_ledger = run_leaps_simulation(
-            init_prices,
-            leaps_monthly,
-            config.leaps_config,
-            risk_free_series=return_data.risk_free_rate,
-            iv_series=raw_vix,
-            initial_capital=initial_leaps_capital,
-        )
-        all_window_ledgers.append(leaps_ledger)
-
-    # Initialize base holdings: dollar value per base asset (LEAPS capital carved out)
-    base_nav_init = config.initial_nav * (1.0 - leaps_fraction)
-    holdings: dict[str, float] = {
-        a: base_nav_init * float(base_target_w[a]) for a in base_assets
-    }
-    prev_total_nav = config.initial_nav
-
-    # Base share of the monthly contribution (LEAPS share is handled inside the ledger)
-    base_contribution = config.monthly_contribution * (1.0 - leaps_fraction)
-
-    # Drift-rebalance state: cumulative surviving fraction per base contract.
-    # Daily LEAPS MTM is scaled by this map so partial closes take effect
-    # without rebuilding the frozen ledger inside the loop (frozen once at return).
-    leaps_scale: dict[LeapsContract, float] = {}
-    partial_close_list: list[LeapsPartialCloseEvent] = []
+    ctx = _build_context(return_data, price_data, config, gtt_signal)
+    state = _build_initial_state(ctx)
 
     nav_values: list[float] = []
     return_values: list[float] = []
     weight_rows: list[dict[str, float]] = []
-    prev_date_ts: pd.Timestamp | None = None
 
-    for date in returns.index:
+    for date in ctx.return_data.returns.index:
         date_ts = pd.Timestamp(date)
-        day_ret = returns.loc[date_ts]
-
-        # (GTT open) The governed leg is swept into the sleeve at the open of a
-        # defensive day (mask is lag-adjusted: mask[t]=0 means hold defensive
-        # *during* day t), so the freed VTI capital rides the defensive return
-        # rather than VTI's. Re-entry to target happens at the close (below), so
-        # weight_history on the re-entry day lands exactly on target_weights.
-        regime_t = 1
-        if gtt_active and mask_aligned is not None:
-            regime_t = int(mask_aligned.loc[date_ts])
-            if regime_t == 0:
-                for k in governed_base:
-                    defensive_sleeve += holdings[k]
-                    holdings[k] = 0.0
-
-        # (GTT LEAPS force-close) On the Long -> Defensive transition, close every
-        # live contract at the last Long day's close (prev_date_ts) and park the net
-        # proceeds in leaps_pool. Valued at the raw-VIX transaction IV (config.iv
-        # floor), consistent with roll/create pricing elsewhere. The pool then rides
-        # the defensive sleeve return like the equity sweep. Net proceeds are after
-        # LTCG tax, so a taxable close realizes tax drag on the transition day.
-        if (
-            gtt_active
-            and leaps_ledger is not None
-            and prev_regime == 1
-            and regime_t == 0
-            and underlying_prices is not None
-            and config.leaps_config is not None
-            and prev_date_ts is not None
-        ):
-            close_spot = float(underlying_prices.loc[prev_date_ts])
-            close_rfr = float(rfr_series.loc[prev_date_ts]) if rfr_series is not None else 0.0
-            close_iv = iv
-            if raw_vix is not None:
-                close_iv = max(float(raw_vix.loc[prev_date_ts]), iv)
-            for c in _live_contracts(leaps_ledger, prev_date_ts):
-                scale = leaps_scale.get(c, 1.0)
-                c_eff = replace(c, n_contracts=c.n_contracts * scale) if scale != 1.0 else c
-                evt = close_leaps_contract(
-                    c_eff, prev_date_ts, close_spot, close_iv,
-                    config.leaps_config.ltcg_rate, close_rfr,
-                )
-                all_gtt_closes.append(evt)
-                leaps_pool += evt.net_proceeds
-
-        # (a) Apply daily returns to base holdings
-        for a in base_assets:
-            holdings[a] *= 1.0 + float(day_ret[a])  # type: ignore[arg-type]
-
-        # (a') The defensive sleeve and parked LEAPS pool ride the blended defensive
-        # return while they hold defensively-allocated capital: every defensive day
-        # (regime_t == 0) and the re-entry day (prev_regime == 0), where they earn one
-        # final defensive day before redeployment to target at the close.
-        if gtt_active and def_gross is not None and (regime_t == 0 or prev_regime == 0):
-            factor = 1.0 + float(def_gross.loc[date_ts])
-            defensive_sleeve *= factor
-            leaps_pool *= factor
-
-        # (e) LEAPS gross mark-to-market (carved-out capital value), scaled by prior
-        # closes. During a GTT defensive window all contracts are closed (parked in
-        # leaps_pool), so live MTM is naturally 0. On re-entry days (prev_regime == 0,
-        # regime_t == 1) the old per-window ledger has gtt_close_events=() so
-        # _live_contracts would return already-force-closed contracts as live — their
-        # economic value is already in leaps_pool, so skip to avoid double-counting.
-        leaps_value = 0.0
-        if (
-            leaps_ledger is not None
-            and underlying_prices is not None
-            and not (gtt_active and regime_t == 0)
-            and not (gtt_active and use_leaps and prev_regime == 0 and regime_t == 1)
-        ):
-            spot = float(underlying_prices.loc[date_ts])
-            rfr = float(rfr_series.loc[date_ts]) if rfr_series is not None else 0.0
-            day_iv = iv
-            if mtm_iv_series is not None:
-                smoothed = mtm_iv_series.loc[date_ts]
-                if pd.notna(smoothed):
-                    day_iv = max(float(smoothed), iv)
-            live = _live_contracts(leaps_ledger, date_ts)
-            leaps_value = sum(
-                price_leaps_contract(c, spot, date_ts, day_iv, rfr) * leaps_scale.get(c, 1.0)
-                for c in live
-            )
-
-        nav_before_contrib = sum(holdings.values()) + leaps_value + defensive_sleeve + leaps_pool
-
-        # (b) Market return — excludes the upcoming contribution
-        port_return = nav_before_contrib / prev_total_nav - 1.0
-
-        # (c) Month-end: add the base share of the contribution across base assets.
-        # On a defensive day the governed-ticker share of that contribution is
-        # diverted into the sleeve (base_target_w still sums to 1 over base_assets,
-        # so the governed weight is its base_target_w mass). The LEAPS monthly share
-        # is diverted into leaps_pool while defensive (it is added inside the ledger
-        # during Long windows).
-        if date_ts in month_end_dates and base_assets:
-            alloc = apply_contribution(nav_before_contrib, base_contribution, base_target_w)
-            for a in base_assets:
-                if gtt_active and regime_t == 0 and a in governed_base:
-                    defensive_sleeve += alloc[a]
-                else:
-                    holdings[a] += alloc[a]
-        if gtt_active and regime_t == 0 and date_ts in month_end_dates:
-            leaps_pool += leaps_monthly
-
-        # (d) QUARTERLY rebalance: realign base holdings to base target weights.
-        # Runs first (Option C); the GTT defensive override below re-zeros the
-        # governed leg into the sleeve after the rebalance repopulates it.
-        if date_ts in rebal_dates and base_assets:
-            base_nav = sum(holdings.values())
-            for a in base_assets:
-                holdings[a] = base_nav * float(base_target_w[a])
-            if gtt_active and regime_t == 0:
-                for k in governed_base:
-                    defensive_sleeve += holdings[k]
-                    holdings[k] = 0.0
-
-        # (f) DRIFT rebalance: check monthly; trim LEAPS overshoot pro-rata (tax-free)
-        if config.rebalance_rule == RebalanceRule.DRIFT and date_ts in month_end_dates:
-            base_val = sum(holdings.values())
-            total_val = base_val + leaps_value
-            weights_now = {a: holdings[a] / total_val for a in base_assets}
-            for k in leaps_keys:
-                share = float(w[k]) / leaps_fraction if leaps_fraction > 0 else 0.0
-                weights_now[k] = leaps_value * share / total_val
-            current_weights = pd.Series(weights_now)
-            if should_rebalance(current_weights, w, RebalanceRule.DRIFT):
-                # Realign base assets to their targets within the base sleeve.
-                for a in base_assets:
-                    holdings[a] = base_val * float(base_target_w[a])
-                # Trim LEAPS overshoot back to the target weight at current NAV.
-                target_leaps_now = total_val * leaps_fraction
-                if leaps_value > target_leaps_now and leaps_value > 0:
-                    close_scale = target_leaps_now / leaps_value
-                    net_proceeds = leaps_value - target_leaps_now
-                    for c in _live_contracts(leaps_ledger, date_ts):  # type: ignore[arg-type]
-                        leaps_scale[c] = leaps_scale.get(c, 1.0) * close_scale
-                    # Return proceeds to base holdings by base target weights (tax-free).
-                    if base_assets:
-                        for a in base_assets:
-                            holdings[a] += net_proceeds * float(base_target_w[a])
-                    leaps_value = target_leaps_now
-
-        # (GTT close) Defensive -> Long re-entry (A9 forced rebalance): re-anchor the
-        # whole portfolio to target_weights on the combined NAV (base holdings +
-        # sleeve + LEAPS pool). Base assets take (1 - leaps_fraction) of NAV at
-        # base_target_w; leaps_fraction * NAV seeds a fresh LEAPS simulation over the
-        # new Long window. This is the last mutation of the day, so weight_history
-        # lands exactly on target.
-        if gtt_active and prev_regime == 0 and regime_t == 1:
-            total = sum(holdings.values()) + defensive_sleeve + leaps_pool
-            base_total = total * (1.0 - leaps_fraction)
-            for a in base_assets:
-                holdings[a] = base_total * float(base_target_w[a])
-            defensive_sleeve = 0.0
-            leaps_pool = 0.0
-
-            if use_leaps and underlying_prices is not None and config.leaps_config is not None:
-                win_end = long_window_end.get(date_ts, pd.Timestamp(returns.index[-1]))
-                win_prices = underlying_prices.loc[date_ts:win_end]
-                leaps_ledger = run_leaps_simulation(
-                    win_prices,
-                    leaps_monthly,
-                    config.leaps_config,
-                    risk_free_series=return_data.risk_free_rate,
-                    iv_series=raw_vix,
-                    initial_capital=total * leaps_fraction,
-                )
-                all_window_ledgers.append(leaps_ledger)
-                # Price freshly seeded contracts at creation IV (raw VIX floor config.iv),
-                # matching what run_leaps_simulation used. Using smoothed MTM IV here
-                # would make leaps_value != capital_deployed, introducing a valuation gap
-                # that manifests as a spurious return spike on the following day.
-                spot = float(underlying_prices.loc[date_ts])
-                rfr = float(rfr_series.loc[date_ts]) if rfr_series is not None else 0.0
-                creation_iv = iv
-                if raw_vix is not None:
-                    creation_iv = max(float(raw_vix.loc[date_ts]), iv)
-                leaps_value = sum(
-                    price_leaps_contract(c, spot, date_ts, creation_iv, rfr)
-                    for c in _live_contracts(leaps_ledger, date_ts)
-                )
-
-        total_nav = sum(holdings.values()) + leaps_value + defensive_sleeve + leaps_pool
-
+        inputs = _extract_day_inputs(date_ts, ctx)
+        state = _apply_gtt_open(state, inputs, ctx)
+        state = _apply_gtt_force_close(state, inputs, ctx)
+        state = _apply_returns(state, inputs, ctx)
+        state = _apply_defensive_compounding(state, inputs, ctx)
+        state = _compute_leaps_mtm(state, inputs, ctx)
+        nav_before = _compute_nav_before_contrib(state)
+        port_return = _compute_port_return(nav_before, state.prev_total_nav)
+        state = _apply_contribution(state, inputs, ctx, nav_before)
+        state = _apply_rebalance(state, inputs, ctx)
+        state = _apply_gtt_reentry(state, inputs, ctx)
+        total_nav = _compute_total_nav(state)
+        weight_row = _build_weight_row(state, total_nav, ctx)
         nav_values.append(total_nav)
         return_values.append(port_return)
-        row = {a: holdings[a] / total_nav for a in base_assets}
-        for k in leaps_keys:
-            share = float(w[k]) / leaps_fraction if leaps_fraction > 0 else 0.0
-            row[k] = leaps_value * share / total_nav
-        # Decompose the parked defensive capital (equity sleeve + LEAPS pool, which
-        # compound identically) across defensive_weights for weight_history; governed
-        # keys (incl. VTI_LEAPS) were zeroed/closed already so their rows are 0.
-        parked = defensive_sleeve + leaps_pool
-        if gtt_active and parked > 0.0:
-            for dk, dw in defensive_weights.items():
-                row[dk] = row.get(dk, 0.0) + dw * parked / total_nav
-        weight_rows.append(row)
+        weight_rows.append(weight_row)
+        state = _advance_state(state, total_nav, inputs)
 
-        prev_total_nav = total_nav
-        prev_regime = regime_t
-        prev_date_ts = date_ts
+    final_date = pd.Timestamp(ctx.return_data.returns.index[-1])
+    leaps_ledger = _assemble_leaps_ledger(state, ctx, final_date)
 
-    # Freeze accumulated partial closes onto the ledger once, at the return boundary.
-    # Every entry in leaps_scale is a surviving fraction < 1.0 (only closes write it).
-    if leaps_ledger is not None and leaps_scale:
-        final_date = pd.Timestamp(returns.index[-1])
-        for c, surviving in leaps_scale.items():
-            continuation = replace(c, n_contracts=c.n_contracts * surviving)
-            partial_close_list.append(
-                LeapsPartialCloseEvent(
-                    close_date=final_date,
-                    original_contract=c,
-                    continuation_contract=continuation,
-                    n_contracts_closed=c.n_contracts * (1.0 - surviving),
-                    net_proceeds=0.0,  # per-contract proceeds already booked to base at close time
-                )
-            )
-        leaps_ledger = replace(leaps_ledger, partial_close_events=tuple(partial_close_list))
-
-    # Under GTT, assemble the final ledger from every per-window simulation and
-    # attach the accumulated force-close events. Windows partition the timeline, so
-    # concatenating their records yields the full non-overlapping history.
-    if gtt_active and use_leaps and config.leaps_config is not None:
-        leaps_ledger = LeapsLedger(
-            contracts=tuple(c for wl in all_window_ledgers for c in wl.contracts),
-            roll_events=tuple(e for wl in all_window_ledgers for e in wl.roll_events),
-            account_type=config.leaps_config.account_type,
-            partial_close_events=tuple(
-                e for wl in all_window_ledgers for e in wl.partial_close_events
-            ),
-            gtt_close_events=tuple(all_gtt_closes),
-        )
-
+    returns = ctx.return_data.returns
     nav_series = pd.Series(nav_values, index=returns.index, name="NAV")
     return_series = pd.Series(return_values, index=returns.index, name="portfolio_return")
     weight_history = pd.DataFrame(weight_rows, index=returns.index)
-    if gtt_active:
-        # A synthetic R_f column (and any defensive-only ticker) appears only on
-        # defensive days; other days are absent -> NaN. Zero-fill for a dense frame.
+    if ctx.gtt_active:
         weight_history = weight_history.fillna(0.0)
 
     return BacktestResult(

@@ -1638,7 +1638,7 @@
       "description": "Replace monolithic run_backtest loop body with the 13-call step function sequence. run_backtest becomes a thin orchestrator. All 450 existing tests must pass with zero test-file changes.",
       "phase": "3",
       "priority": 1,
-      "status": "not_started",
+      "status": "pending_judge",
       "layer": "python",
       "dependencies": [
         "F-004",
