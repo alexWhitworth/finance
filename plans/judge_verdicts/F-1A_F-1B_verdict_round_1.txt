@@ -1,0 +1,126 @@
+JUDGE VERDICT — F-1A & F-1B (Round 1)
+========================================
+Date: 2026-07-30
+Evaluator: Judge Agent (adversarial senior staff)
+
+VERDICT: CONDITIONAL_PASS
+=========================
+
+All acceptance criteria are MET. The production fix is correct and the
+critical falsifying assertion (T1 pre-roll, pre-close) distinguishes
+pre-fix from post-fix behavior. One BLOCKING finding: the same-day roll
+boundary test (_T2 = 2022-01-03) is vacuous because the contract expired
+the day before (2022-01-02), so a `<` mutation on the roll guard
+survives undetected. Two ADVISORY findings on secondary vacuous assertions.
+
+
+ACCEPTANCE CRITERIA SCORECARD
+------------------------------
+F-1A:
+  [MET]   Contract purchased at t0 with roll_event at t2 IS present at t1 (t0<t1<t2).
+          test_live_contracts_roll_no_lookahead passes; T1 assertion is DISTINGUISHING.
+  [MET]   Contract NOT present after the roll, replacement IS present after the roll.
+  [BRITTLE] Same-day boundary: "old excluded, new live at exactly roll_date" —
+          test_live_contracts_same_day_roll_boundary uses _T2=2022-01-03 but
+          original.expiry_date=2022-01-02. The original is excluded by the expiry
+          guard (`c.expiry_date <= current_date`), not by the roll guard. A `<`
+          substitution for `<=` in the rolled_out filter is UNDETECTED by this test.
+  [MET]   Existing test suites pass unchanged (143 total, all green).
+
+F-1B:
+  [MET]   GTT-closed contract IS live before its close_date (T1 assertion DISTINGUISHING).
+  [BRITTLE] GTT on/after close (T2/T3 assertions): vacuous. close_date=_T2=2022-01-03,
+          expiry=2022-01-02. At T2 and T3 the contract is already expired — gtt_closed
+          guard is irrelevant at those dates. The assertions pass regardless of whether
+          the filter uses `<` or `<=`.
+  [MET]   Partial-close guard intentionally omitted with clear rationale (synthetic
+          close_date trap documented). `test_live_contracts_partial_close_substitution_
+          unconditional` pins the current behavior explicitly. Accepted per spec fallback
+          (1b scoped to gtt-close only, partial-close guard documented as follow-up).
+  [MET]   Trace claims confirmed: in-loop event tuples empty; compute_terminal_nav
+          queries at final_date (trivially `<=`). Guards are in-loop no-ops.
+
+
+TEST QUALITY
+------------
+- Total tests: 145 passed, 0 failed (in relevant suites).
+- leverage.py coverage: 98% (lines 416-417 and 697-698 uncovered — pre-existing).
+- Float assertions use `pytest.approx(rel=1e-9)` — correct.
+- Falsifying assertions: T1 cases in both roll and gtt tests are genuine discriminators.
+- `_make_live_contract` docstring claims "expiry well past any test date" — FALSE.
+  contract expiry is 2022-01-02, which is BEFORE _T2 (2022-01-03) and _T3 (2022-01-04).
+  This is the root cause of the BRITTLE findings.
+
+
+MUTATION ANALYSIS (manual, no mutmut run per plan scope)
+---------------------------------------------------------
+Surviving mutation: change `<=` to `<` in `rolled_out` filter (leverage.py:606).
+  - test_live_contracts_roll_no_lookahead T1 assertion: KILLS this mutation ✓
+  - test_live_contracts_same_day_roll_boundary: DOES NOT kill (expiry fires instead)
+  - Net: mutation is killed by T1 case; no production escape, but the boundary test
+    is not contributing to mutation resistance.
+
+Surviving mutation: change `<=` to `<` in `gtt_closed` filter (leverage.py:611).
+  - test_live_contracts_gtt_close_no_lookahead T1 assertion: KILLS this mutation ✓
+  - T2/T3 assertions: DOES NOT kill (expiry fires instead)
+
+
+LINT / TYPE
+-----------
+ruff check: PASS (no issues)
+mypy src/finance/leverage.py: PASS (no issues)
+
+
+FINDINGS
+--------
+[BLOCKING — F-1A]
+  test_live_contracts_same_day_roll_boundary is vacuous for its stated purpose.
+  File: tests/test_leverage.py:1030-1042
+  Root cause: `_make_live_contract(_T0)` creates a contract with expiry 2022-01-02;
+  the roll is at _T2=2022-01-03, which is one day AFTER expiry. The `assert original
+  not in live_on_roll_date` passes because the expiry guard fires, not the roll guard.
+  A `<` substitution for `<=` in the rolled_out comprehension produces identical
+  behavior at _T2. The test does NOT verify the <= boundary semantics it purports to test.
+
+  Required fix: Move the roll date to a day that is WITHIN the contract's lifetime
+  (i.e., roll_date <= expiry_date). The simplest fix is to use _T2 = pd.Timestamp
+  ("2022-01-01") (one day before expiry) or to create a fresh contract with a later
+  expiry for the same-day boundary test. The test must verify that, under the `<`
+  alternative, the original WOULD be live (i.e., not excluded by any other guard).
+
+[ADVISORY — F-1A / F-1B]
+  _make_live_contract docstring claims "expiry well past any test date" but expiry
+  is 2022-01-02 and _T2/_T3 are 2022-01-03/04.
+  File: tests/test_leverage.py:1004-1006
+  Fix: Correct the docstring or extend the contract's lifetime (e.g., purchase a
+  contract with a 3-year tenor rather than the default 2-year tenor).
+
+[ADVISORY — F-1B]
+  test_live_contracts_gtt_close_no_lookahead T2/T3 assertions are vacuous for the same
+  expiry-masking reason. They pass regardless of the gtt guard. They are harmless
+  (correct assertions) but provide no mutation resistance at the <= boundary.
+  File: tests/test_leverage.py:1067-1073
+  Fix: Either remove the T2/T3 assertions (the T1 case is the sole discriminator),
+  or add a variant where close_date < expiry_date so the gtt guard is load-bearing.
+
+
+REQUIRED ACTIONS FOR ACTOR
+---------------------------
+1. [BLOCKING] Fix test_live_contracts_same_day_roll_boundary:
+   Use a roll_date that falls within the original contract's lifetime so that the
+   `assert original not in live_on_roll_date` is distinguished from a `<` mutation.
+   Concretely:
+     # Use a roll date one day before the default 2yr expiry (2022-01-02)
+     valid_roll = pd.Timestamp("2022-01-01")   # expiry_date = 2022-01-02 > valid_roll
+     roll_ev = roll_contract(original, valid_roll, 200.0, DEFAULT_IV, 0.02)
+   OR create a contract with purchase_date early enough that its 2yr expiry
+   extends past _T2 = 2022-01-03. Either approach is acceptable.
+
+2. [ADVISORY] Correct the `_make_live_contract` docstring from "Minimal contract
+   with expiry well past any test date" to accurately reflect the expiry range.
+
+3. [ADVISORY] Optionally strengthen test_live_contracts_gtt_close_no_lookahead
+   by adding a T2 assertion where close_date < expiry_date so the gtt guard is
+   the operative discriminator at the boundary.
+
+No spec.json changes required. The production fix (leverage.py) is correct.

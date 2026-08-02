@@ -1,0 +1,135 @@
+================================================================================
+JUDGE VERDICT — F-07: fetch_gtt_signal_data (I/O Boundary, Phase 3)
+Round: 1
+Date: 2026-07-27
+Judge: Senior Staff Engineer (adversarial)
+================================================================================
+
+VERDICT: CONDITIONAL_PASS
+
+--------------------------------------------------------------------------------
+SCORECARDS
+--------------------------------------------------------------------------------
+
+Acceptance Criteria
+  AC-1  start_date < 1993-01-01 raises ValueError before any network call       MET
+  AC-2  Empty UNRATE raises ValueError (never silently all-Long)                 MET
+  AC-2b Empty VIX raises ValueError (never silently all-Long)                    MET
+  AC-3  Mocked success: position_mask == compute_position_mask(mocked inputs)    MET
+  AC-4  EMPIRICAL FRED-INDEXING CHECK present in slow integration test           MET*
+
+  * AC-4 is structurally present and correct; live execution not run in this
+    review session (requires FRED_API_KEY and network). The test logic is sound:
+    asserts index.day==1 and computed_pub >= true_pub for three known releases.
+    Marked MET on structural grounds; human must run `pytest -m slow` before
+    any production use to close the empirical gate.
+
+Test Coverage (full suite, -k "not slow")
+  Total: 98.51%  (floor 80%)  PASS
+  gtt.py: 100%  (pragma: no cover correctly excludes fetch_gtt_signal_data body)
+  All 355 tests pass, 0 failures.
+
+Mutation Testing
+  NOT APPLICABLE — spec.json mutation_testing.enabled = false for F-07.
+  Rationale accepted: pure I/O boundary, all logic delegated to pure functions
+  with their own test coverage; # pragma: no cover by design.
+
+FFI
+  NOT APPLICABLE — pure Python, no Rust layer.
+
+--------------------------------------------------------------------------------
+FINDINGS
+--------------------------------------------------------------------------------
+
+ADVISORY (non-blocking)
+
+A-01  src/finance/gtt.py:307 — one remaining long line (ruff E501 at 108 chars)
+      The `^VIX` yf.download call was not wrapped in the same refactor pass
+      that fixed the other three long lines. Ruff currently passes because the
+      pyproject.toml [tool.ruff] line-length = 100 and this line is 108.
+      Evidence: `uv run ruff check src/finance/gtt.py` — actually passes clean
+      per the Actor's final run. Re-checked manually: line 307 reads
+        `    vix_raw = yf.download("^VIX", start=start_date, end=end_date, auto_adjust=True, progress=False)`
+      which is 101 chars. Ruff passes; this is a WATCH item only.
+      Severity: advisory.
+
+A-02  unrate_trade_lag_days parameter is accepted but silently unused
+      The function signature accepts `unrate_trade_lag_days` (defaulting to
+      GTT_UNRATE_TRADE_LAG_DAYS = 1) but the value is never passed to any pure
+      function and is not reflected in the returned GttSignalData.
+      The docstring correctly documents this as "retained for API symmetry with
+      GttConfig" and explains that the publication lag lives inside
+      compute_ue_signal. This is intentional per the spec (compute_ue_signal
+      does the re-stamping internally; no per-signal day-count shift parameter
+      exists in that function's API). However, a caller who sets
+      unrate_trade_lag_days=2 gets no error and no effect — silent no-op.
+      The spec does not require a warning or error here; this is a known
+      API-symmetry simplification documented in the docstring.
+      Recommendation: add a note in the docstring or a mypy-suppressable
+      `_ = unrate_trade_lag_days` to make the intentional non-use explicit.
+      Severity: advisory.
+
+A-03  Empty-VTI path is tested (empty vti_raw raises), but the test for this
+      branch (test_fetch_gtt_empty_vix_raises) actually exercises only the
+      VIX-empty branch. There is no dedicated test that confirms an empty VTI
+      response raises ValueError. The spec edge cases do not explicitly require
+      this test, but the production code (gtt.py:300-304) has the branch.
+      Coverage is 100% via the pragma: no cover exclusion so this gap is
+      invisible to coverage. Not a FAIL because the VTI-empty raise is
+      structurally correct; the gap is a missing negative test only.
+      Severity: advisory.
+
+A-04  The slow integration test imports fetch_gtt_signal_data from the top-level
+      test namespace but also imports Fred and _first_friday_of_following_month
+      with inline `from` statements inside the function body. This is
+      stylistically inconsistent with the rest of the test file but is
+      functionally correct. Minor.
+
+BLOCKING
+  None.
+
+ESCALATION
+  None.
+
+--------------------------------------------------------------------------------
+EMPIRICAL GATE REMINDER (human action required)
+--------------------------------------------------------------------------------
+
+AC-4 (EMPIRICAL FRED-INDEXING CHECK) cannot be machine-verified in this review
+because it requires live network + FRED_API_KEY. The test logic is sound and
+covers the right invariants (month-start indexing, >=true BLS release date for
+three historical spot-checks, plus a full pipeline smoke test).
+
+ACTION REQUIRED before Phase 4 work begins:
+  export FRED_API_KEY=<your_key>
+  uv run pytest tests/test_gtt_fetch.py -m slow -v -s
+
+Expected: 1 passed, output showing 6 ref->pub date pairs and 3 [OK] assertions.
+If the test fails (FRED indexes differently), compute_ue_signal must be corrected.
+
+--------------------------------------------------------------------------------
+REQUIRED ACTOR ACTIONS
+--------------------------------------------------------------------------------
+
+  1. (ADVISORY A-02) Add `_ = unrate_trade_lag_days  # retained for API symmetry`
+     or extend the docstring with an explicit "this parameter has no effect on
+     the current implementation" note at the parameter definition site.
+     File: src/finance/gtt.py, inside fetch_gtt_signal_data body.
+
+  2. (ADVISORY A-03) Add a unit test for the empty-VTI branch:
+       mock FRED to return valid UNRATE, mock yf.download to return
+       empty DataFrame for "VTI" and valid data for "^VIX"; assert ValueError
+       with message matching "empty VTI" or "VTI.*empty".
+
+  These are advisory. The feature MAY be promoted to `completed` without them
+  if the human reviewer accepts the advisory findings. The empirical gate (AC-4)
+  must be run before any production/Phase-4 dependency takes a hard dependency
+  on this feature.
+
+--------------------------------------------------------------------------------
+STATUS UPDATE
+--------------------------------------------------------------------------------
+F-07-FETCH-GTT: CONDITIONAL_PASS
+spec.json features[F-07-FETCH-GTT].status -> "completed" pending human sign-off
+on AC-4 empirical check.
+================================================================================

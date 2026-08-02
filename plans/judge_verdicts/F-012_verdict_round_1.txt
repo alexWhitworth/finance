@@ -1,0 +1,26 @@
+F-012 JUDGE VERDICT — Round 1
+==============================
+Date: 2026-08-02
+Feature: F-012 — _apply_contribution extraction
+
+VERDICT: PASS
+
+CRITERIA
+--------
+1. Month-end Long day: sum(holdings_out) == sum(holdings_in) + base_contribution within 1e-9: PASS
+   - test_accounting_invariant_long_month_end PASSED
+2. Non-month-end day: state returned unchanged: PASS
+   - test_no_op_non_month_end PASSED
+
+COVERAGE: 100% (17/17 statements)
+mypy: PASS (--strict, no issues)
+Tests: 7/7 pass
+
+FINDINGS
+--------
+None. All routing logic tested: Long month-end, Defensive month-end (governed to sleeve,
+LEAPS to pool), re-entry month-end (governed to holdings). Pure function, no side effects.
+
+REQUIRED ACTIONS
+----------------
+None.

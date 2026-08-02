@@ -853,7 +853,7 @@
       "description": "Define PortfolioState as @dataclass(frozen=True) with all 11 fields. No methods. Constructable independently for unit testing.",
       "phase": "1a",
       "priority": 1,
-      "status": "pending_judge",
+      "status": "complete",
       "layer": "python",
       "dependencies": [],
       "linked_schemas": [
@@ -901,7 +901,7 @@
       "description": "Define DayInputs as @dataclass(frozen=True) with all 10 fields. No field may contain data with timestamp > date_ts.",
       "phase": "1b",
       "priority": 1,
-      "status": "pending_judge",
+      "status": "complete",
       "layer": "python",
       "dependencies": [],
       "linked_schemas": [
@@ -950,7 +950,7 @@
       "description": "Define BacktestContext as @dataclass(frozen=True) with all 22 fields. rebal_dates and month_end_dates use frozenset for O(1) lookup.",
       "phase": "1c",
       "priority": 1,
-      "status": "pending_judge",
+      "status": "complete",
       "layer": "python",
       "dependencies": [],
       "linked_schemas": [
@@ -998,7 +998,7 @@
       "description": "Extract all pre-loop validation and precomputed series logic from run_backtest into _build_context. All ValueError guards move here. Returns BacktestContext.",
       "phase": "2a",
       "priority": 2,
-      "status": "pending_judge",
+      "status": "complete",
       "layer": "python",
       "dependencies": [
         "F-001",
@@ -1052,7 +1052,7 @@
       "description": "Extract day-0 capital deployment from run_backtest. Sets holdings from initial_nav * (1 - leaps_fraction) * base_target_w. Runs first LEAPS simulation scoped to first Long window.",
       "phase": "2b",
       "priority": 2,
-      "status": "pending_judge",
+      "status": "complete",
       "layer": "python",
       "dependencies": [
         "F-003",
@@ -1105,7 +1105,7 @@
       "description": "Pure index lookup function. Extracts per-day scalars from precomputed context series. No computation beyond index access and None guards.",
       "phase": "2c",
       "priority": 2,
-      "status": "pending_judge",
+      "status": "complete",
       "layer": "python",
       "dependencies": [
         "F-002",
@@ -1157,7 +1157,7 @@
       "description": "Sweep governed equity holdings into defensive_sleeve at open of a defensive day. No-op on Long days or GTT-inactive portfolios.",
       "phase": "2d",
       "priority": 2,
-      "status": "pending_judge",
+      "status": "complete",
       "layer": "python",
       "dependencies": [
         "F-001",
@@ -1210,7 +1210,7 @@
       "description": "Force-close all live LEAPS contracts on Long->Defensive transition. Invariant A3: leaps_pool_delta == sum(evt.net_proceeds for new events).",
       "phase": "2e",
       "priority": 2,
-      "status": "pending_judge",
+      "status": "complete",
       "layer": "python",
       "dependencies": [
         "F-001",
@@ -1263,7 +1263,7 @@
       "description": "Compound base holdings by asset returns. Compound defensive_sleeve and leaps_pool by blended defensive return on defensive and re-entry days.",
       "phase": "2f",
       "priority": 2,
-      "status": "pending_judge",
+      "status": "complete",
       "layer": "python",
       "dependencies": [
         "F-001",
@@ -1317,7 +1317,7 @@
       "description": "Mark live LEAPS contracts to market. Suppressed on defensive days and re-entry days (Bug 1 fix: prevents stale ledger double-count). Uses smoothed MTM IV (NaN-guarded fallback to ctx.iv).",
       "phase": "2g",
       "priority": 1,
-      "status": "pending_judge",
+      "status": "complete",
       "layer": "python",
       "dependencies": [
         "F-001",
@@ -1371,7 +1371,7 @@
       "description": "Pure arithmetic helpers. nav_before = sum(holdings) + leaps_value + defensive_sleeve + leaps_pool. port_return = nav_before / prev_total_nav - 1.",
       "phase": "2h",
       "priority": 2,
-      "status": "pending_judge",
+      "status": "complete",
       "layer": "python",
       "dependencies": [
         "F-001"
@@ -1423,7 +1423,7 @@
       "description": "Add monthly contribution to holdings on month-end days. Routes governed-ticker share to defensive_sleeve on defensive days. Routes LEAPS share to leaps_pool on defensive days.",
       "phase": "2i",
       "priority": 2,
-      "status": "pending_judge",
+      "status": "complete",
       "layer": "python",
       "dependencies": [
         "F-001",
@@ -1476,7 +1476,7 @@
       "description": "Realign base holdings to base_target_w. QUARTERLY fires on is_rebal_date; DRIFT fires on is_month_end if band breached. Both are NAV-neutral. Drift also handles LEAPS overshoot via leaps_scale.",
       "phase": "2j",
       "priority": 2,
-      "status": "pending_judge",
+      "status": "complete",
       "layer": "python",
       "dependencies": [
         "F-001",
@@ -1529,7 +1529,7 @@
       "description": "Defensive->Long forced rebalance. Steps are load-bearing in fixed order. leaps_value priced at CREATION IV (max(raw_vix_value, ctx.iv)), NOT smoothed MTM IV. Bug 2 fix: ensures leaps_value == capital_deployed on creation day.",
       "phase": "2k",
       "priority": 1,
-      "status": "pending_judge",
+      "status": "complete",
       "layer": "python",
       "dependencies": [
         "F-001",
@@ -1582,7 +1582,7 @@
       "description": "Remaining step functions: advance state (update prev_* fields only), build weight row (must sum to 1.0), compute total NAV post-mutation, assemble final ledger from all windows.",
       "phase": "2l",
       "priority": 2,
-      "status": "pending_judge",
+      "status": "complete",
       "layer": "python",
       "dependencies": [
         "F-001",
