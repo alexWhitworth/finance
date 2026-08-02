@@ -158,6 +158,41 @@ class BacktestResult:
     config: PortfolioConfig
 
 
+@dataclass(frozen=True)
+class PortfolioState:
+    """Immutable snapshot of the portfolio at a single point in time.
+
+    Used by the GTT backtest loop to carry all mutable state forward without
+    mutation. Each loop iteration produces a new PortfolioState via
+    ``dataclasses.replace``.
+
+    Attributes:
+        holdings: Dollar value per base asset (ticker → value).
+        defensive_sleeve: Governed equity capital swept in during GTT defensive windows.
+        leaps_pool: Force-closed LEAPS net proceeds parked during defensive windows.
+        leaps_value: Current LEAPS mark-to-market value.
+        prev_total_nav: End-of-day NAV from t-1.
+        prev_regime: GTT regime on t-1 (1 = Long, 0 = Defensive).
+        prev_date_ts: Trading date of t-1, or None on the first iteration.
+        leaps_ledger: Active per-window LEAPS simulation ledger, or None.
+        leaps_scale: Surviving fraction per contract in (0, 1].
+        all_window_ledgers: Immutable accumulator of per-Long-window ledgers.
+        all_gtt_closes: Immutable accumulator of GTT force-close events.
+    """
+
+    holdings: dict[str, float]
+    defensive_sleeve: float
+    leaps_pool: float
+    leaps_value: float
+    prev_total_nav: float
+    prev_regime: int
+    prev_date_ts: pd.Timestamp | None
+    leaps_ledger: LeapsLedger | None
+    leaps_scale: dict[LeapsContract, float]
+    all_window_ledgers: tuple[LeapsLedger, ...]
+    all_gtt_closes: tuple[LeapsGttCloseEvent, ...]
+
+
 # ---------------------------------------------------------------------------
 # Pure helper functions
 # ---------------------------------------------------------------------------
