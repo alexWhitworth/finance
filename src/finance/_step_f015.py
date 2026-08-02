@@ -1,6 +1,6 @@
 """Step functions for F-015: final day-loop helpers.
 
-Extracted from run_backtest (portfolio.py lines 931–979).
+Extracted from run_backtest (portfolio.py lines 931-979).
 Each function is pure — no side effects, no mutation of inputs.
 
 Functions:
@@ -91,7 +91,7 @@ def _build_weight_row(
         Returns a zero-weight dict (all values 0.0) when total_nav <= 0.
     """
     if total_nav <= 0.0:
-        row: dict[str, float] = {a: 0.0 for a in ctx.base_assets}
+        row: dict[str, float] = dict.fromkeys(ctx.base_assets, 0.0)
         for k in ctx.leaps_keys:
             row[k] = 0.0
         return row

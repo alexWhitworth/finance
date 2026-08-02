@@ -1,4 +1,7 @@
-"""Tests for F-015: _compute_total_nav, _advance_state, _build_weight_row, _assemble_leaps_ledger."""
+"""Tests for F-015 step functions.
+
+Covers: _compute_total_nav, _advance_state, _build_weight_row, _assemble_leaps_ledger.
+"""
 
 import numpy as np
 import pandas as pd
@@ -21,7 +24,6 @@ from finance.leverage import (
 )
 from finance.portfolio import BacktestContext, DayInputs, PortfolioConfig, PortfolioState
 from finance.returns import ReturnData
-
 
 # ---------------------------------------------------------------------------
 # Shared fixtures
@@ -170,14 +172,17 @@ def _make_minimal_ctx(
     )
 
 
+_DEFAULT_DATE = pd.Timestamp("2023-03-31")
+
+
 def _make_day_inputs(
     *,
-    date_ts: pd.Timestamp = pd.Timestamp("2023-03-31"),
+    date_ts: pd.Timestamp | None = None,
     regime_t: int = 1,
 ) -> DayInputs:
     """Build a minimal DayInputs."""
     return DayInputs(
-        date_ts=date_ts,
+        date_ts=date_ts if date_ts is not None else _DEFAULT_DATE,
         day_ret=pd.Series({"VTI": 0.01}),
         regime_t=regime_t,
         def_gross_return=0.0,
