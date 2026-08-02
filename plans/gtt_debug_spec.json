@@ -1263,7 +1263,7 @@
       "description": "Compound base holdings by asset returns. Compound defensive_sleeve and leaps_pool by blended defensive return on defensive and re-entry days.",
       "phase": "2f",
       "priority": 2,
-      "status": "not_started",
+      "status": "pending_judge",
       "layer": "python",
       "dependencies": [
         "F-001",
