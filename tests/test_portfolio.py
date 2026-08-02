@@ -11,9 +11,9 @@ from finance.portfolio import (
     BacktestResult,
     PortfolioConfig,
     apply_contribution,
-    get_rebalance_dates,
+    _get_rebalance_dates,
     run_backtest,
-    should_rebalance,
+    _should_rebalance,
 )
 from finance.returns import ReturnData, build_return_data
 
@@ -100,14 +100,14 @@ def _make_rd_and_pd(
 
 
 # ---------------------------------------------------------------------------
-# get_rebalance_dates
+# _get_rebalance_dates
 # ---------------------------------------------------------------------------
 
 
 def test_rebalance_dates_are_in_index() -> None:
     """Every rebalance date falls within the provided index."""
     idx = pd.bdate_range("2015-01-02", periods=504)
-    dates = get_rebalance_dates(idx, RebalanceRule.QUARTERLY)
+    dates = _get_rebalance_dates(idx, RebalanceRule.QUARTERLY)
     for d in dates:
         assert d in idx
 
@@ -115,7 +115,7 @@ def test_rebalance_dates_are_in_index() -> None:
 def test_rebalance_dates_in_quarter_end_months() -> None:
     """All rebalance dates land in Mar / Jun / Sep / Dec."""
     idx = pd.bdate_range("2015-01-02", periods=1008)
-    dates = get_rebalance_dates(idx, RebalanceRule.QUARTERLY)
+    dates = _get_rebalance_dates(idx, RebalanceRule.QUARTERLY)
     for d in dates:
         assert d.month in _QUARTER_END_MONTHS
 
@@ -123,7 +123,7 @@ def test_rebalance_dates_in_quarter_end_months() -> None:
 def test_rebalance_dates_are_last_day_of_month() -> None:
     """Each rebalance date is the last trading day of its month."""
     idx = pd.bdate_range("2015-01-02", periods=1008)
-    dates = get_rebalance_dates(idx, RebalanceRule.QUARTERLY)
+    dates = _get_rebalance_dates(idx, RebalanceRule.QUARTERLY)
     for d in dates:
         later_in_month = idx[(idx.month == d.month) & (idx.year == d.year) & (idx > d)]
         assert len(later_in_month) == 0
@@ -132,14 +132,14 @@ def test_rebalance_dates_are_last_day_of_month() -> None:
 def test_rebalance_dates_count_roughly_four_per_year() -> None:
     """For a 2-year window we get exactly 8 quarterly dates."""
     idx = pd.bdate_range("2015-01-02", "2016-12-31")
-    dates = get_rebalance_dates(idx, RebalanceRule.QUARTERLY)
+    dates = _get_rebalance_dates(idx, RebalanceRule.QUARTERLY)
     assert len(dates) == 8
 
 
 def test_rebalance_dates_sorted() -> None:
     """Returned list is chronologically sorted."""
     idx = pd.bdate_range("2015-01-02", periods=504)
-    dates = get_rebalance_dates(idx, RebalanceRule.QUARTERLY)
+    dates = _get_rebalance_dates(idx, RebalanceRule.QUARTERLY)
     assert dates == sorted(dates)
 
 # ---------------------------------------------------------------------------
@@ -314,7 +314,7 @@ def test_run_backtest_weights_snapped_on_rebalance_date() -> None:
     cfg = _config()
     result = run_backtest(rd, pd_obj, cfg)
     idx = pd.DatetimeIndex(rd.returns.index)
-    rdates = get_rebalance_dates(idx, RebalanceRule.QUARTERLY)
+    rdates = _get_rebalance_dates(idx, RebalanceRule.QUARTERLY)
     tol = 1e-6
     for d in rdates:
         if d in result.weight_history.index:
@@ -405,38 +405,38 @@ def test_run_backtest_config_stored() -> None:
 
 
 # ---------------------------------------------------------------------------
-# should_rebalance
+# _should_rebalance
 # ---------------------------------------------------------------------------
 
 
-def test_should_rebalance_quarterly_always_false() -> None:
+def test__should_rebalance_quarterly_always_false() -> None:
     """QUARTERLY rule always returns False regardless of weight deviation."""
     current = pd.Series({"A": 0.80, "B": 0.20})
     target = pd.Series({"A": 0.50, "B": 0.50})
-    assert should_rebalance(current, target, RebalanceRule.QUARTERLY) is False
+    assert _should_rebalance(current, target, RebalanceRule.QUARTERLY) is False
 
 
-def test_should_rebalance_drift_no_trigger_within_band() -> None:
+def test__should_rebalance_drift_no_trigger_within_band() -> None:
     """DRIFT rule returns False when all relative deviations are within the band.
 
     target=0.50, current=0.54 → deviation = 0.04/0.50 = 8% < 10%.
     """
     current = pd.Series({"A": 0.54, "B": 0.46})
     target = pd.Series({"A": 0.50, "B": 0.50})
-    assert should_rebalance(current, target, RebalanceRule.DRIFT) is False
+    assert _should_rebalance(current, target, RebalanceRule.DRIFT) is False
 
 
-def test_should_rebalance_drift_triggers_at_band_breach() -> None:
+def test__should_rebalance_drift_triggers_at_band_breach() -> None:
     """DRIFT rule returns True when one asset exceeds the 10% relative band.
 
     target=0.50, current=0.56 → deviation = 0.06/0.50 = 12% > 10%.
     """
     current = pd.Series({"A": 0.56, "B": 0.44})
     target = pd.Series({"A": 0.50, "B": 0.50})
-    assert should_rebalance(current, target, RebalanceRule.DRIFT) is True
+    assert _should_rebalance(current, target, RebalanceRule.DRIFT) is True
 
 
-def test_should_rebalance_drift_zero_target_weight_skipped() -> None:
+def test__should_rebalance_drift_zero_target_weight_skipped() -> None:
     """DRIFT rule skips assets with target=0.0 (division by zero guard).
 
     Asset B has target=0.0 and current=0.05; must not raise and return False
@@ -445,15 +445,15 @@ def test_should_rebalance_drift_zero_target_weight_skipped() -> None:
     current = pd.Series({"A": 0.95, "B": 0.05})
     target = pd.Series({"A": 1.00, "B": 0.00})
     # A: |0.95 - 1.00| / 1.00 = 5% < 10%; B skipped
-    assert should_rebalance(current, target, RebalanceRule.DRIFT) is False
+    assert _should_rebalance(current, target, RebalanceRule.DRIFT) is False
 
 
-def test_should_rebalance_drift_uses_custom_band() -> None:
+def test__should_rebalance_drift_uses_custom_band() -> None:
     """Custom band=0.05 triggers on an 8% relative deviation (outside 5%, within 10%)."""
     current = pd.Series({"A": 0.54, "B": 0.46})
     target = pd.Series({"A": 0.50, "B": 0.50})
     # Default 10% band: no trigger; custom 5% band: 8% > 5% → trigger
-    assert should_rebalance(current, target, RebalanceRule.DRIFT, band=0.05) is True
+    assert _should_rebalance(current, target, RebalanceRule.DRIFT, band=0.05) is True
 
 
 # ---------------------------------------------------------------------------
