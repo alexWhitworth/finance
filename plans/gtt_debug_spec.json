@@ -676,7 +676,7 @@
       "description": "Force-close all live LEAPS contracts on Long->Defensive transition. Invariant A3: leaps_pool_delta == sum(evt.net_proceeds for new events).",
       "phase": "2e",
       "priority": 2,
-      "status": "not_started",
+      "status": "pending_judge",
       "layer": "python",
       "dependencies": ["F-001", "F-002", "F-003"],
       "linked_schemas": ["DS-001"],
