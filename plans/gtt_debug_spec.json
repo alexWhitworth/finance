@@ -1105,7 +1105,7 @@
       "description": "Pure index lookup function. Extracts per-day scalars from precomputed context series. No computation beyond index access and None guards.",
       "phase": "2c",
       "priority": 2,
-      "status": "not_started",
+      "status": "pending_judge",
       "layer": "python",
       "dependencies": [
         "F-002",
