@@ -11,7 +11,7 @@ Accounting invariant A-open:
 
 from dataclasses import replace
 
-from finance._portfolio_types import BacktestContext, DayInputs, PortfolioState
+from finance.portfolio import BacktestContext, DayInputs, PortfolioState
 
 
 def _apply_gtt_open(

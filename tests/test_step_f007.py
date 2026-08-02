@@ -15,10 +15,9 @@ import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from finance._portfolio_types import BacktestContext, DayInputs, PortfolioState
 from finance._step_f007 import _apply_gtt_open
 from finance.leverage import RebalanceRule, WeightStrategy
-from finance.portfolio import PortfolioConfig
+from finance.portfolio import BacktestContext, DayInputs, PortfolioConfig, PortfolioState
 from finance.returns import ReturnData
 
 # ---------------------------------------------------------------------------
