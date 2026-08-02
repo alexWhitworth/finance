@@ -579,18 +579,20 @@ def run_backtest(
         ValueError: If gtt_signal is set and a non-R_f defensive_weights ticker is
             absent from return_data.
     """
-    from finance._step_f004 import _build_context
-    from finance._step_f005 import _build_initial_state
-    from finance._step_f006 import _extract_day_inputs
-    from finance._step_f007 import _apply_gtt_open
-    from finance._step_f008 import _apply_gtt_force_close
-    from finance._step_f009 import _apply_defensive_compounding, _apply_returns
-    from finance._step_f010 import _compute_leaps_mtm
-    from finance._step_f011 import _compute_nav_before_contrib, _compute_port_return
-    from finance._step_f012 import _apply_contribution
-    from finance._step_f013 import _apply_rebalance
-    from finance._step_f014 import _apply_gtt_reentry
-    from finance._step_f015 import (
+    from finance._backtest_steps import (
+        _build_context,
+        _build_initial_state,
+        _extract_day_inputs,
+        _apply_gtt_open,
+        _apply_gtt_force_close,
+        _apply_defensive_compounding, 
+        _apply_returns,
+        _compute_leaps_mtm,
+        _compute_nav_before_contrib, 
+        _compute_port_return,
+        _apply_contribution,
+        _apply_rebalance,
+        _apply_gtt_reentry,
         _advance_state,
         _assemble_leaps_ledger,
         _build_weight_row,
