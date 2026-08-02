@@ -1052,7 +1052,7 @@
       "description": "Extract day-0 capital deployment from run_backtest. Sets holdings from initial_nav * (1 - leaps_fraction) * base_target_w. Runs first LEAPS simulation scoped to first Long window.",
       "phase": "2b",
       "priority": 2,
-      "status": "not_started",
+      "status": "pending_judge",
       "layer": "python",
       "dependencies": [
         "F-003",
