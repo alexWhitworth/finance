@@ -1423,7 +1423,7 @@
       "description": "Add monthly contribution to holdings on month-end days. Routes governed-ticker share to defensive_sleeve on defensive days. Routes LEAPS share to leaps_pool on defensive days.",
       "phase": "2i",
       "priority": 2,
-      "status": "not_started",
+      "status": "pending_judge",
       "layer": "python",
       "dependencies": [
         "F-001",
