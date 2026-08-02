@@ -193,6 +193,44 @@ class PortfolioState:
     all_gtt_closes: tuple[LeapsGttCloseEvent, ...]
 
 
+@dataclass(frozen=True)
+class DayInputs:
+    """Per-day read-only inputs extracted from precomputed series before the step pipeline runs.
+
+    No field contains data with timestamp > date_ts (temporal invariant T1). Enforced by
+    construction in _extract_day_inputs.
+
+    Attributes:
+        date_ts: Current trading day.
+        day_ret: Asset returns for this day, indexed by ticker.
+        regime_t: GTT regime for today: 0=Defensive, 1=Long (from mask_aligned).
+        def_gross_return: Blended defensive sleeve return for today (0.0 if GTT inactive).
+        spot: Underlying LEAPS spot price at date_ts (None if no LEAPS).
+        raw_vix_value: Raw VIX at date_ts (None if no vol_prices). Used as creation IV on
+            re-entry.
+        mtm_iv_value: 30-day rolling mean VIX at date_ts (None or NaN during 29-day warmup).
+            Used for daily MTM.
+        rfr: Risk-free rate at date_ts.
+        is_month_end: True if date_ts is the last trading day of a calendar month.
+        is_rebal_date: True if date_ts is a scheduled quarterly rebalance date.
+
+    Notes:
+        frozen=True prevents field reassignment but does not prevent in-place mutation of the
+        day_ret Series. By convention, day_ret must never be mutated after construction.
+    """
+
+    date_ts: pd.Timestamp
+    day_ret: pd.Series
+    regime_t: int
+    def_gross_return: float
+    spot: float | None
+    raw_vix_value: float | None
+    mtm_iv_value: float | None
+    rfr: float
+    is_month_end: bool
+    is_rebal_date: bool
+
+
 # ---------------------------------------------------------------------------
 # Pure helper functions
 # ---------------------------------------------------------------------------
