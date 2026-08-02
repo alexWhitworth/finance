@@ -45,6 +45,7 @@ from finance.leverage import (
     LeapsLedger,
     LeapsPartialCloseEvent,
     RebalanceRule,
+    WeightStrategy,
     _live_contracts,
     close_leaps_contract,
     price_leaps_contract,

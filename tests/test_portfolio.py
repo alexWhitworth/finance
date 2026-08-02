@@ -11,7 +11,6 @@ from finance.portfolio import (
     BacktestResult,
     PortfolioConfig,
     apply_contribution,
-    compute_target_weights,
     get_rebalance_dates,
     run_backtest,
     should_rebalance,
@@ -142,29 +141,6 @@ def test_rebalance_dates_sorted() -> None:
     idx = pd.bdate_range("2015-01-02", periods=504)
     dates = get_rebalance_dates(idx, RebalanceRule.QUARTERLY)
     assert dates == sorted(dates)
-
-
-# ---------------------------------------------------------------------------
-# compute_target_weights
-# ---------------------------------------------------------------------------
-
-
-def test_compute_target_weights_user_specified_sums_to_one() -> None:
-    """USER_SPECIFIED weights (already unit-normed) pass through summing to 1.0."""
-    cfg = _config(weights={"A": 0.4, "B": 0.4, "C": 0.2})
-    current = pd.Series({"A": 0.4, "B": 0.4, "C": 0.2})
-    w = compute_target_weights(cfg, current, 1_000.0, pd.Timestamp("2020-01-02"))
-    assert w.sum() == pytest.approx(1.0, abs=1e-12)
-
-
-def test_compute_target_weights_user_specified_proportions() -> None:
-    """USER_SPECIFIED weights (unit-normed) preserve the given proportions."""
-    cfg = _config(weights={"A": 0.75, "B": 0.25})
-    current = pd.Series({"A": 0.5, "B": 0.5})
-    w = compute_target_weights(cfg, current, 1_000.0, pd.Timestamp("2020-01-02"))
-    assert w["A"] == pytest.approx(0.75, abs=1e-9)
-    assert w["B"] == pytest.approx(0.25, abs=1e-9)
-
 
 # ---------------------------------------------------------------------------
 # apply_contribution
