@@ -1476,7 +1476,7 @@
       "description": "Realign base holdings to base_target_w. QUARTERLY fires on is_rebal_date; DRIFT fires on is_month_end if band breached. Both are NAV-neutral. Drift also handles LEAPS overshoot via leaps_scale.",
       "phase": "2j",
       "priority": 2,
-      "status": "not_started",
+      "status": "pending_judge",
       "layer": "python",
       "dependencies": [
         "F-001",
