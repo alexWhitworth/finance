@@ -50,7 +50,7 @@ from finance.leverage import (
     price_leaps_contract,
     run_leaps_simulation,
 )
-from finance._portfolio_steps import (
+from finance._portfolio_types import (
     BacktestContext,
     DayInputs,
     PortfolioConfig,
@@ -168,22 +168,6 @@ def _gtt_governed_keys(target_weights: dict[str, float]) -> set[str]:
             governed.add(key)
     return governed
 
-
-def _reindex_position_mask(mask: pd.Series, index: pd.DatetimeIndex) -> pd.Series:
-    """Align a position mask to the backtest index, defaulting gaps to Long.
-
-    Missing dates (holiday misalignment) are forward-filled from the last known
-    signal; leading dates before any signal exists default to 1 (Long), so the
-    overlay never forces a defensive posture on unknown data.
-
-    Arguments:
-        mask: 0/1 position mask (1=Long, 0=Defensive), DatetimeIndex.
-        index: Target backtest trading-day index.
-
-    Returns:
-        Int Series aligned to index, values in {0, 1}, no NaN.
-    """
-    return mask.reindex(index, method="ffill").fillna(1).astype(int)
 
 
 def _long_windows(mask: pd.Series) -> list[tuple[pd.Timestamp, pd.Timestamp]]:
@@ -344,7 +328,7 @@ def _build_context(
     if gtt_active:
         assert gtt_signal is not None and config.gtt_config is not None
         defensive_weights = config.gtt_config.defensive_weights
-        mask_aligned = _reindex_position_mask(gtt_signal.position_mask, idx)
+        mask_aligned = gtt_signal.position_mask.reindex(idx, method="ffill").fillna(1).astype(int)
         def_gross = _defensive_gross_return(
             returns, return_data.risk_free_rate, defensive_weights
         )

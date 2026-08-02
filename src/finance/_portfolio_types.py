@@ -1,5 +1,13 @@
+"""Frozen dataclasses shared between portfolio.py and _backtest_steps.py.
+
+Isolated here to break the circular import: _backtest_steps imports these
+types, and portfolio imports _backtest_steps.
+"""
+
+from __future__ import annotations
 
 from dataclasses import dataclass, field
+
 import pandas as pd
 
 from finance.consts import (
@@ -9,7 +17,6 @@ from finance.consts import (
     GTT_UNRATE_TRADE_LAG_DAYS,
     GTT_VIX_CONSECUTIVE_DAYS,
 )
-
 from finance.leverage import (
     LeapsConfig,
     LeapsContract,
@@ -18,10 +25,9 @@ from finance.leverage import (
     RebalanceRule,
     WeightStrategy,
 )
+from finance.returns import ReturnData
 
-# ---------------------------------------------------------------------------
-# Dataclasses
-# ---------------------------------------------------------------------------
+
 @dataclass(frozen=True)
 class GttConfig:
     """Configuration for the GTT (Growth Trend Timing) market-timing overlay.

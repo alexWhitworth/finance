@@ -21,7 +21,6 @@ from finance.portfolio import (
     _defensive_gross_return,
     _gtt_governed_keys,
     _long_windows,
-    _reindex_position_mask,
     run_backtest,
 )
 from finance.returns import ReturnData, build_return_data
@@ -250,38 +249,6 @@ def test_governed_keys_leaps_without_base() -> None:
 
 
 # ---------------------------------------------------------------------------
-# F-10b — _reindex_position_mask
-# ---------------------------------------------------------------------------
-
-
-def test_reindex_mask_ffill_across_holiday_gap() -> None:
-    """A missing (holiday) date forward-fills from the prior signal value."""
-    src_idx = pd.to_datetime(["2020-01-02", "2020-01-06"])
-    mask = pd.Series([0, 1], index=src_idx)
-    target = pd.to_datetime(["2020-01-02", "2020-01-03", "2020-01-06"])
-    out = _reindex_position_mask(mask, pd.DatetimeIndex(target))
-    assert out.tolist() == [0, 0, 1]  # 01-03 ffills the 01-02 value (0)
-    assert out.dtype == int
-
-
-def test_reindex_mask_leading_gap_defaults_long() -> None:
-    """Dates before any signal default to 1 (Long)."""
-    src_idx = pd.to_datetime(["2020-01-10"])
-    mask = pd.Series([0], index=src_idx)
-    target = pd.to_datetime(["2020-01-08", "2020-01-09", "2020-01-10"])
-    out = _reindex_position_mask(mask, pd.DatetimeIndex(target))
-    assert out.tolist() == [1, 1, 0]
-
-
-def test_reindex_mask_domain_is_zero_one() -> None:
-    """Output is always in {0, 1}."""
-    idx = pd.bdate_range("2021-01-04", periods=10)
-    mask = pd.Series([0, 1, 0, 1, 0, 1, 0, 1, 0, 1], index=idx)
-    out = _reindex_position_mask(mask, pd.DatetimeIndex(idx))
-    assert set(out.unique()).issubset({0, 1})
-
-
-# ---------------------------------------------------------------------------
 # F-10b — _defensive_gross_return
 # ---------------------------------------------------------------------------
 
@@ -418,9 +385,9 @@ def test_rebalance_on_defensive_day_keeps_vti_zero() -> None:
     rd, pd_obj = _make_rd_and_pd(504)
     idx = pd.DatetimeIndex(rd.returns.index)
     # Find a quarterly rebalance date and force a defensive window covering it.
-    from finance.portfolio import get_rebalance_dates
+    from finance.portfolio import _get_rebalance_dates
 
-    rebal = get_rebalance_dates(idx, RebalanceRule.QUARTERLY)
+    rebal = _get_rebalance_dates(idx, RebalanceRule.QUARTERLY)
     assert rebal, "expected at least one rebalance date in a 2y window"
     pos = idx.get_loc(rebal[len(rebal) // 2])
     gtt = run_backtest(
