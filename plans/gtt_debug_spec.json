@@ -1529,7 +1529,7 @@
       "description": "Defensive->Long forced rebalance. Steps are load-bearing in fixed order. leaps_value priced at CREATION IV (max(raw_vix_value, ctx.iv)), NOT smoothed MTM IV. Bug 2 fix: ensures leaps_value == capital_deployed on creation day.",
       "phase": "2k",
       "priority": 1,
-      "status": "not_started",
+      "status": "pending_judge",
       "layer": "python",
       "dependencies": [
         "F-001",
