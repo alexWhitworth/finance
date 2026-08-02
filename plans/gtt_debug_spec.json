@@ -998,7 +998,7 @@
       "description": "Extract all pre-loop validation and precomputed series logic from run_backtest into _build_context. All ValueError guards move here. Returns BacktestContext.",
       "phase": "2a",
       "priority": 2,
-      "status": "not_started",
+      "status": "pending_judge",
       "layer": "python",
       "dependencies": [
         "F-001",
