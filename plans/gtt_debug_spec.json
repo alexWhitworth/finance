@@ -1706,7 +1706,7 @@
       "description": "For all 4 configs {no GTT, GTT} x {no LEAPS, LEAPS}: nav[-1] == initial_nav * prod(1+r) + sum(contributions). Uses zero-contribution and non-zero contribution variants.",
       "phase": "4a",
       "priority": 1,
-      "status": "not_started",
+      "status": "pending_judge",
       "layer": "python",
       "dependencies": [
         "F-016"
@@ -1755,7 +1755,7 @@
       "description": "For every day t: nav_series[t] == nav_series[t-1] * (1 + return_series[t]) + contribution_on_t. Runs full GTT+LEAPS backtest with step-level assertion hook.",
       "phase": "4b",
       "priority": 1,
-      "status": "not_started",
+      "status": "pending_judge",
       "layer": "python",
       "dependencies": [
         "F-016"
