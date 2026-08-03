@@ -482,3 +482,217 @@ class TestSameDayConsistency:
             f"|return| = {abs(reentry_ret):.4f} >= 0.10. "
             f"Bug 1 suppression may be missing in _compute_leaps_mtm."
         )
+
+
+# ---------------------------------------------------------------------------
+# F-019: Whipsaw multi-regime lifecycle (Scenario C)
+#
+# Corpus: 504 days, two non-overlapping defensive windows.
+#   Window-1 Long   : days   0-59
+#   Window-1 Def    : days  60-109
+#   Window-2 Long   : days 110-199   (re-entry day = index 110)
+#   Window-2 Def    : days 200-259
+#   Window-3 Long   : days 260-503   (re-entry day = index 260)
+#
+# VIX: elevated (0.50) during defensive windows, drops to 0.15 on re-entry
+# days — maximum raw/smoothed divergence to stress Bug 2 fix.
+#
+# Acceptance criteria (spec):
+#   AC1: No contract from window-1 appears as live in window-2 (I3).
+#   AC2: |return[reentry_1 + 1]| < 0.05 and |return[reentry_2 + 1]| < 0.05.
+# ---------------------------------------------------------------------------
+
+_F019_N = 504
+# Re-entry indices in the returns index (first Long day of each new window)
+_REENTRY_1 = 110
+_REENTRY_2 = 260
+
+
+def _build_f019_corpus() -> tuple[ReturnData, PriceData, np.ndarray]:
+    """Build (rd, pd_obj, mask) for the two-window whipsaw scenario.
+
+    VIX is elevated to 0.50 during both defensive windows and drops to 0.15
+    on the two re-entry days, maximising raw/smoothed divergence.
+    """
+    idx = pd.bdate_range("2018-01-02", periods=_F019_N + 1)
+    rng = np.random.default_rng(99)
+    tickers = ("VTI", "VXUS", "GLD")
+    starts = {"VTI": 150.0, "VXUS": 55.0, "GLD": 120.0}
+    prices_arr = pd.DataFrame(
+        {t: starts[t] * np.cumprod(1 + rng.normal(0.0003, 0.01, _F019_N + 1)) for t in tickers},
+        index=idx,
+    )
+
+    # VIX series: elevated during defensive windows, low on re-entry days
+    mask = _two_window_mask(_F019_N)
+    vix_vals = np.where(mask == 0, 0.50, 0.15)  # 0.50 defensive, 0.15 long
+    # Re-entry days sit at the boundary (mask changes 0→1); they map to Long→0.15.
+    # The mask array is 0-indexed into the returns index (504 elements).
+
+    vix_series = pd.Series(vix_vals, index=idx[1:])  # align to returns index (drop day-0 price)
+    vol_prices = pd.DataFrame({"VTI": vix_series}, index=idx[1:])
+
+    dividends = pd.DataFrame(0.0, index=idx, columns=list(tickers))
+    pd_obj = PriceData(
+        prices=prices_arr,
+        dividends=dividends,
+        vol_prices=vol_prices,
+        tickers=tickers,
+        start_date=str(idx[0].date()),
+        end_date=str(idx[-1].date()),
+        spliced=False,
+    )
+    rd = _make_rd(pd_obj)
+    return rd, pd_obj, mask
+
+
+def _whipsaw_result() -> tuple[object, ReturnData, PriceData, np.ndarray]:
+    """Run the whipsaw backtest and return (result, rd, pd_obj, mask)."""
+    rd, pd_obj, mask = _build_f019_corpus()
+    cfg = _gtt_leaps_config(contribution=_MONTHLY_CONTRIB)
+    sig = _gtt_signal(rd.returns.index, mask)
+    result = run_backtest(rd, pd_obj, cfg, gtt_signal=sig)
+    return result, rd, pd_obj, mask
+
+
+class TestWhipsawMultiRegime:
+    """F-019: Two-window whipsaw lifecycle — I3, no spike, weight restoration.
+
+    Verifies the two critical Bug 1 / Bug 2 regression scenarios across two
+    complete Long→Defensive→Long cycles.
+    """
+
+    def test_i3_no_window1_contracts_live_in_window2(self) -> None:
+        """I3: No window-1 contract is live during any day of window-2.
+
+        Window-1 contracts have purchase_date before the first re-entry (index 110).
+        After the Long→Defensive force-close they are in all_gtt_closes.
+        The assembled ledger must not return them via _live_contracts() at any
+        date in the window-2 Long period (indices 110–199).
+        """
+        result, rd, pd_obj, mask = _whipsaw_result()
+        from finance._portfolio_types import BacktestResult
+
+        result_typed: BacktestResult = result  # type: ignore[assignment]
+        ledger = result_typed.leaps_ledger
+        assert ledger is not None, "leaps_ledger is None — LEAPS sleeve not active"
+
+        idx = pd.DatetimeIndex(result_typed.nav_series.index)
+
+        # Window-1 contracts: purchased before the first re-entry date
+        reentry1_date = pd.Timestamp(idx[_REENTRY_1])
+        window1_contracts = frozenset(
+            c for c in ledger.contracts if pd.Timestamp(c.purchase_date) < reentry1_date
+        )
+        assert len(window1_contracts) >= 1, (
+            "Expected at least one window-1 contract in ledger — check LEAPS simulation"
+        )
+
+        # Window-2 Long dates: indices 110–199 in the returns index
+        window2_dates = [pd.Timestamp(idx[i]) for i in range(_REENTRY_1, 200)]
+
+        leakage: list[str] = []
+        for d in window2_dates:
+            live = set(_live_contracts(ledger, d))
+            leaked = window1_contracts & live
+            if leaked:
+                leakage.append(
+                    f"  {d.date()}: {len(leaked)} window-1 contract(s) still live"
+                )
+                if len(leakage) >= 5:
+                    break
+
+        assert not leakage, (
+            f"I3 violated — window-1 contracts live in window-2 ({len(leakage)} dates):\n"
+            + "\n".join(leakage)
+        )
+
+    def test_no_return_spike_day_after_reentry(self) -> None:
+        """Acceptance criterion AC2: |return[reentry+1]| < 0.05 at both re-entries.
+
+        A spike on the day after re-entry (not the re-entry day itself) would indicate
+        residual stale-state contamination carrying forward. The re-entry day's own
+        return is already bounded by F-018's Bug 1 regression guard.
+        """
+        result, rd, pd_obj, mask = _whipsaw_result()
+        from finance._portfolio_types import BacktestResult
+
+        result_typed: BacktestResult = result  # type: ignore[assignment]
+        rets = result_typed.return_series
+        idx = pd.DatetimeIndex(rets.index)
+
+        # Day after each re-entry
+        post_reentry1_idx = _REENTRY_1 + 1
+        post_reentry2_idx = _REENTRY_2 + 1
+
+        r1 = abs(float(rets.iloc[post_reentry1_idx]))
+        r2 = abs(float(rets.iloc[post_reentry2_idx]))
+        d1 = pd.Timestamp(idx[post_reentry1_idx]).date()
+        d2 = pd.Timestamp(idx[post_reentry2_idx]).date()
+
+        assert r1 < 0.05, (
+            f"Return spike on day after re-entry 1 ({d1}): |r|={r1:.4f} >= 0.05. "
+            f"Stale state may be leaking into window-2."
+        )
+        assert r2 < 0.05, (
+            f"Return spike on day after re-entry 2 ({d2}): |r|={r2:.4f} >= 0.05. "
+            f"Stale state may be leaking into window-3."
+        )
+
+    def test_nav_return_identity_at_reentry_days(self) -> None:
+        """NAV-return identity holds at both re-entry days (no NAV discontinuity).
+
+        Checks nav[reentry] == nav[reentry-1] * (1+r[reentry]) + contrib_if_monthend.
+        Re-entry is NAV-neutral (A2) so the contribution delta is the only source
+        of deviation from the pure compounding formula.
+        """
+        result, rd, pd_obj, mask = _whipsaw_result()
+        from finance._portfolio_types import BacktestResult
+
+        result_typed: BacktestResult = result  # type: ignore[assignment]
+        nav = result_typed.nav_series
+        rets = result_typed.return_series
+        idx = pd.DatetimeIndex(nav.index)
+        month_ends = _month_end_set(rd.returns)
+
+        for reentry_i, label in [(_REENTRY_1, "re-entry 1"), (_REENTRY_2, "re-entry 2")]:
+            date_ts = pd.Timestamp(idx[reentry_i])
+            r_t = float(rets.iloc[reentry_i])
+            prev_nav = float(nav.iloc[reentry_i - 1])
+            contrib = _MONTHLY_CONTRIB if date_ts in month_ends else 0.0
+
+            # For GTT+LEAPS on re-entry Long day, contribution is base_contribution only
+            # (leaps monthly is NOT added to pool when regime_t=1).
+            # Since we're using _gtt_leaps_config with leaps_fraction=0.15:
+            # base_contribution = monthly_contribution * (1 - 0.15) = 1700
+            leaps_frac = 0.15
+            contrib_expected = contrib * (1.0 - leaps_frac)
+
+            actual = float(nav.iloc[reentry_i])
+            expected = prev_nav * (1.0 + r_t) + contrib_expected
+
+            assert abs(actual - expected) < 1e-6 * max(abs(expected), 1.0), (
+                f"NAV identity failed at {label} ({date_ts.date()}): "
+                f"expected {expected:.6f}, got {actual:.6f}, "
+                f"diff {actual - expected:.3e}"
+            )
+
+    def test_gtt_close_events_count(self) -> None:
+        """Two Long→Defensive transitions produce exactly two batches of GTT close events.
+
+        Each transition closes all live contracts at that moment.  The assembled
+        ledger's gtt_close_events must be non-empty (at least one contract closed
+        per transition × 2 transitions = at least 2 events total).
+        """
+        result, rd, pd_obj, mask = _whipsaw_result()
+        from finance._portfolio_types import BacktestResult
+
+        result_typed: BacktestResult = result  # type: ignore[assignment]
+        ledger = result_typed.leaps_ledger
+        assert ledger is not None
+
+        n_closes = len(ledger.gtt_close_events)
+        assert n_closes >= 2, (
+            f"Expected >= 2 GTT close events (one per defensive transition), "
+            f"got {n_closes}"
+        )

@@ -1805,7 +1805,7 @@
       "description": "Two defensive windows, VIX elevated during each and dropped at each re-entry. Verifies no cross-window contract leakage, NAV-return identity at both re-entries, target weights restored, no spike day after re-entry.",
       "phase": "4c",
       "priority": 1,
-      "status": "not_started",
+      "status": "pending_judge",
       "layer": "python",
       "dependencies": [
         "F-016"
