@@ -1,8 +1,9 @@
-"""End-to-end GTT vs. buy-and-hold comparison for the 6-asset diversified portfolio.
+"""End-to-end GTT vs. buy-and-hold comparison for the 6-asset diversified portfolio
+with LEAPS overlay.
 
 Fetches prices with data splicing for assets without long price history (eg VTI -> VTSMX),
-runs quarterly-rebalanced backtests for both GTT-enabled and GTT-disabled configurations, 
-then prints a side-by-side performance comparison and saves a NAV growth chart 
+runs rebalanced backtests for both GTT-enabled and GTT-disabled configurations, 
+then prints a side-by-side-by-side performance comparison and saves a NAV growth chart 
 to outputs/figures/gtt_comparison_nav.png.
 
 Usage:
@@ -92,7 +93,7 @@ if __name__ == "__main__":
             gtt_config=None,
         )
 
-    base_leaps_drfit = PortfolioConfig(
+    base_leaps_drift = PortfolioConfig(
         target_weights=WEIGHTS,
         initial_nav=INITIAL_NAV,
         monthly_contribution=MONTHLY_CONTRIBUTION,
@@ -125,7 +126,7 @@ if __name__ == "__main__":
 
     print("=== Running Backtests ===")
     base_qtr_result = run_backtest(return_data, price_data, base_leaps_qtr)
-    base_drift_result = run_backtest(return_data, price_data, base_leaps_drfit)
+    base_drift_result = run_backtest(return_data, price_data, base_leaps_drift)
     gtt_result = run_backtest(return_data, price_data, gtt_leaps_drift, gtt_signal=gtt_signal)
 
     print("=== Building Volatility Model ===")
