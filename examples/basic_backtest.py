@@ -9,7 +9,11 @@ NAV growth chart to figures/basic_backtest_nav.png.
 from pathlib import Path
 
 from finance.data import build_price_data, fetch_risk_free_rate
-from finance.figures import format_performance_table, plot_nav_growth
+from finance.figures import (
+    compare_performance_table,
+    format_performance_table,
+    plot_nav_growth
+)
 from finance.leverage import RebalanceRule, WeightStrategy
 from finance.metrics import build_performance_report
 from finance.portfolio import PortfolioConfig, run_backtest
@@ -37,7 +41,7 @@ if __name__ == "__main__":
     print("=== Building Returns ===")
     return_data = build_return_data(price_data, risk_free_series=rfr_series)
 
-    config = PortfolioConfig(
+    qtr_config = PortfolioConfig(
         target_weights=WEIGHTS,
         initial_nav=1_000_000.0,
         monthly_contribution=10_000.0,
@@ -46,22 +50,36 @@ if __name__ == "__main__":
         leaps_config=None,
     )
 
+    drift_config = PortfolioConfig(
+        target_weights=WEIGHTS,
+        initial_nav=1_000_000.0,
+        monthly_contribution=10_000.0,
+        rebalance_rule=RebalanceRule.DRIFT,
+        weight_strategy=WeightStrategy.USER_SPECIFIED,
+        leaps_config=None,
+    )
+
     print("=== Running Backtest ===")
-    result = run_backtest(return_data, price_data, config)
+    qtr_result = run_backtest(return_data, price_data, qtr_config)
+    drift_result = run_backtest(return_data, price_data, drift_config)
 
     print("=== Building Volatility Model ===")
     vol_model = build_volatility_model(return_data)
 
     print("=== Building Performance Report ===")
-    report = build_performance_report(result, price_data, return_data, vol_model)
+    qtr_report = build_performance_report(qtr_result, price_data, return_data, vol_model)
+    drift_report = build_performance_report(drift_result, price_data, return_data, vol_model)
 
     print("=== Performance Report ===")
-    print(format_performance_table(report))
+    print(format_performance_table(qtr_report))
+
+    print("\n=== Rebalance Comparison ===")
+    print(compare_performance_table([("Quarterly", qtr_report), ("Drift", drift_report)]))
 
     print("=== Saving NAV Growth Chart ===")
     output_path = "outputs/figures/basic_backtest_nav.png"
     plot_nav_growth(
-        {"Portfolio": result},
+        {"Portfolio": qtr_result, "Portfolio (Drift)": drift_result},
         output_path=Path(output_path),
     )
     print(f"Chart saved to {output_path}")

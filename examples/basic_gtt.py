@@ -24,7 +24,8 @@ from finance.figures import compare_performance_table, plot_nav_growth
 from finance.gtt import fetch_gtt_signal_data
 from finance.leverage import RebalanceRule, WeightStrategy
 from finance.metrics import build_performance_report
-from finance.portfolio import GttConfig, PortfolioConfig, run_backtest
+from finance.portfolio import run_backtest
+from finance._portfolio_types import GttConfig, PortfolioConfig
 from finance.returns import build_return_data
 from finance.volatility import build_volatility_model
 

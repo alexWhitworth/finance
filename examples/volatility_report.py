@@ -14,7 +14,8 @@ from finance.data import build_price_data, fetch_risk_free_rate
 from finance.figures import plot_vol_contributions
 from finance.leverage import RebalanceRule, WeightStrategy
 from finance.metrics import build_performance_report
-from finance.portfolio import PortfolioConfig, run_backtest
+from finance.portfolio import run_backtest
+from finance._portfolio_types import PortfolioConfig
 from finance.returns import build_return_data
 from finance.volatility import (
     build_vol_contribution_table,
