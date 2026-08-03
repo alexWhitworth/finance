@@ -1638,7 +1638,7 @@
       "description": "Replace monolithic run_backtest loop body with the 13-call step function sequence. run_backtest becomes a thin orchestrator. All 450 existing tests must pass with zero test-file changes.",
       "phase": "3",
       "priority": 1,
-      "status": "pending_judge",
+      "status": "complete",
       "layer": "python",
       "dependencies": [
         "F-004",
@@ -1706,7 +1706,7 @@
       "description": "For all 4 configs {no GTT, GTT} x {no LEAPS, LEAPS}: nav[-1] == initial_nav * prod(1+r) + sum(contributions). Uses zero-contribution and non-zero contribution variants.",
       "phase": "4a",
       "priority": 1,
-      "status": "pending_judge",
+      "status": "complete",
       "layer": "python",
       "dependencies": [
         "F-016"
@@ -1755,7 +1755,7 @@
       "description": "For every day t: nav_series[t] == nav_series[t-1] * (1 + return_series[t]) + contribution_on_t. Runs full GTT+LEAPS backtest with step-level assertion hook.",
       "phase": "4b",
       "priority": 1,
-      "status": "pending_judge",
+      "status": "complete",
       "layer": "python",
       "dependencies": [
         "F-016"
@@ -1805,7 +1805,7 @@
       "description": "Two defensive windows, VIX elevated during each and dropped at each re-entry. Verifies no cross-window contract leakage, NAV-return identity at both re-entries, target weights restored, no spike day after re-entry.",
       "phase": "4c",
       "priority": 1,
-      "status": "pending_judge",
+      "status": "complete",
       "layer": "python",
       "dependencies": [
         "F-016"
