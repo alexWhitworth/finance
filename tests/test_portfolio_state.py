@@ -7,7 +7,7 @@ import pandas as pd
 import pytest
 
 from finance.leverage import AccountType, LeapsConfig, LeapsContract, LeapsGttCloseEvent, LeapsLedger, RebalanceRule, WeightStrategy
-from finance.portfolio import BacktestContext, DayInputs, PortfolioConfig, PortfolioState
+from finance._portfolio_types import BacktestContext, DayInputs, PortfolioConfig, PortfolioState
 from finance.returns import ReturnData
 
 

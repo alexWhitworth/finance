@@ -12,7 +12,7 @@ from finance.consts import (
     GTT_VIX_CONSECUTIVE_DAYS,
 )
 from finance.leverage import RebalanceRule, WeightStrategy
-from finance.portfolio import GttConfig, PortfolioConfig
+from finance._portfolio_types import GttConfig, PortfolioConfig
 
 # ---------------------------------------------------------------------------
 # F-01: constants

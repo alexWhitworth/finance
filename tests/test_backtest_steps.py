@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import dataclasses
+import math
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -47,6 +50,8 @@ from tests.conftest import (
     _F014_RETURN_DATA,
     _F014_RFR,
     _F014_SPOT,
+    _F009_DATE,
+    _F012_DATE,
     _F015_DEFAULT_DATE,
     _make_config,
     _make_contribution_ctx,
@@ -344,7 +349,6 @@ def test_gtt_leaps_all_defensive_mask_gives_empty_ledger() -> None:
 
 def test_extract_all_fields_match_series() -> None:
     """All DayInputs fields equal expected values from the underlying series."""
-    import math
     dates = pd.bdate_range("2022-01-03", periods=100)
     ctx = _make_extract_ctx(dates)
     date = dates[50]  # past warmup so mtm_iv_value is finite
@@ -393,8 +397,6 @@ def test_extract_defensive_day_regime_is_0() -> None:
 
 def test_extract_mtm_iv_nan_during_warmup() -> None:
     """mtm_iv_value is NaN for dates in the rolling-mean warmup window."""
-    import dataclasses
-    import math
     dates = pd.bdate_range("2022-01-03", periods=100)
     ctx = _make_extract_ctx(dates)
     # Replace mtm_iv_series with one that has no ffill so first 29 rows are NaN
@@ -410,7 +412,6 @@ def test_extract_mtm_iv_nan_during_warmup() -> None:
 
 def test_extract_raw_vix_none_returns_none() -> None:
     """When ctx.raw_vix is None, raw_vix_value and mtm_iv_value are both None."""
-    import dataclasses
     dates = pd.bdate_range("2022-01-03", periods=30)
     ctx = _make_extract_ctx(dates)
     ctx_no_vix = dataclasses.replace(ctx, raw_vix=None, mtm_iv_series=None)
@@ -434,7 +435,6 @@ def test_extract_is_month_end_true_and_false() -> None:
 
 def test_extract_is_rebal_date_true() -> None:
     """is_rebal_date is True when date is in ctx.rebal_dates."""
-    import dataclasses
     dates = pd.bdate_range("2022-01-03", periods=100)
     ctx = _make_extract_ctx(dates)
     rebal_date = dates[40]
@@ -727,8 +727,6 @@ def test_returns_non_holdings_fields_unchanged() -> None:
 # _apply_defensive_compounding
 # ---------------------------------------------------------------------------
 
-_F009_DATE = pd.Timestamp("2020-01-02")
-
 _def_gross_f009 = pd.Series([0.001], index=pd.DatetimeIndex([_F009_DATE]))
 
 
@@ -908,8 +906,6 @@ def test_leaps_mtm_noop_when_ledger_none() -> None:
 
 def test_leaps_mtm_noop_when_underlying_prices_none() -> None:
     """MTM returns leaps_value=0.0 when ctx.underlying_prices is None."""
-    import dataclasses
-
     contract = make_contract(purchase_date=_F010_DATE_PURCHASE, expiry=_F010_DATE_EXPIRY)
     ledger = make_ledger(contract)
     state = _make_portfolio_state(
@@ -1130,8 +1126,6 @@ def test_port_return_above_minus_one(nav_before: float, prev: float) -> None:
 # ---------------------------------------------------------------------------
 # _apply_contribution
 # ---------------------------------------------------------------------------
-
-_F012_DATE = pd.Timestamp("2024-01-31")
 
 
 def test_contribution_noop_non_month_end() -> None:

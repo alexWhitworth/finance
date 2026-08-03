@@ -15,14 +15,9 @@ import pytest
 from finance.data import PriceData
 from finance.gtt import GttSignalData
 from finance.leverage import AccountType, LeapsConfig, RebalanceRule, WeightStrategy
-from finance.portfolio import (
-    GttConfig,
-    PortfolioConfig,
-    _defensive_gross_return,
-    _gtt_governed_keys,
-    _long_windows,
-    run_backtest,
-)
+from finance._backtest_steps import _defensive_gross_return, _gtt_governed_keys, _long_windows
+from finance._portfolio_types import GttConfig, PortfolioConfig
+from finance.portfolio import run_backtest
 from finance.returns import ReturnData, build_return_data
 
 # ---------------------------------------------------------------------------
@@ -385,7 +380,7 @@ def test_rebalance_on_defensive_day_keeps_vti_zero() -> None:
     rd, pd_obj = _make_rd_and_pd(504)
     idx = pd.DatetimeIndex(rd.returns.index)
     # Find a quarterly rebalance date and force a defensive window covering it.
-    from finance.portfolio import _get_rebalance_dates
+    from finance._backtest_steps import _get_rebalance_dates
 
     rebal = _get_rebalance_dates(idx, RebalanceRule.QUARTERLY)
     assert rebal, "expected at least one rebalance date in a 2y window"

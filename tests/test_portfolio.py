@@ -7,13 +7,9 @@ import pytest
 from finance.data import PriceData
 from finance.consts import DRIFT_BAND_RELATIVE
 from finance.leverage import AccountType, LeapsConfig, RebalanceRule, WeightStrategy
-from finance.portfolio import (
-    BacktestResult,
-    PortfolioConfig,
-    _get_rebalance_dates,
-    run_backtest,
-    _should_rebalance,
-)
+from finance._backtest_steps import _get_rebalance_dates, _should_rebalance
+from finance._portfolio_types import BacktestResult, PortfolioConfig
+from finance.portfolio import run_backtest
 from finance.returns import ReturnData, build_return_data
 
 # ---------------------------------------------------------------------------

@@ -20,7 +20,8 @@ from finance.figures import format_performance_table, plot_nav_growth
 from finance.gtt import GttSignalData, compute_position_mask, compute_vix_signal
 from finance.leverage import AccountType, LeapsConfig, RebalanceRule, WeightStrategy
 from finance.metrics import PerformanceReport, build_performance_report
-from finance.portfolio import BacktestResult, GttConfig, PortfolioConfig, run_backtest
+from finance._portfolio_types import BacktestResult, GttConfig, PortfolioConfig
+from finance.portfolio import run_backtest
 from finance.returns import ReturnData, build_return_data
 from finance.volatility import build_volatility_model
 
