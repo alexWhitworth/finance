@@ -2016,7 +2016,7 @@
       "description": "The failing regression test asserts weight == leaps_fraction on re-entry, but hi=250 is a month-end causing two contracts. Fix: assert only on initial capital contract MTM == capital_deployed, not on weight.",
       "phase": "5",
       "priority": 1,
-      "status": "not_started",
+      "status": "pending_judge",
       "layer": "python",
       "dependencies": [
         "F-017",

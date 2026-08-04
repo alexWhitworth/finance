@@ -14,7 +14,7 @@ import pytest
 
 from finance.data import PriceData
 from finance.gtt import GttSignalData
-from finance.leverage import AccountType, LeapsConfig, RebalanceRule, WeightStrategy
+from finance.leverage import AccountType, LeapsConfig, RebalanceRule, WeightStrategy, _live_contracts, price_leaps_contract
 from finance._backtest_steps import _defensive_gross_return, _gtt_governed_keys, _long_windows
 from finance._portfolio_types import GttConfig, PortfolioConfig
 from finance.portfolio import run_backtest
@@ -853,11 +853,20 @@ def test_reentry_creation_iv_matches_mtm_iv_no_gap() -> None:
         rd, pd_obj, _leaps_only_config(AccountType.TAX_SHELTERED),
         gtt_signal=_window_signal(idx, lo, hi),
     )
-    # On re-entry day (hi) the LEAPS weight must equal leaps_fraction (0.5)
-    # within floating-point tolerance.  A valuation gap would push it away
-    # from target and cause a spike in return_series.iloc[hi + 1].
-    assert r.weight_history["VTI_LEAPS"].iloc[hi] == pytest.approx(0.5, abs=1e-6)
-    # The day after re-entry must not show an anomalously large return.
+    # Re-entry fires on returns.index[hi-1] (= idx[hi], the last day of the defensive window
+    # where regime flips to Long). A valuation gap (Bug 2) would cause MTM > capital_deployed,
+    # inflating total_nav and producing a spurious negative return spike the following day.
+    # Assert on the initial contract directly: MTM at creation IV == capital deployed.
+    reentry_date = pd.Timestamp(rd.returns.index[hi - 1])
+    live = _live_contracts(r.leaps_ledger, reentry_date)
+    initial_c = max(live, key=lambda c: c.n_contracts)
+    spot_at_reentry = float(pd_obj.prices["VTI"].loc[reentry_date])
+    creation_iv = max(0.20, 0.18)  # max(raw_vix drops to 0.20, DEFAULT_IV=0.18)
+    capital_deployed = initial_c.premium_paid * 100 * initial_c.n_contracts
+    mtm_at_creation = price_leaps_contract(initial_c, spot_at_reentry, reentry_date, iv=creation_iv)
+    assert mtm_at_creation == pytest.approx(capital_deployed, rel=1e-6)
+    # The two days after re-entry must not show an anomalously large return spike.
+    assert abs(r.return_series.iloc[hi]) < 0.10
     assert abs(r.return_series.iloc[hi + 1]) < 0.10
 
 
