@@ -1855,7 +1855,7 @@
       "description": "On Long month-end days (regime_t==1), _apply_contribution never adds ctx.leaps_monthly to any PortfolioState field. The LEAPS ledger (built by run_leaps_simulation at window start) treats the $leaps_monthly as external capital arriving each month, but the backtest loop never credits it to nav_series. Fix: add leaps_monthly to leaps_pool unconditionally when ctx.use_leaps is True on any month-end, regardless of regime. Single-line change at _backtest_steps.py line 805: replace `if ctx.gtt_active and inputs.regime_t == 0` with `if ctx.use_leaps`.",
       "phase": "4",
       "priority": 1,
-      "status": "not_started",
+      "status": "pending_judge",
       "layer": "python",
       "dependencies": [
         "F-012"

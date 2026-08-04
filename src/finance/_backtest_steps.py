@@ -769,8 +769,9 @@ def _apply_contribution(
 
     On month-end days, allocates ctx.base_contribution across base_assets
     proportional to ctx.base_target_w. When GTT is active and regime_t==0,
-    governed tickers' allocation is diverted into the defensive sleeve and
-    ctx.leaps_monthly is added to the LEAPS pool.
+    governed tickers' allocation is diverted into the defensive sleeve.
+    ctx.leaps_monthly is added to leaps_pool whenever ctx.use_leaps is True,
+    regardless of regime (Bug 3 fix — old guard was gtt_active and regime_t==0).
 
     Arguments:
         state: Current PortfolioState before contribution.
@@ -795,6 +796,7 @@ def _apply_contribution(
     new_holdings = dict(state.holdings)
     new_sleeve = state.defensive_sleeve
     new_pool = state.leaps_pool
+    new_leaps_value = state.leaps_value
 
     for a in ctx.base_assets:
         if ctx.gtt_active and inputs.regime_t == 0 and a in ctx.governed_base:
@@ -802,10 +804,23 @@ def _apply_contribution(
         else:
             new_holdings[a] = new_holdings.get(a, 0.0) + alloc[a]
 
-    if ctx.gtt_active and inputs.regime_t == 0:
-        new_pool += ctx.leaps_monthly
+    # Bug 3 fix: credit leaps_monthly on all month-ends when LEAPS are active.
+    # On defensive days: pool holds the capital until re-entry rebalance.
+    # On Long days: credit leaps_value directly (contracts already purchased by
+    # run_leaps_simulation; this makes NAV reflect the cash inflow). See R-008.
+    if ctx.use_leaps:
+        if inputs.regime_t == 0:
+            new_pool += ctx.leaps_monthly
+        else:
+            new_leaps_value += ctx.leaps_monthly
 
-    return replace(state, holdings=new_holdings, defensive_sleeve=new_sleeve, leaps_pool=new_pool)
+    return replace(
+        state,
+        holdings=new_holdings,
+        defensive_sleeve=new_sleeve,
+        leaps_pool=new_pool,
+        leaps_value=new_leaps_value,
+    )
 
 
 def _apply_rebalance(

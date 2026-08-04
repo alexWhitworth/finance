@@ -1181,7 +1181,7 @@ def test_contribution_month_end_defensive_governed_to_sleeve() -> None:
 
 
 def test_contribution_month_end_defensive_leaps_pool_receives_monthly() -> None:
-    """Defensive month-end with gtt_active: leaps_pool receives leaps_monthly."""
+    """Defensive month-end with use_leaps=True: leaps_pool receives leaps_monthly."""
     state = _make_portfolio_state({"VTI": 1000.0, "VXUS": 500.0}, pool=50.0)
     inputs = _make_day_inputs(date_ts=_F012_DATE, regime_t=0, is_month_end=True)
     ctx = _make_contribution_ctx(
@@ -1189,6 +1189,7 @@ def test_contribution_month_end_defensive_leaps_pool_receives_monthly() -> None:
         base_target_w={"VTI": 1.0, "VXUS": 0.0},
         governed_base=("VTI",),
         gtt_active=True,
+        use_leaps=True,
         base_contribution=500.0,
         leaps_monthly=100.0,
     )
@@ -1233,6 +1234,55 @@ def test_contribution_accounting_invariant_long_month_end() -> None:
     result = _apply_contribution(state, inputs, ctx, nav_before=1000.0)
 
     assert abs(sum(result.holdings.values()) - (sum(holdings_start.values()) + contribution)) < 1e-9
+
+
+# F-020: Bug 3 fix tests
+def test_contribution_long_month_end_use_leaps_credits_leaps_value() -> None:
+    """Bug 3 fix: Long month-end with use_leaps=True credits leaps_monthly to leaps_value."""
+    state = _make_portfolio_state({"VTI": 1000.0, "VXUS": 500.0}, pool=0.0)
+    inputs = _make_day_inputs(date_ts=_F012_DATE, regime_t=1, is_month_end=True)
+    ctx = _make_contribution_ctx(
+        base_assets=("VTI", "VXUS"),
+        base_target_w={"VTI": 0.7, "VXUS": 0.3},
+        use_leaps=True,
+        base_contribution=500.0,
+        leaps_monthly=100.0,
+    )
+    result = _apply_contribution(state, inputs, ctx, nav_before=1500.0)
+
+    assert abs(result.leaps_value - (state.leaps_value + 100.0)) < 1e-9
+    assert result.leaps_pool == state.leaps_pool
+
+
+def test_contribution_use_leaps_false_pool_unchanged() -> None:
+    """No regression: use_leaps=False leaves leaps_pool unchanged regardless of regime."""
+    state = _make_portfolio_state({"VTI": 1000.0}, pool=50.0)
+    inputs = _make_day_inputs(date_ts=_F012_DATE, regime_t=0, is_month_end=True)
+    ctx = _make_contribution_ctx(
+        base_assets=("VTI",),
+        gtt_active=True,
+        use_leaps=False,
+        base_contribution=500.0,
+        leaps_monthly=100.0,
+    )
+    result = _apply_contribution(state, inputs, ctx, nav_before=1500.0)
+
+    assert result.leaps_pool == state.leaps_pool
+
+
+def test_contribution_leaps_monthly_zero_pool_unchanged() -> None:
+    """Edge case: leaps_monthly=0.0 leaves leaps_pool unchanged even when use_leaps=True."""
+    state = _make_portfolio_state({"VTI": 1000.0}, pool=75.0)
+    inputs = _make_day_inputs(date_ts=_F012_DATE, regime_t=1, is_month_end=True)
+    ctx = _make_contribution_ctx(
+        base_assets=("VTI",),
+        use_leaps=True,
+        base_contribution=500.0,
+        leaps_monthly=0.0,
+    )
+    result = _apply_contribution(state, inputs, ctx, nav_before=1000.0)
+
+    assert result.leaps_pool == state.leaps_pool
 
 
 # ---------------------------------------------------------------------------

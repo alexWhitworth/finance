@@ -28,7 +28,6 @@ from finance.leverage import (
 )
 from finance.returns import ReturnData
 
-
 # ---------------------------------------------------------------------------
 # Generic builder helpers (used across multiple test modules)
 # ---------------------------------------------------------------------------
@@ -831,6 +830,7 @@ def _make_contribution_ctx(
     base_target_w: dict[str, float] | None = None,
     governed_base: tuple[str, ...] = (),
     gtt_active: bool = False,
+    use_leaps: bool = False,
     base_contribution: float = 500.0,
     leaps_monthly: float = 0.0,
 ) -> BacktestContext:
@@ -841,6 +841,7 @@ def _make_contribution_ctx(
         base_target_w: Weight dict over base_assets (sums to 1.0). Defaults to equal-weight.
         governed_base: GTT-governed subset of base_assets.
         gtt_active: Whether the GTT overlay is active.
+        use_leaps: Whether LEAPS are configured (gates leaps_monthly credit).
         base_contribution: Monthly dollar contribution for base holdings.
         leaps_monthly: Monthly dollar contribution for LEAPS pool.
 
@@ -849,7 +850,7 @@ def _make_contribution_ctx(
     """
     if base_target_w is None:
         n = len(base_assets)
-        base_target_w = {a: 1.0 / n for a in base_assets} if n > 0 else {}
+        base_target_w = dict.fromkeys(base_assets, 1.0 / n) if n > 0 else {}
     w_series = pd.Series(base_target_w)
     config_weights = (
         {a: 1.0 / len(base_assets) for a in base_assets} if base_assets else {"VTI": 1.0}
@@ -878,7 +879,7 @@ def _make_contribution_ctx(
         governed_base=governed_base,
         gtt_active=gtt_active,
         defensive_weights={},
-        use_leaps=False,
+        use_leaps=use_leaps,
         iv=0.25,
         leaps_monthly=leaps_monthly,
         base_contribution=base_contribution,
@@ -932,7 +933,7 @@ def _make_rebalance_ctx(
     """
     if base_target_w is None:
         n = len(base_assets)
-        base_target_w = pd.Series({a: 1.0 / n for a in base_assets})
+        base_target_w = pd.Series(dict.fromkeys(base_assets, 1.0 / n))
     if w is None:
         w_dict = {a: float(base_target_w[a]) * (1.0 - leaps_fraction) for a in base_assets}
         for k in leaps_keys:
