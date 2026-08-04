@@ -1908,7 +1908,7 @@
       "description": "Persist a pre-built fixture file containing all data needed for the real-corpus integration test (F-022) without requiring external API calls at test time. Fixture must cover the full 2000-09-01 to 2026-06-30 window and include: spliced prices for all 6 tickers, ^VIX, ^IRX, UNRATE (monthly), and the computed GTT position_mask. Build once via a one-off script; committed to data/ and gitignored from outputs/.",
       "phase": "4",
       "priority": 1,
-      "status": "pending_judge",
+      "status": "complete",
       "layer": "python",
       "dependencies": [],
       "linked_schemas": [],
@@ -1956,7 +1956,7 @@
       "description": "Add a real-data variant of the F-018 same-day consistency test that loads data/backtest_fixture.parquet and verifies I2 holds for all ~6500 days of the 2000-2026 GTT+LEAPS backtest. Specifically guards against Bug 3 regression: I2 residual must be 0.0 within 1e-6 on all Long month-end days. Runs alongside (not replacing) the synthetic F-018 test. Marked @pytest.mark.slow to exclude from default CI.",
       "phase": "4",
       "priority": 1,
-      "status": "pending_judge",
+      "status": "complete",
       "layer": "python",
       "dependencies": [
         "F-020",
