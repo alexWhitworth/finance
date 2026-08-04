@@ -1956,7 +1956,7 @@
       "description": "Add a real-data variant of the F-018 same-day consistency test that loads data/backtest_fixture.parquet and verifies I2 holds for all ~6500 days of the 2000-2026 GTT+LEAPS backtest. Specifically guards against Bug 3 regression: I2 residual must be 0.0 within 1e-6 on all Long month-end days. Runs alongside (not replacing) the synthetic F-018 test. Marked @pytest.mark.slow to exclude from default CI.",
       "phase": "4",
       "priority": 1,
-      "status": "not_started",
+      "status": "pending_judge",
       "layer": "python",
       "dependencies": [
         "F-020",
