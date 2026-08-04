@@ -1908,7 +1908,7 @@
       "description": "Persist a pre-built fixture file containing all data needed for the real-corpus integration test (F-022) without requiring external API calls at test time. Fixture must cover the full 2000-09-01 to 2026-06-30 window and include: spliced prices for all 6 tickers, ^VIX, ^IRX, UNRATE (monthly), and the computed GTT position_mask. Build once via a one-off script; committed to data/ and gitignored from outputs/.",
       "phase": "4",
       "priority": 1,
-      "status": "not_started",
+      "status": "pending_judge",
       "layer": "python",
       "dependencies": [],
       "linked_schemas": [],
