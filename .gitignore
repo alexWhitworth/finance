@@ -18,7 +18,6 @@ analyses/
 analyses/gtt_library_validation.py
 
 scripts/*
-!scripts/build_fixture.py
 
 # code-cov
 .coverage
