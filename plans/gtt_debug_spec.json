@@ -1988,20 +1988,27 @@
         "I2 holds for all ~6500 days within tolerance 1e-6 (zero failures)",
         "All 7 historical spike dates have |return| < 0.05 after fix",
         "Test is marked @pytest.mark.slow and excluded from default pytest run",
-        "Test loads from data/backtest_fixture.parquet with no external network calls"
+        "Test loads from data/backtest_fixture.parquet with no external network calls",
+        "F-020 gate (AC-1 spec intent): on Long month-ends with use_leaps=True, the I2 residual equals exactly monthly_contribution within 1e-6 — confirming leaps_monthly is credited to NAV (via leaps_value) and not double-counted at re-entry. This gates the F-020 CONDITIONAL_PASS -> PASS verdict.",
+        "F-020 gate (edge case 2): on a no-GTT (gtt_active=False) Long month-end with use_leaps=True, I2 residual equals monthly_contribution within 1e-6 — confirming the no-GTT+LEAPS contribution path works regardless of gtt_active."
       ],
       "test_requirements": [
         {
           "file": "tests/test_backtest_integration.py",
           "description": "New test class TestRealCorpusI2. Loads fixture, reconstructs PriceData + ReturnData + GttSignalData from parquet, runs GTT+LEAPS backtest, checks I2 at every day and confirms no return > 5% on the 7 known spike dates."
+        },
+        {
+          "file": "tests/test_backtest_integration.py",
+          "description": "F-020 gate: within TestRealCorpusI2 (or a companion synthetic test), assert that the I2 residual on every Long month-end equals monthly_contribution within 1e-6, not merely > 0. Also add a synthetic no-GTT+LEAPS test (gtt_active=False, use_leaps=True, regime_t=1, is_month_end=True) asserting I2 residual == leaps_monthly."
         }
       ],
       "edge_cases": [
         "Fixture missing from repo (test must skip gracefully with pytest.skip, not error)",
-        "Negative spike days (2011-08-08, 2020-06-11) have I2 residual=0.0 and are plain market moves — test must not flag these as failures"
+        "Negative spike days (2011-08-08, 2020-06-11) have I2 residual=0.0 and are plain market moves — test must not flag these as failures",
+        "F-020 gate: no-GTT (gtt_active=False) + use_leaps=True Long month-end must show I2 residual == monthly_contribution (confirms edge case 2 from F-020 judge verdict)"
       ],
       "clarification_needed": false,
-      "clarification_notes": null
+      "clarification_notes": "F-020 was given a CONDITIONAL_PASS verdict (judge_verdicts/F-020_verdict_round_1.txt). The two open items gating a clean PASS are: (1) confirm AC-1 spec intent (leaps_value vs leaps_pool on Long days) and (2) cover edge case 2 (no-GTT + use_leaps=True). Both are resolved here: the real-corpus I2 test verifies the exact monthly_contribution amount flows through NAV on Long month-ends, and the no-GTT synthetic test covers edge case 2. Passing F-022 upgrades F-020 to PASS."
     },
     {
       "id": "F-023",
