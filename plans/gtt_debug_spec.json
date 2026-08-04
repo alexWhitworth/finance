@@ -1851,6 +1851,160 @@
     },
     {
       "id": "F-020",
+      "name": "Fix Bug 3: _apply_contribution drops leaps_monthly on Long month-ends",
+      "description": "On Long month-end days (regime_t==1), _apply_contribution never adds ctx.leaps_monthly to any PortfolioState field. The LEAPS ledger (built by run_leaps_simulation at window start) treats the $leaps_monthly as external capital arriving each month, but the backtest loop never credits it to nav_series. Fix: add leaps_monthly to leaps_pool unconditionally when ctx.use_leaps is True on any month-end, regardless of regime. Single-line change at _backtest_steps.py line 805: replace `if ctx.gtt_active and inputs.regime_t == 0` with `if ctx.use_leaps`.",
+      "phase": "4",
+      "priority": 1,
+      "status": "not_started",
+      "layer": "python",
+      "dependencies": [
+        "F-012"
+      ],
+      "linked_schemas": [
+        "DS-001"
+      ],
+      "linked_apis": [
+        "AC-011"
+      ],
+      "invariants": {
+        "temporal_bounds": null,
+        "accounting_oracle": "sum(holdings_out) + leaps_pool_out == sum(holdings_in) + leaps_pool_in + monthly_contribution on any month-end day with use_leaps=True. I2: nav[t] == nav[t-1]*(1+r[t]) + monthly_contribution for all month-end Long days.",
+        "composition_scope": "ATOMIC",
+        "plausibility_range": null,
+        "realism_requirements": null
+      },
+      "performance_requirements": {
+        "complexity_budget": "O(1) change — single conditional guard"
+      },
+      "property_based_testing": {
+        "enabled": false,
+        "rationale_if_disabled": "Deterministic single-branch fix; covered by explicit unit test and integration regression."
+      },
+      "mutation_testing": {
+        "enabled": true
+      },
+      "acceptance_criteria": [
+        "On a Long month-end with use_leaps=True: leaps_pool_out == leaps_pool_in + leaps_monthly within 1e-9",
+        "On a defensive month-end with use_leaps=True: leaps_pool_out == leaps_pool_in + leaps_monthly within 1e-9 (unchanged from current behavior)",
+        "On a month-end with use_leaps=False: leaps_pool unchanged (no regression)",
+        "I2 residual for all Long month-end days in GTT+LEAPS backtest is 0.0 within 1e-6 (verified by F-021)"
+      ],
+      "test_requirements": [
+        {
+          "file": "tests/test_portfolio_step_functions.py",
+          "description": "Unit test: inject PortfolioState with leaps_pool=0, is_month_end=True, regime_t=1, use_leaps=True. Assert leaps_pool_out == leaps_monthly. Also test regime_t=0 path (defensive) and use_leaps=False path (no-op)."
+        }
+      ],
+      "edge_cases": [
+        "leaps_monthly == 0.0 (zero contribution): leaps_pool unchanged regardless of path",
+        "GTT inactive (gtt_active=False) but use_leaps=True: leaps_pool still receives leaps_monthly on month-end (no GTT guard needed)"
+      ],
+      "clarification_needed": false,
+      "clarification_notes": null
+    },
+    {
+      "id": "F-021",
+      "name": "Save real-data fixture to data/backtest_fixture.parquet",
+      "description": "Persist a pre-built fixture file containing all data needed for the real-corpus integration test (F-022) without requiring external API calls at test time. Fixture must cover the full 2000-09-01 to 2026-06-30 window and include: spliced prices for all 6 tickers, ^VIX, ^IRX, UNRATE (monthly), and the computed GTT position_mask. Build once via a one-off script; committed to data/ and gitignored from outputs/.",
+      "phase": "4",
+      "priority": 1,
+      "status": "not_started",
+      "layer": "python",
+      "dependencies": [],
+      "linked_schemas": [],
+      "linked_apis": [],
+      "invariants": {
+        "temporal_bounds": "All series in the fixture are causal: no look-ahead. Verified by running build_price_data and fetch_gtt_signal_data with the same parameters as examples/gtt_leaps.py.",
+        "accounting_oracle": null,
+        "composition_scope": "ATOMIC",
+        "plausibility_range": null,
+        "realism_requirements": "Must cover 2000-09-01 to 2026-06-30 inclusive. Must contain all 7 observed spike dates."
+      },
+      "performance_requirements": {
+        "complexity_budget": "One-time build; fixture load at test time is O(1) parquet read"
+      },
+      "property_based_testing": {
+        "enabled": false,
+        "rationale_if_disabled": "Data persistence task; no logic to property-test."
+      },
+      "mutation_testing": {
+        "enabled": false,
+        "rationale_if_disabled": "Data artifact."
+      },
+      "acceptance_criteria": [
+        "data/backtest_fixture.parquet exists and loads without error",
+        "Fixture date range spans 2000-09-01 to 2026-06-30 (>= 6500 rows)",
+        "Fixture contains columns: VTI, VXUS, GLD, MUB, KMLM, VGIT, ^VIX, ^IRX, position_mask",
+        "UNRATE saved separately as data/unrate_fixture.parquet (monthly, DatetimeIndex)"
+      ],
+      "test_requirements": [
+        {
+          "file": "scripts/build_fixture.py",
+          "description": "One-off script: fetch full corpus via build_price_data + fetch_gtt_signal_data + fetch_risk_free_rate, then save to data/backtest_fixture.parquet and data/unrate_fixture.parquet. Not run in CI; run once and committed."
+        }
+      ],
+      "edge_cases": [
+        "GLD splice (GC=F proxy) only goes back to 2000-08-30; fixture start must respect this",
+        "KMLM file proxy (data/kmlm_mlmi_pre.parquet) must be present before running build_fixture.py"
+      ],
+      "clarification_needed": false,
+      "clarification_notes": null
+    },
+    {
+      "id": "F-022",
+      "name": "Integration test: real-corpus I2 regression guard (Scenario B extension)",
+      "description": "Add a real-data variant of the F-018 same-day consistency test that loads data/backtest_fixture.parquet and verifies I2 holds for all ~6500 days of the 2000-2026 GTT+LEAPS backtest. Specifically guards against Bug 3 regression: I2 residual must be 0.0 within 1e-6 on all Long month-end days. Runs alongside (not replacing) the synthetic F-018 test. Marked @pytest.mark.slow to exclude from default CI.",
+      "phase": "4",
+      "priority": 1,
+      "status": "not_started",
+      "layer": "python",
+      "dependencies": [
+        "F-020",
+        "F-021"
+      ],
+      "linked_schemas": [],
+      "linked_apis": [
+        "AC-018"
+      ],
+      "invariants": {
+        "temporal_bounds": null,
+        "accounting_oracle": "nav[t] == nav[t-1]*(1+r[t]) + monthly_contribution for all Long month-end days. nav[t] == nav[t-1]*(1+r[t]) for all non-month-end days. Tolerance: 1e-6 * max(|expected|, 1.0).",
+        "composition_scope": "INTEGRATION",
+        "plausibility_range": "All 7 previously observed spike dates (2004-10-29, 2006-05-31, 2013-06-28, 2014-12-31, 2016-07-29, 2018-01-31, 2021-11-30) must have |return| < 0.05 after the fix.",
+        "realism_requirements": "Requires data/backtest_fixture.parquet (2000-2026, all 6 tickers + VIX + IRX + position_mask). Must cover all 7 historical spike dates."
+      },
+      "performance_requirements": {
+        "complexity_budget": "O(n) — ~6500 days; acceptable under @pytest.mark.slow"
+      },
+      "property_based_testing": {
+        "enabled": false,
+        "rationale_if_disabled": "Deterministic sequential verification against real corpus."
+      },
+      "mutation_testing": {
+        "enabled": false,
+        "rationale_if_disabled": "Integration test."
+      },
+      "acceptance_criteria": [
+        "I2 holds for all ~6500 days within tolerance 1e-6 (zero failures)",
+        "All 7 historical spike dates have |return| < 0.05 after fix",
+        "Test is marked @pytest.mark.slow and excluded from default pytest run",
+        "Test loads from data/backtest_fixture.parquet with no external network calls"
+      ],
+      "test_requirements": [
+        {
+          "file": "tests/test_backtest_integration.py",
+          "description": "New test class TestRealCorpusI2. Loads fixture, reconstructs PriceData + ReturnData + GttSignalData from parquet, runs GTT+LEAPS backtest, checks I2 at every day and confirms no return > 5% on the 7 known spike dates."
+        }
+      ],
+      "edge_cases": [
+        "Fixture missing from repo (test must skip gracefully with pytest.skip, not error)",
+        "Negative spike days (2011-08-08, 2020-06-11) have I2 residual=0.0 and are plain market moves — test must not flag these as failures"
+      ],
+      "clarification_needed": false,
+      "clarification_notes": null
+    },
+    {
+      "id": "F-023",
       "name": "Fix test_reentry_creation_iv_matches_mtm_iv_no_gap",
       "description": "The failing regression test asserts weight == leaps_fraction on re-entry, but hi=250 is a month-end causing two contracts. Fix: assert only on initial capital contract MTM == capital_deployed, not on weight.",
       "phase": "5",
@@ -1860,7 +2014,10 @@
       "dependencies": [
         "F-017",
         "F-018",
-        "F-019"
+        "F-019",
+        "F-020",
+        "F-021",
+        "F-022"
       ],
       "linked_schemas": [],
       "linked_apis": [],
@@ -1899,7 +2056,7 @@
       "clarification_notes": null
     },
     {
-      "id": "F-021",
+      "id": "F-024",
       "name": "End-to-end real corpus validation",
       "description": "Re-run examples/gtt_leaps.py on 2000-2026 real corpus. Verify plausibility bounds P1-P3: skewness in [-2,+2], excess kurtosis in [-5,+30], GTT LEAPS DRIFT terminal NAV between LEAPS QTR and LEAPS DRIFT.",
       "phase": "6",
@@ -1907,7 +2064,7 @@
       "status": "not_started",
       "layer": "python",
       "dependencies": [
-        "F-020"
+        "F-023"
       ],
       "linked_schemas": [],
       "linked_apis": [
@@ -2022,6 +2179,16 @@
       "linked_features": [
         "F-014"
       ]
+    },
+    {
+      "id": "R-008",
+      "description": "Bug 3 recurrence: _apply_contribution has a regime-gated guard (`if ctx.gtt_active and inputs.regime_t == 0`) for adding leaps_monthly to leaps_pool. A future contributor could reintroduce this gate (e.g. to add defensive-specific LEAPS contribution logic) and silently re-break the Long month-end path. The fix changes the guard to `if ctx.use_leaps`, which is regime-agnostic.",
+      "severity": "medium",
+      "mitigation": "F-022 real-corpus regression test directly catches this: I2 residual of -$leaps_monthly on any Long month-end signals the bug immediately. Add an inline comment in _apply_contribution explaining why the guard is `use_leaps` and not `gtt_active and regime_t==0`.",
+      "linked_features": [
+        "F-020",
+        "F-022"
+      ]
     }
   ],
   "implementation_phases": [
@@ -2064,12 +2231,15 @@
     },
     {
       "phase": 4,
-      "name": "Add integration tests",
-      "description": "Three integration scenarios: NAV-return accounting identity across all 4 configs, same-day consistency for every day, whipsaw multi-regime lifecycle with elevated VIX.",
+      "name": "Add integration tests + Bug 3 fix",
+      "description": "Four items: (4a-4c) three synthetic integration scenarios already complete; (4d) Bug 3 fix in _apply_contribution; (4e) build real-data fixture; (4f) real-corpus I2 regression guard test.",
       "feature_ids": [
         "F-017",
         "F-018",
-        "F-019"
+        "F-019",
+        "F-020",
+        "F-021",
+        "F-022"
       ]
     },
     {
@@ -2077,7 +2247,7 @@
       "name": "Fix failing regression test",
       "description": "Fix test_reentry_creation_iv_matches_mtm_iv_no_gap: replace weight assertion with direct MTM check on initial capital contract only.",
       "feature_ids": [
-        "F-020"
+        "F-023"
       ]
     },
     {
@@ -2085,7 +2255,7 @@
       "name": "End-to-end real corpus validation",
       "description": "Manual validation run of examples/gtt_leaps.py on 2000-2026 real corpus. Verify plausibility bounds P1-P3.",
       "feature_ids": [
-        "F-021"
+        "F-024"
       ]
     }
   ]
