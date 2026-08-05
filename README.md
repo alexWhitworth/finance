@@ -131,7 +131,8 @@ config = PortfolioConfig(
 result = run_backtest(return_data, price_data, config)
 ```
 
-See [`examples/leaps_drift_rebalance.py`](examples/leaps_drift_rebalance.py) for taxable vs. tax-sheltered comparison.
+See [`examples/leaps_drift_rebalance.py`](examples/leaps_drift_rebalance.py) for taxable vs. 
+tax-sheltered comparison.
 
 #### 2. Growth and Trend Timing (GTT)
 
@@ -141,7 +142,12 @@ implementation adds a ^VIX signal to capture sharp contractions such as the COVI
 
 GTT requires a **dual-confirmation** to act: both a rising unemployment rate and a technical price
 signal (200d SMA crossover). The dual-confirmation improves the sensitivity and specificity of the
-signal.
+signal. Analyses show this signal performs very well for macro-economic driven market declines 
+(eg. Dot-com crash, GFC, etc); it performs less well with monetary driven declines (eg. 2022)
+and sharp crashes (eg. COVID).
+
+- **Note:** Bug with GTT x LEAPS. See [Issue #1](https://github.com/alexWhitworth/finance/issues/1). 
+GTT w/o LEAPS works fine
 
 ```python
 from finance.gtt import fetch_gtt_signal_data

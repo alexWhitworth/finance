@@ -2068,7 +2068,7 @@
       "description": "Re-run examples/gtt_leaps.py on 2000-2026 real corpus. Verify plausibility bounds P1-P3: skewness in [-2,+2], excess kurtosis in [-5,+30], GTT LEAPS DRIFT terminal NAV between LEAPS QTR and LEAPS DRIFT.",
       "phase": "6",
       "priority": 1,
-      "status": "not_started",
+      "status": "failing",
       "layer": "python",
       "dependencies": [
         "F-023"
