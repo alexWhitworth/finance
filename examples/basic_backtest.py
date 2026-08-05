@@ -1,19 +1,15 @@
 """End-to-end backtest example for a 6-asset diversified portfolio.
 
 Fetches prices with data splicing for assets without long price history (eg VTI -> VTSMX),
-runs a quarterly-rebalanced backtest, computes performance metrics and 
-a volatility model, then prints a formatted performance table and saves a 
+runs a quarterly-rebalanced backtest, computes performance metrics and
+a volatility model, then prints a formatted performance table and saves a
 NAV growth chart to figures/basic_backtest_nav.png.
 """
 
 from pathlib import Path
 
 from finance.data import build_price_data, fetch_risk_free_rate
-from finance.figures import (
-    compare_performance_table,
-    format_performance_table,
-    plot_nav_growth
-)
+from finance.figures import compare_performance_table, format_performance_table, plot_nav_growth
 from finance.leverage import RebalanceRule, WeightStrategy
 from finance.metrics import build_performance_report
 from finance.portfolio import PortfolioConfig, run_backtest

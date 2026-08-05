@@ -1,8 +1,8 @@
 """End-to-end GTT vs. buy-and-hold comparison for the 6-asset diversified portfolio.
 
 Fetches prices with data splicing for assets without long price history (eg VTI -> VTSMX),
-runs quarterly-rebalanced backtests for both GTT-enabled and GTT-disabled configurations, 
-then prints a side-by-side performance comparison and saves a NAV growth chart 
+runs quarterly-rebalanced backtests for both GTT-enabled and GTT-disabled configurations,
+then prints a side-by-side performance comparison and saves a NAV growth chart
 to outputs/figures/gtt_comparison_nav.png.
 
 Usage:
@@ -14,18 +14,17 @@ Notes:
       (mild look-ahead bias; documented per GTT assumption A1).
 """
 
-import os
 from pathlib import Path
 
 from dotenv import load_dotenv
 
+from finance._portfolio_types import GttConfig, PortfolioConfig
 from finance.data import build_price_data, fetch_risk_free_rate
 from finance.figures import compare_performance_table, plot_nav_growth
 from finance.gtt import fetch_gtt_signal_data
 from finance.leverage import RebalanceRule, WeightStrategy
 from finance.metrics import build_performance_report
 from finance.portfolio import run_backtest
-from finance._portfolio_types import GttConfig, PortfolioConfig
 from finance.returns import build_return_data
 from finance.volatility import build_volatility_model
 
@@ -71,7 +70,9 @@ if __name__ == "__main__":
     )
     n_defensive = int((gtt_signal.position_mask == 0).sum())
     n_total = len(gtt_signal.position_mask)
-    print(f"  Signal: {n_defensive}/{n_total} defensive days ({100.0 * n_defensive / n_total:.1f}%)")
+    print(
+        f"  Signal: {n_defensive}/{n_total} defensive days ({100.0 * n_defensive / n_total:.1f}%)"
+    )
 
     base_config = PortfolioConfig(
         target_weights=WEIGHTS,

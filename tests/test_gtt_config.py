@@ -4,6 +4,7 @@ from dataclasses import FrozenInstanceError
 
 import pytest
 
+from finance._portfolio_types import GttConfig, PortfolioConfig
 from finance.consts import (
     GTT_DEFENSIVE_WEIGHTS_DEFAULT,
     GTT_EQUITY_TICKERS,
@@ -12,7 +13,6 @@ from finance.consts import (
     GTT_VIX_CONSECUTIVE_DAYS,
 )
 from finance.leverage import RebalanceRule, WeightStrategy
-from finance._portfolio_types import GttConfig, PortfolioConfig
 
 # ---------------------------------------------------------------------------
 # F-01: constants

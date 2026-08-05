@@ -11,7 +11,6 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from finance._backtest_steps import _long_windows
 from finance._portfolio_types import GttConfig, PortfolioConfig
 from finance.data import PriceData
 from finance.gtt import GttSignalData
@@ -133,14 +132,14 @@ def _gtt_leaps_config(contribution: float = _MONTHLY_CONTRIB) -> PortfolioConfig
     )
 
 
-# Single defensive window: days 80–160 are Defensive, all others Long.
+# Single defensive window: days 80-160 are Defensive, all others Long.
 def _single_window_mask(n: int) -> np.ndarray:
     m = np.ones(n, dtype=int)
     m[80:160] = 0
     return m
 
 
-# Two non-overlapping defensive windows: days 60–110 and 200–260.
+# Two non-overlapping defensive windows: days 60-110 and 200-260.
 def _two_window_mask(n: int) -> np.ndarray:
     m = np.ones(n, dtype=int)
     m[60:110] = 0
@@ -288,7 +287,6 @@ class TestNavReturnIdentityWithContrib:
             result = run_backtest(rd, pd_obj, cfg)
 
         idx = pd.DatetimeIndex(result.return_series.index)
-        month_end_mask = idx == idx.to_period("M").to_timestamp("M")
         # Use the business-day-aligned month ends instead of raw calendar month end
         month_ends_bday = (
             result.return_series.groupby(idx.to_period("M")).tail(1).index
@@ -482,7 +480,8 @@ class TestSameDayConsistency:
         idx = pd.DatetimeIndex(rets.index)
 
         # Re-entry is the first Long day after the defensive window: mask[200] == 1, mask[199] == 0
-        # The backtest aligns the mask to returns index via ffill, so returns.index[200] is re-entry.
+        # The backtest aligns the mask to returns index via ffill, so returns.index[200] is
+        # re-entry.
         reentry_ts = pd.Timestamp(idx[200])
         reentry_ret = float(rets.iloc[200])
 
@@ -577,9 +576,9 @@ class TestWhipsawMultiRegime:
         Window-1 contracts have purchase_date before the first re-entry (index 110).
         After the Long→Defensive force-close they are in all_gtt_closes.
         The assembled ledger must not return them via _live_contracts() at any
-        date in the window-2 Long period (indices 110–199).
+        date in the window-2 Long period (indices 110-199).
         """
-        result, rd, pd_obj, mask = _whipsaw_result()
+        result, _rd, _pd_obj, _mask = _whipsaw_result()
         from finance._portfolio_types import BacktestResult
 
         result_typed: BacktestResult = result  # type: ignore[assignment]
@@ -597,7 +596,7 @@ class TestWhipsawMultiRegime:
             "Expected at least one window-1 contract in ledger — check LEAPS simulation"
         )
 
-        # Window-2 Long dates: indices 110–199 in the returns index
+        # Window-2 Long dates: indices 110-199 in the returns index
         window2_dates = [pd.Timestamp(idx[i]) for i in range(_REENTRY_1, 200)]
 
         leakage: list[str] = []
@@ -623,7 +622,7 @@ class TestWhipsawMultiRegime:
         residual stale-state contamination carrying forward. The re-entry day's own
         return is already bounded by F-018's Bug 1 regression guard.
         """
-        result, rd, pd_obj, mask = _whipsaw_result()
+        result, _rd, _pd_obj, _mask = _whipsaw_result()
         from finance._portfolio_types import BacktestResult
 
         result_typed: BacktestResult = result  # type: ignore[assignment]
@@ -655,7 +654,7 @@ class TestWhipsawMultiRegime:
         Re-entry is NAV-neutral (A2) so the contribution delta is the only source
         of deviation from the pure compounding formula.
         """
-        result, rd, pd_obj, mask = _whipsaw_result()
+        result, rd, _pd_obj, _mask = _whipsaw_result()
         from finance._portfolio_types import BacktestResult
 
         result_typed: BacktestResult = result  # type: ignore[assignment]
@@ -691,9 +690,9 @@ class TestWhipsawMultiRegime:
 
         Each transition closes all live contracts at that moment.  The assembled
         ledger's gtt_close_events must be non-empty (at least one contract closed
-        per transition × 2 transitions = at least 2 events total).
+        per transition x 2 transitions = at least 2 events total).
         """
-        result, rd, pd_obj, mask = _whipsaw_result()
+        result, _rd, _pd_obj, _mask = _whipsaw_result()
         from finance._portfolio_types import BacktestResult
 
         result_typed: BacktestResult = result  # type: ignore[assignment]

@@ -10,12 +10,12 @@ Option-B first-Friday-of-following-month re-stamp lands on/after the known
 BLS Employment Situation release dates for selected months.
 """
 
+import os
 from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pandas as pd
 import pytest
-import os
 
 from finance.gtt import (
     GttSignalData,

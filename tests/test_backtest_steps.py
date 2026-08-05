@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import dataclasses
 import math
+import re
 
-import numpy as np
 import pandas as pd
 import pytest
+from hypothesis import assume, given, settings
+from hypothesis import strategies as st
 
 from finance._backtest_steps import (
     _advance_state,
@@ -26,7 +28,6 @@ from finance._backtest_steps import (
     _compute_total_nav,
     _extract_day_inputs,
 )
-
 from finance.consts import DEFAULT_IV, VIX_MTM_WINDOW
 from finance.leverage import (
     AccountType,
@@ -39,19 +40,15 @@ from finance.leverage import (
     price_leaps_contract,
     run_leaps_simulation,
 )
-from hypothesis import assume, given, settings
-from hypothesis import strategies as st
-
 from tests.conftest import (
+    _F009_DATE,
+    _F012_DATE,
     _F014_DATES,
-    _F014_LONG_WINDOW_END,
     _F014_PRICES,
     _F014_RE_ENTRY_DATE,
     _F014_RETURN_DATA,
     _F014_RFR,
     _F014_SPOT,
-    _F009_DATE,
-    _F012_DATE,
     _F015_DEFAULT_DATE,
     _make_config,
     _make_contribution_ctx,
@@ -75,7 +72,6 @@ from tests.conftest import (
     make_ledger,
 )
 
-
 # ---------------------------------------------------------------------------
 # 1. ValueError: gtt_signal set but gtt_config is None
 # ---------------------------------------------------------------------------
@@ -89,7 +85,9 @@ def test_gtt_signal_without_gtt_config_raises() -> None:
     config = _make_config()  # gtt_config=None
     signal = _make_gtt_signal(dates)
 
-    with pytest.raises(ValueError, match="gtt_signal and config.gtt_config must both be set"):
+    with pytest.raises(ValueError, match=re.escape(
+        "gtt_signal and config.gtt_config must both be set"
+    )):
         _build_context(rd, pd_, config, signal)
 
 
@@ -1405,7 +1403,7 @@ def test_rebalance_quarterly_a5_sum_conservation(
     assume(total_w > 1e-6)
     assets = ("VTI", "VXUS", "GLD")
     norm_w = [x / total_w for x in w_raw]
-    base_target_w = pd.Series(dict(zip(assets, norm_w)))
+    base_target_w = pd.Series(dict(zip(assets, norm_w, strict=False)))
     holdings_in = {"VTI": vti, "VXUS": vxus, "GLD": gld}
     state = _make_portfolio_state(holdings_in)
     ctx = _make_rebalance_ctx(base_assets=assets, base_target_w=base_target_w)

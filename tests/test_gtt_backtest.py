@@ -12,11 +12,18 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from finance.data import PriceData
-from finance.gtt import GttSignalData
-from finance.leverage import AccountType, LeapsConfig, RebalanceRule, WeightStrategy, _live_contracts, price_leaps_contract
 from finance._backtest_steps import _defensive_gross_return, _gtt_governed_keys, _long_windows
 from finance._portfolio_types import GttConfig, PortfolioConfig
+from finance.data import PriceData
+from finance.gtt import GttSignalData
+from finance.leverage import (
+    AccountType,
+    LeapsConfig,
+    RebalanceRule,
+    WeightStrategy,
+    _live_contracts,
+    price_leaps_contract,
+)
 from finance.portfolio import run_backtest
 from finance.returns import ReturnData, build_return_data
 

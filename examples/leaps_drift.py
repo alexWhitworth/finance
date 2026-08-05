@@ -1,7 +1,7 @@
 """LEAPS overlay backtest: taxable vs. tax-sheltered account comparison.
 
-Runs two identical backtests — one with a LEAPS overlay in a TAXABLE account, 
-one in a TAX_SHELTERED account — then prints a side-by-side performance 
+Runs two identical backtests — one with a LEAPS overlay in a TAXABLE account,
+one in a TAX_SHELTERED account — then prints a side-by-side performance
 comparison and saves a tax-drag comparison chart to figures/leaps_tax_drag.png.
 
 The base portfolio is a 6-asset quarterly-rebalanced allocation. The LEAPS
@@ -11,12 +11,12 @@ handles simulation internally using VIX-based dynamic implied volatility.
 
 from pathlib import Path
 
+from finance._portfolio_types import PortfolioConfig
 from finance.data import build_price_data, fetch_risk_free_rate
 from finance.figures import compare_performance_table, plot_leaps_tax_drag
 from finance.leverage import AccountType, LeapsConfig, RebalanceRule, WeightStrategy
 from finance.metrics import build_performance_report
 from finance.portfolio import run_backtest
-from finance._portfolio_types import PortfolioConfig
 from finance.returns import build_return_data
 from finance.volatility import build_volatility_model
 

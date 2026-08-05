@@ -1,4 +1,7 @@
-"""Tests for PortfolioState (F-001), DayInputs (F-002), and BacktestContext (F-003) frozen dataclasses."""
+"""
+Tests for PortfolioState (F-001), DayInputs (F-002), and BacktestContext (F-003) frozen
+dataclasses.
+"""
 
 import dataclasses
 
@@ -6,10 +9,17 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from finance.leverage import AccountType, LeapsConfig, LeapsContract, LeapsGttCloseEvent, LeapsLedger, RebalanceRule, WeightStrategy
 from finance._portfolio_types import BacktestContext, DayInputs, PortfolioConfig, PortfolioState
+from finance.leverage import (
+    AccountType,
+    LeapsConfig,
+    LeapsContract,
+    LeapsGttCloseEvent,
+    LeapsLedger,
+    RebalanceRule,
+    WeightStrategy,
+)
 from finance.returns import ReturnData
-
 
 # ---------------------------------------------------------------------------
 # PortfolioState (F-001)
