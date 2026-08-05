@@ -16,11 +16,14 @@ jobs:
         uses: astral-sh/setup-uv@v8.1.0
         with:
           enable-cache: true
-          python-versions: 3.13
+          python-version: 3.13
       - name: Install dependencies
         run: uv sync --all-extras --dev
       - name: Run tests
         run: uv run pytest
+        env:
+          FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
+          NASDAQ_DATA_LINK_API_KEY: ${{ secrets.NASDAQ_DATA_LINK_API_KEY }} 
 
   lint:
     runs-on: ubuntu-latest
@@ -31,7 +34,7 @@ jobs:
         uses: astral-sh/setup-uv@v8.1.0
         with:
           enable-cache: true
-          python-versions: 3.13
+          python-version: 3.13
       - name: Install dependencies
         run: uv sync --all-extras --dev
       - name: Lint with ruff
@@ -46,7 +49,7 @@ jobs:
         uses: astral-sh/setup-uv@v8.1.0
         with:
           enable-cache: true
-          python-versions: 3.13
+          python-version: 3.13
       - name: Install dependencies
         run: uv sync --all-extras --dev
       - name: Type-check with mypy

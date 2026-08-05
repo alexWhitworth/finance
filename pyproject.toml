@@ -1,6 +1,6 @@
 [project]
 name = "finance"
-version = "1.0.9"
+version = "1.1.1"
 requires-python = ">=3.13"
 dependencies = [
     "yfinance",
@@ -15,7 +15,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest", "pytest-cov", "ruff", "mypy", "hypothesis"]
+dev = ["pytest", "pytest-cov", "ruff", "mypy"]
 
 [build-system]
 requires = ["hatchling"]

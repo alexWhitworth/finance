@@ -15,6 +15,7 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 import pandas as pd
 import pytest
+import os
 
 from finance.gtt import (
     GttSignalData,
@@ -273,6 +274,10 @@ def test_fetch_gtt_position_mask_domain_01() -> None:
 
 
 @pytest.mark.slow
+@pytest.mark.skipif(
+    not os.getenv("FRED_API_KEY"),
+    reason="FRED_API_KEY not set — skipping live API test",
+)
 def test_fetch_gtt_live_fred_indexing_check() -> None:
     """EMPIRICAL FRED-INDEXING CHECK (Phase 3, blocking).
 
