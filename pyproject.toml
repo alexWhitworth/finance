@@ -1,6 +1,6 @@
 [project]
 name = "finance"
-version = "1.1.1"
+version = "1.1.2"
 requires-python = ">=3.13"
 dependencies = [
     "yfinance",
@@ -85,4 +85,9 @@ exclude_lines = [
     "def __repr__",
     "raise NotImplementedError",
     "if __name__ == .__main__.:",
+]
+
+[dependency-groups]
+dev = [
+    "scipy-stubs>=1.18.0.1",
 ]
