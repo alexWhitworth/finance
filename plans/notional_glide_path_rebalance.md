@@ -160,16 +160,38 @@ At `half_life_multiple = 2.0`:
 The parameter is directly interpretable: "I want to be half as leveraged once I have
 doubled my contributed capital."
 
-### Rebalancing rule: one-sided cap
+### Rebalancing rule: dynamic DRIFT targets
+
+The glide path does not introduce a new rebalancing rule. The portfolio continues to execute
+standard two-sided DRIFT rebalancing. What changes is the *target* the DRIFT check measures
+against: target weights are a time-varying function of `m(t)`, updated each month-end.
+
+The full target weight schedule at any `m`:
 
 ```
-if leaps_weight > schedule(m) + drift_band:
-    trim LEAPS to schedule(m); proceeds → base at base_target_weights
+w_freed(m)      = w0 − w_LEAPS(m)                                    # weight released from LEAPS
+
+w_LEAPS_target  = w_LEAPS(m)
+w_VTI_target    = w_freed(m) × vti_alpha
+w_a_target      = (original_base_w[a] + w_freed(m) × (1 − vti_alpha)) × base_target_w_normalized[a]
 ```
 
-No top-up when `leaps_weight < schedule(m)`. This is a lifecycle protective strategy, not
-a mean-reversion strategy. Re-levering into drawdowns conflicts with the protective intent.
-The drift band prevents excessive transaction frequency near the boundary.
+**At `m = 1.0`:** `w_freed = 0`, `w_VTI_target = 0`, all base assets at their original weights.
+The initial portfolio is structurally unchanged — no spurious rebalancing on day 1.
+
+**As `m` grows:** LEAPS target shrinks; VTI target grows from zero; base targets expand to absorb
+the remaining freed weight.
+
+**Sum invariant:** `w_LEAPS + w_freed × vti_alpha + (original_base + w_freed × (1 − vti_alpha)) = w0 + original_base = 1.0` at all `m`.
+
+DRIFT fires when any weight drifts beyond `DRIFT_BAND_RELATIVE` of its *current* dynamic target.
+Because VTI starts with target weight 0 and realized weight 0, it never triggers a spurious
+rebalance at `m = 1`. It enters the portfolio naturally as its target weight grows above zero
+and DRIFT routes proceeds from overweight assets toward it.
+
+Rebalancing is fully symmetric (two-sided): LEAPS can be topped up or trimmed, VTI can be
+bought or sold, base assets rebalance normally. The glide path's de-levering effect comes
+from the *changing target*, not from a one-sided rule.
 
 ---
 
@@ -180,6 +202,25 @@ is now a thin dispatcher; all per-day logic lives in `_backtest_steps.py`, and s
 dataclasses live in `_portfolio_types.py`. All implementation references below reflect that
 structure.
 
+### Architecture: DRIFT refinement, not a separate rule
+
+The glide path is a *modifier on the existing DRIFT strategy*, not a replacement for it.
+`RebalanceRule.DRIFT` is unchanged. The presence of `glide_path_config: GlidepathConfig`
+on `PortfolioConfig` activates two additional behaviors:
+
+1. **Monthly target weight update** — on each `is_month_end`, recompute `dynamic_target_weights`
+   from `w_LEAPS(m)` and store them on `PortfolioState`. The DRIFT check always uses
+   `state.dynamic_target_weights` (not the fixed `config.target_weights`) when a
+   `glide_path_config` is present.
+
+2. **VTI as a rebalance target** — VTI enters `PortfolioConfig.target_weights` with its
+   initial target weight `0.0`. As `m` grows, its dynamic target increases and DRIFT
+   routes capital toward it naturally. No harvest-only special-casing is needed; VTI is
+   a fully symmetrically rebalanced asset like any other.
+
+This keeps all DRIFT mechanics — two-sided rebalancing, drift band checks, proceeds
+redistribution — entirely unchanged. The only new logic is the schedule that updates targets.
+
 ### 1. `GlidepathConfig` dataclass (`_portfolio_types.py`)
 
 ```python
@@ -187,29 +228,49 @@ structure.
 class GlidepathConfig:
     half_life_multiple: float = 2.0   # NAV multiple at which active weight halves
     floor: float = 0.05               # minimum LEAPS weight
-    drift_band: float = DRIFT_BAND_RELATIVE  # band before trim fires (default 0.10)
+    vti_alpha: float = 0.65           # fraction of freed weight routed to VTI (0.50–0.75)
 ```
 
-Placement follows `GttConfig`'s pattern: consumed by the backtest loop and stored on
-`PortfolioConfig`, so it lives in `_portfolio_types.py` alongside `GttConfig`. This
-is distinct from `LeapsConfig` (in `leverage.py`), which belongs to the LEAPS pricing engine.
+Placement follows `GttConfig`'s pattern: stored on `PortfolioConfig`, lives in
+`_portfolio_types.py` alongside `GttConfig`. Distinct from `LeapsConfig` (pricing engine).
 
-Parameters are independent of `LeapsConfig` (which governs BS pricing) and `PortfolioConfig`
-(which holds `leaps_fraction` / `w0`). The `w0` comes from the existing `leaps_fraction`
-derived from `target_weights`. No `risk_free_rate` field: the hurdle rate is sourced from
-`inputs.rfr` (the per-day `^IRX`-derived annualized decimal rate already extracted by
-`_extract_day_inputs`), consistent with how `GTT_RISK_FREE_KEY` earns Rf in the defensive
-portfolio.
+`drift_band` is not a `GlidepathConfig` field — it remains `DRIFT_BAND_RELATIVE` from
+`consts.py`, shared by all DRIFT rebalancing. No `RebalanceRule` change is needed; the
+glide path is activated by the presence of `config.glide_path_config` on a
+`RebalanceRule.DRIFT` portfolio.
 
-### 2. `RebalanceRule.GLIDE_PATH` enum value (`leverage.py`)
+`vti_alpha` governs how freed LEAPS weight is split: fraction goes to VTI, remainder
+expands the diversified base proportionally. Reasonable range: 0.50–0.75; default 0.65.
 
-New variant alongside `QUARTERLY` and `DRIFT`. Dispatch is added to `_apply_rebalance`
-in `_backtest_steps.py`, in the same block that currently handles `RebalanceRule.DRIFT`.
+### 2. No new `RebalanceRule` enum value
 
-### 3. Schedule function (pure, `_backtest_steps.py`)
+`RebalanceRule.DRIFT` is reused unchanged. The DRIFT dispatch in `_apply_rebalance`
+is augmented — not replaced — when `ctx.glide_path_config is not None`. Specifically,
+`_should_rebalance` reads from `state.dynamic_target_weights` instead of `ctx.w` when a
+glide path is active.
+
+### 3. `dynamic_target_weights` field on `PortfolioState` (`_portfolio_types.py`)
 
 ```python
-def glide_path_target_weight(
+@dataclass(frozen=True)
+class PortfolioState:
+    ...
+    dynamic_target_weights: pd.Series | None   # current glide-path targets; None when inactive
+```
+
+Initialized to `None` in `_build_initial_state` for non-glide-path portfolios. When
+`glide_path_config` is present, initialized to the result of `compute_glide_target_weights`
+at `m = initial_nav / initial_nav = 1.0` (which equals the original `config.target_weights`
+— no change on day 1). Updated each month-end inside `_apply_contribution` before
+`_apply_rebalance` reads it.
+
+When `dynamic_target_weights is not None`, `_apply_rebalance` and `_should_rebalance` use
+it in place of `ctx.w`. When `None`, behavior is identical to the current implementation.
+
+### 4. Schedule function (pure, `_backtest_steps.py`)
+
+```python
+def glide_path_leaps_weight(
     m: float,
     w0: float,
     floor: float,
@@ -220,13 +281,49 @@ def glide_path_target_weight(
     return floor + active_weight
 ```
 
-Placed alongside other pure helpers in `_backtest_steps.py` (e.g. `_should_rebalance`).
-Key invariants:
-- `w(1.0) == w0` (no decay at break-even)
+And the companion that computes the full weight vector:
+
+```python
+def compute_glide_target_weights(
+    m: float,
+    config: PortfolioConfig,
+    glidepath_config: GlidepathConfig,
+) -> pd.Series:
+    w0 = leaps_fraction(config)           # sum of original LEAPS weights
+    w_leaps = glide_path_leaps_weight(m, w0, glidepath_config.floor,
+                                      glidepath_config.half_life_multiple)
+    w_freed = w0 - w_leaps                # weight released from LEAPS
+    alpha = glidepath_config.vti_alpha
+
+    # Distribute freed weight: alpha → VTI, (1-alpha) → base proportionally
+    original_base = {k: v for k, v in config.target_weights.items()
+                     if not k.endswith(LEAPS_KEY_SUFFIX) and k != "VTI"}
+    base_sum = sum(original_base.values())
+    new_weights = {}
+    for k in config.target_weights:
+        if k.endswith(LEAPS_KEY_SUFFIX):
+            new_weights[k] = w_leaps * (config.target_weights[k] / w0)
+        elif k == "VTI":
+            new_weights[k] = w_freed * alpha
+        else:
+            new_weights[k] = config.target_weights[k] + w_freed * (1 - alpha) * (
+                config.target_weights[k] / base_sum
+            )
+    return pd.Series(new_weights)
+```
+
+Key invariants of `glide_path_leaps_weight`:
+- `w(1.0) == w0` (no de-levering at break-even)
 - `w(m) → floor` as `m → ∞`
 - Monotone non-increasing in `m` for `m ≥ 1`
 
-### 4. `hurdle_contributed` field on `PortfolioState` (`_portfolio_types.py`)
+Key invariants of `compute_glide_target_weights`:
+- `sum(result) == 1.0` at all `m`
+- At `m == 1.0`, result equals `config.target_weights` (with `VTI = 0.0` added)
+- VTI weight monotone non-decreasing in `m`
+- All base weights monotone non-decreasing in `m`
+
+### 5. `hurdle_contributed` field on `PortfolioState` (`_portfolio_types.py`)
 
 All mutable loop state is carried forward as frozen `PortfolioState` fields (via
 `dataclasses.replace`). `hurdle_contributed` is therefore a new field on `PortfolioState`,
@@ -241,41 +338,78 @@ class PortfolioState:
 
 Initialized to `config.initial_nav` in `_build_initial_state`. Updated each month-end
 inside `_apply_contribution` (which already fires on `is_month_end`) before `_apply_rebalance`
-reads it:
+reads it. On the same month-end, `dynamic_target_weights` is also updated:
 
 ```python
-# Inside _apply_contribution, on is_month_end:
-monthly_rf = (1.0 + inputs.rfr) ** (1.0 / 12.0)   # inputs.rfr is already annualized decimal
+# Inside _apply_contribution, on is_month_end when glide_path_config is present:
+monthly_rf = (1.0 + inputs.rfr) ** (1.0 / 12.0)
 new_hurdle = state.hurdle_contributed * monthly_rf + ctx.config.monthly_contribution
+m = total_nav / new_hurdle
+new_targets = compute_glide_target_weights(m, ctx.config, ctx.config.glide_path_config)
+# return state with both fields updated
 ```
 
-`inputs.rfr` is the per-day annualized `^IRX` rate already extracted by `_extract_day_inputs`
-from `ctx.rfr_series`. No new data dependency; no raw price indexing required.
+Both `hurdle_contributed` and `dynamic_target_weights` are updated atomically in the same
+`dataclasses.replace` call before `_apply_rebalance` reads them. Step order is load-bearing.
 
 **Prerequisite — `rfr_series` population in `_build_context`:** Currently `ctx.rfr_series` is
-only populated when `use_leaps` is True. GLIDE_PATH requires it unconditionally. `_build_context`
-must populate `rfr_series` whenever `config.rebalance_rule == RebalanceRule.GLIDE_PATH`, regardless
-of `use_leaps`. The existing forward-fill already handles weekend gaps; `_build_context`'s
-validation block must assert that `rfr_series` has no leading NaNs before the backtest start date.
+only populated when `use_leaps` is True. The glide path requires it unconditionally when
+`config.glide_path_config is not None`. `_build_context` must populate `rfr_series` whenever
+`glide_path_config` is present, regardless of `use_leaps`. The existing forward-fill handles
+weekend gaps; `_build_context`'s validation block must assert that `rfr_series` has no leading
+NaNs before the backtest start date.
 
-### 5. Trim logic (`_apply_rebalance`, `_backtest_steps.py`)
+**VTI in `target_weights` and `return_data`:** `PortfolioConfig.target_weights` must include
+`"VTI": 0.0` as an explicit entry when glide path is active. `_build_context` must assert
+`"VTI"` is present in `return_data.returns.columns`. VTI return data is already available
+as the LEAPS underlying when `use_leaps` is True — no new data fetch required.
 
-At each month-end when `RebalanceRule.GLIDE_PATH` (after `_apply_contribution` has updated
-`hurdle_contributed`):
-1. Compute `m = total_nav / state.hurdle_contributed`.
-2. Compute `target_w = glide_path_target_weight(m, w0, floor, half_life_multiple)`.
-3. Compute `current_leaps_weight = leaps_value / total_val`.
-4. If `current_leaps_weight > target_w + drift_band`: trim LEAPS to `target_w × total_val`
-   using the existing `leaps_scale` mechanism; redirect proceeds to base at `base_target_w`.
-5. No action if `current_leaps_weight ≤ target_w + drift_band`.
+### 6. VTI as a fully rebalanced asset
 
-The existing `leaps_scale` dict and partial-close accumulation pattern from the DRIFT path
-in `_apply_rebalance` are reused unchanged.
+VTI enters `PortfolioConfig.target_weights` with initial weight `0.0`. `_build_context`
+includes it in `base_assets` (it is not a LEAPS key). `_build_initial_state` initializes
+`holdings["VTI"] = 0.0`. No special-casing is needed: VTI is a standard holding that
+`_apply_returns` compounds daily, and `_apply_rebalance` rebalances toward its current
+dynamic target weight like any other asset.
+
+At `m = 1.0`, `dynamic_target_weights["VTI"] = 0.0` — DRIFT never fires on VTI and its
+realized weight matches its target. As `m` grows, the VTI target grows above zero and DRIFT
+naturally routes overweight assets toward it when the drift band is breached.
+
+The only `_build_context` addition: assert `"VTI"` is present in
+`return_data.returns.columns` when `glide_path_config` is set.
+
+### 7. Rebalance logic (`_apply_rebalance`, `_backtest_steps.py`)
+
+`_apply_rebalance` is unchanged structurally. The DRIFT path's only modification is the
+source of the target weights used in `_should_rebalance` and in the redistribution step:
+
+```python
+# Current (no glide path):
+target_w = ctx.w
+
+# With glide path active:
+target_w = state.dynamic_target_weights if state.dynamic_target_weights is not None else ctx.w
+```
+
+`_should_rebalance` and the redistribution both read from `target_w`. The existing
+`leaps_scale` mechanism, partial-close pattern, and all other DRIFT logic are reused
+unchanged. LEAPS can be topped up or trimmed as any other asset — the glide path's
+de-levering comes entirely from the monthly target update, not from a directional rule.
 
 **GTT re-entry seeding:** `_apply_gtt_reentry` currently seeds the fresh LEAPS simulation
-with `total * ctx.leaps_fraction`. Under GLIDE_PATH it must instead seed with
-`glide_path_target_weight(m_current) × total`, where `m_current = total / state.hurdle_contributed`
-at the re-entry date. Requires a GLIDE_PATH branch inside `_apply_gtt_reentry`.
+with `total * ctx.leaps_fraction` and reallocates base at `(1 − leaps_fraction) × base_target_w`.
+When glide path is active it must instead:
+
+1. Compute `m_current = total / state.hurdle_contributed` at the re-entry date.
+2. Call `compute_glide_target_weights(m_current, ...)` to get current dynamic targets.
+3. Seed LEAPS with `dynamic_targets["VTI_LEAPS"] × total` (or the LEAPS-key equivalent).
+4. Allocate each base asset (including VTI) at `dynamic_targets[a] × total`.
+
+VTI is treated identically to any other base asset here — it receives its dynamic target
+allocation from the full NAV, which may be more or less than its pre-defensive balance.
+This is correct: the re-entry is a full rebalance to current targets, not a preservation
+of prior VTI balances.
 
 ---
 
@@ -288,11 +422,15 @@ at the re-entry date. Requires a GLIDE_PATH branch inside `_apply_gtt_reentry`.
 | Functional form | Exponential decay | One parameter; sigmoid slow-start is redundant with NAV-multiple indexing |
 | Half-life | 2× NAV multiple (~10 yr) | Aligns with market doubling time at historical returns |
 | Floor | Fixed weight, 5–10% | Prevents strategy from fully abandoning leverage |
-| Symmetry | One-sided cap | Lifecycle protection, not mean reversion; re-levering into drawdowns is inconsistent |
+| Rebalance rule | `RebalanceRule.DRIFT`, unmodified | Glide path is a refinement of DRIFT, not a separate strategy; all rebalancing mechanics reused |
+| Symmetry | Two-sided DRIFT | De-levering comes from changing targets, not directional rules; LEAPS can be topped up or trimmed |
+| Target weight update | Monthly, on `is_month_end` | Same cadence as contributions; keeps `hurdle_contributed` and dynamic targets atomically consistent |
+| Dynamic target carrier | `PortfolioState.dynamic_target_weights` | Follows existing frozen-state pattern; `None` when glide path inactive; replaces `ctx.w` in DRIFT check |
+| Parameters | `GlidepathConfig` dataclass | Decoupled from `LeapsConfig` (pricing) and `PortfolioConfig` (initial weights) |
+| Drift band | Reuse `DRIFT_BAND_RELATIVE` from `consts.py` | Shared by all DRIFT rebalancing; not a `GlidepathConfig` field |
+| Proceeds split | Constant `vti_alpha` (default 0.65) | Structural preference; `w(m)` provides all m-adaptive behavior; separation of concerns |
+| VTI in portfolio | Standard rebalanced asset, initial weight 0.0 | Clean: no special-casing; DRIFT routes capital to VTI naturally as its target grows |
 | Absolute ceiling | None | Strategy is multigenerational / no terminal date; weight floor is the correct risk control |
-| Placement | `RebalanceRule.GLIDE_PATH` | Alongside QUARTERLY/DRIFT; DRIFT logic unchanged |
-| Parameters | `GlidepathConfig` dataclass | Decoupled from `LeapsConfig` (pricing) and `PortfolioConfig` (weights) |
-| Drift band | Reuse `DRIFT_BAND_RELATIVE` | Consistent with existing trim threshold; avoids churn near boundary |
 
 ---
 

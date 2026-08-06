@@ -1,10 +1,10 @@
 {
-  "spec_version": "1.0.0",
-  "generated_at": "2026-08-05T00:00:00Z",
+  "spec_version": "3.0.0",
+  "generated_at": "2026-08-06T00:00:00Z",
   "project": {
     "name": "Glide-Path LEAPS Rebalancing Strategy",
-    "description": "Adds a RebalanceRule.GLIDE_PATH variant that gradually de-levers the LEAPS allocation as the portfolio accumulates real wealth above a risk-free hurdle. The LEAPS target weight follows an exponential decay indexed to the ratio of NAV to Rf-compounded contributed capital; a one-sided trim-only rule harvests excess into the diversified base.",
-    "overview": "Implements the 'constant-notional' insight from the DRIFT bug as a controlled, parameterized lifecycle strategy. Core additions: GlidepathConfig dataclass in _portfolio_types.py; RebalanceRule.GLIDE_PATH enum value in leverage.py; glide_path_target_weight() pure function in _backtest_steps.py; hurdle_contributed scalar field on PortfolioState updated monthly via the recurrence Contributed_hurdle(t) = Contributed_hurdle(t-1) * (1+r_f)^(1/12) + Contribution_t; rfr_series unconditionally populated in _build_context when GLIDE_PATH; GLIDE_PATH branch in _apply_rebalance (one-sided trim) and _apply_gtt_reentry (m-adjusted seed)."
+    "description": "Adds a glide-path overlay to the existing DRIFT rebalancing strategy. Target weights become a time-varying function of the NAV multiple m(t) = NAV / Rf-compounded-contributed-capital. DRIFT rebalancing is unchanged and two-sided; de-levering is achieved by updating targets monthly, not by directional rules.",
+    "overview": "The glide path is a DRIFT refinement, not a new RebalanceRule. Presence of glide_path_config on PortfolioConfig activates two behaviors: (1) monthly atomic update of hurdle_contributed and dynamic_target_weights on PortfolioState; (2) DRIFT reads from state.dynamic_target_weights instead of ctx.w. Two pure functions drive the schedule: glide_path_leaps_weight(m, w0, floor, half_life_multiple) for the LEAPS weight and compute_glide_target_weights(m, config, glidepath_config) for the full normalized weight vector. VTI enters target_weights with initial weight 0.0 and is rebalanced symmetrically as any other base asset. GTT re-entry seeds LEAPS and base assets at compute_glide_target_weights(m_current) * total."
   },
   "tech_stack": {
     "language": "python",
@@ -37,9 +37,9 @@
   },
   "data_schemas": [
     {
-      "id": "S-GLIDE-CONFIG",
+      "id": "S-GP-CONFIG",
       "name": "GlidepathConfig",
-      "description": "Frozen configuration for the glide-path rebalancing overlay. Placed in _portfolio_types.py alongside GttConfig. Consumed by PortfolioConfig (glide_path_config field) and by the backtest loop in _apply_rebalance. Independent of LeapsConfig (pricing engine) and GttConfig (market-timing signals).",
+      "description": "Frozen configuration for the glide-path overlay. Stored on PortfolioConfig.glide_path_config. Activates when non-None on a RebalanceRule.DRIFT portfolio. drift_band is not a field here — it is DRIFT_BAND_RELATIVE from consts.py, shared by all DRIFT rebalancing. Independent of LeapsConfig (pricing) and GttConfig (market-timing).",
       "immutable": true,
       "layer": "python",
       "fields": [
@@ -47,26 +47,26 @@
           "name": "half_life_multiple",
           "type": "float",
           "required": false,
-          "description": "NAV multiple (of hurdle-adjusted contributed capital) at which the active LEAPS weight above the floor halves. Default 2.0 — weight halves when NAV doubles contributed capital."
+          "description": "NAV multiple (of hurdle-adjusted contributed capital) at which the active LEAPS weight above the floor halves. Default 2.0."
         },
         {
           "name": "floor",
           "type": "float",
           "required": false,
-          "description": "Minimum LEAPS target weight at any wealth level. Prevents full de-levering. Default 0.05."
+          "description": "Minimum LEAPS target weight at any wealth level. Default 0.05. Must be < leaps_fraction (w0)."
         },
         {
-          "name": "drift_band",
+          "name": "vti_alpha",
           "type": "float",
           "required": false,
-          "description": "LEAPS weight excess above target before a trim fires, to prevent churn. Default DRIFT_BAND_RELATIVE (0.10)."
+          "description": "Fraction of freed LEAPS weight routed to VTI as m grows; remainder (1 - vti_alpha) expands diversified base assets proportionally to their original weights. Default 0.65. Must be in [0.0, 1.0]. Constant — all m-adaptive behavior is in w(m)."
         }
       ]
     },
     {
-      "id": "S-PORTFOLIO-CONFIG-GP",
+      "id": "S-GP-PORTFOLIO-CONFIG",
       "name": "PortfolioConfig (glide_path_config extension)",
-      "description": "Existing PortfolioConfig gains one optional field to opt into glide-path rebalancing. None preserves existing QUARTERLY/DRIFT behavior exactly. When set, __post_init__ must validate floor < w0 (leaps_fraction) and half_life_multiple > 0.",
+      "description": "PortfolioConfig gains one optional field. None preserves existing QUARTERLY/DRIFT behavior exactly. When set, __post_init__ validates: rebalance_rule == DRIFT, floor < leaps_fraction, half_life_multiple > 0, 0.0 <= vti_alpha <= 1.0, and 'VTI' is present in target_weights with value 0.0.",
       "immutable": true,
       "layer": "python",
       "fields": [
@@ -74,14 +74,14 @@
           "name": "glide_path_config",
           "type": "GlidepathConfig | None",
           "required": false,
-          "description": "None = glide-path disabled (existing behavior unchanged). When set, rebalance_rule must equal RebalanceRule.GLIDE_PATH; __post_init__ validates consistency."
+          "description": "None = glide-path disabled. When set, rebalance_rule must be DRIFT and target_weights must include 'VTI': 0.0."
         }
       ]
     },
     {
-      "id": "S-PORTFOLIO-STATE-GP",
-      "name": "PortfolioState (hurdle_contributed extension)",
-      "description": "Existing PortfolioState gains one new scalar field. All mutable loop state is carried as frozen PortfolioState fields via dataclasses.replace; hurdle_contributed follows that same pattern.",
+      "id": "S-GP-PORTFOLIO-STATE",
+      "name": "PortfolioState (hurdle_contributed and dynamic_target_weights extensions)",
+      "description": "PortfolioState gains two new fields carrying glide-path state forward via dataclasses.replace. Both are always present on PortfolioState regardless of rebalance_rule; only written and read when glide_path_config is active.",
       "immutable": true,
       "layer": "python",
       "fields": [
@@ -89,46 +89,47 @@
           "name": "hurdle_contributed",
           "type": "float",
           "required": true,
-          "description": "Running Rf-compounded contribution denominator for the NAV multiple m(t). Initialized to config.initial_nav in _build_initial_state. Updated monthly via recurrence: new = old * (1+rfr)^(1/12) + monthly_contribution. Used only when rebalance_rule == GLIDE_PATH."
+          "description": "Running Rf-compounded contribution denominator for m(t). Initialized to config.initial_nav. Updated monthly: new = old * (1+rfr)^(1/12) + monthly_contribution. When glide_path_config is None, initialized to initial_nav and never modified."
+        },
+        {
+          "name": "dynamic_target_weights",
+          "type": "pd.Series | None",
+          "required": true,
+          "description": "Current glide-path target weight vector, indexed by asset ticker. None when glide_path_config is None. When active, initialized to config.target_weights (with VTI=0.0) at m=1.0; updated monthly to compute_glide_target_weights(m). Replaces ctx.w in _should_rebalance and redistribution when not None."
+        }
+      ]
+    },
+    {
+      "id": "S-GP-BACKTEST-CONTEXT",
+      "name": "BacktestContext (rfr_series unconditional population)",
+      "description": "No new fields on BacktestContext. The only change: rfr_series is populated whenever config.glide_path_config is not None, regardless of use_leaps. The existing forward-fill and NaN-validation logic apply in this new path.",
+      "immutable": true,
+      "layer": "python",
+      "fields": [
+        {
+          "name": "rfr_series",
+          "type": "pd.Series | None",
+          "required": false,
+          "description": "Already exists. Now also populated when glide_path_config is present and use_leaps is False. Source: return_data.risk_free_rate (^IRX daily annualized). No new field — existing field populated unconditionally under glide path."
         }
       ]
     }
   ],
   "api_contracts": [
     {
-      "id": "API-GLIDE-TARGET-WEIGHT",
-      "name": "glide_path_target_weight",
-      "description": "Pure. Compute the target LEAPS weight for the glide-path schedule: w(m) = floor + (w0 - floor) * exp(-lambda * max(m - 1.0, 0.0)), where lambda = ln(2) / half_life_multiple. Returns w0 for m <= 1.0 (no de-levering below break-even); approaches floor as m grows. Placed alongside other pure helpers in _backtest_steps.py.",
+      "id": "API-GP-LEAPS-WEIGHT",
+      "name": "glide_path_leaps_weight",
+      "description": "Pure. Compute the LEAPS target weight at NAV multiple m: w(m) = floor + (w0 - floor) * exp(-lambda * max(m - 1.0, 0.0)), where lambda = ln(2) / half_life_multiple. Returns w0 for m <= 1.0; approaches floor as m -> inf. Placed alongside other pure helpers in _backtest_steps.py.",
       "layer": "python",
       "pure": true,
       "inputs": [
-        {
-          "name": "m",
-          "type": "float",
-          "description": "Current NAV multiple: total_nav / hurdle_contributed. May be < 1.0 (portfolio underwater vs Rf hurdle)."
-        },
-        {
-          "name": "w0",
-          "type": "float",
-          "description": "Initial LEAPS weight (ctx.leaps_fraction). The full weight maintained at or below break-even."
-        },
-        {
-          "name": "floor",
-          "type": "float",
-          "description": "Minimum LEAPS target weight. Must be < w0."
-        },
-        {
-          "name": "half_life_multiple",
-          "type": "float",
-          "description": "NAV multiple at which active weight (w0 - floor) halves. Must be > 0."
-        }
+        {"name": "m", "type": "float", "description": "NAV multiple: total_nav / hurdle_contributed. May be < 1.0 (underwater)."},
+        {"name": "w0", "type": "float", "description": "Initial LEAPS fraction (ctx.leaps_fraction). Full weight maintained at or below break-even."},
+        {"name": "floor", "type": "float", "description": "Minimum LEAPS target weight. Must be < w0."},
+        {"name": "half_life_multiple", "type": "float", "description": "NAV multiple at which active weight (w0 - floor) halves. Must be > 0."}
       ],
       "outputs": [
-        {
-          "name": "return",
-          "type": "float",
-          "description": "Target LEAPS weight in [floor, w0]."
-        }
+        {"name": "return", "type": "float", "description": "LEAPS target weight in [floor, w0]."}
       ],
       "raises": [
         "ValueError: if half_life_multiple <= 0",
@@ -137,131 +138,93 @@
       "ffi_notes": null
     },
     {
-      "id": "API-UPDATE-HURDLE",
-      "name": "_apply_contribution (hurdle_contributed update)",
-      "description": "Existing _apply_contribution fires on is_month_end. Under GLIDE_PATH it must additionally update hurdle_contributed via the recurrence: new_hurdle = state.hurdle_contributed * (1 + inputs.rfr)^(1/12) + config.monthly_contribution. Uses inputs.rfr (the per-day annualized ^IRX rate already extracted by _extract_day_inputs). No new data dependency. Must run before _apply_rebalance reads hurdle_contributed.",
+      "id": "API-GP-COMPUTE-TARGETS",
+      "name": "compute_glide_target_weights",
+      "description": "Pure. Compute the full normalized target weight vector at NAV multiple m. Allocates freed LEAPS weight (w_freed = w0 - w_leaps) as: vti_alpha * w_freed to VTI; (1 - vti_alpha) * w_freed distributed proportionally among non-VTI base assets by their original weights. Sum invariant: result.sum() == 1.0. At m == 1.0, result equals config.target_weights (with VTI=0.0). VTI weight and all base weights are monotone non-decreasing in m.",
       "layer": "python",
       "pure": true,
       "inputs": [
-        {
-          "name": "state",
-          "type": "PortfolioState",
-          "description": "Current frozen state, with state.hurdle_contributed from the previous month-end."
-        },
-        {
-          "name": "ctx",
-          "type": "BacktestContext",
-          "description": "Immutable context providing config.monthly_contribution and config.rebalance_rule."
-        },
-        {
-          "name": "inputs",
-          "type": "DayInputs",
-          "description": "Per-day inputs, providing inputs.rfr (annualized decimal ^IRX rate) and inputs.is_month_end."
-        }
+        {"name": "m", "type": "float", "description": "NAV multiple. m <= 1.0 returns original target_weights (no de-levering)."},
+        {"name": "config", "type": "PortfolioConfig", "description": "Source of original target_weights (including 'VTI': 0.0) and leaps_fraction."},
+        {"name": "glidepath_config", "type": "GlidepathConfig", "description": "Source of floor, half_life_multiple, vti_alpha."}
       ],
       "outputs": [
-        {
-          "name": "return",
-          "type": "PortfolioState",
-          "description": "New frozen state with hurdle_contributed updated iff is_month_end and rebalance_rule == GLIDE_PATH."
-        }
-      ],
-      "raises": [],
-      "ffi_notes": null
-    },
-    {
-      "id": "API-GLIDE-REBALANCE",
-      "name": "_apply_rebalance (GLIDE_PATH branch)",
-      "description": "New dispatch branch inside the existing _apply_rebalance. At each month-end when RebalanceRule.GLIDE_PATH: compute m = total_nav / state.hurdle_contributed; compute target_w = glide_path_target_weight(m, ...); if current_leaps_weight > target_w + drift_band, trim LEAPS to target_w * total_val using the existing leaps_scale mechanism and redirect proceeds to base at base_target_w. One-sided cap: no top-up when current_leaps_weight <= target_w + drift_band.",
-      "layer": "python",
-      "pure": true,
-      "inputs": [
-        {
-          "name": "state",
-          "type": "PortfolioState",
-          "description": "Current frozen state (post-contribution, so hurdle_contributed is already updated for this month)."
-        },
-        {
-          "name": "ctx",
-          "type": "BacktestContext",
-          "description": "Provides leaps_fraction (w0), GlidepathConfig parameters, base_target_weights."
-        },
-        {
-          "name": "inputs",
-          "type": "DayInputs",
-          "description": "Provides date, spot, rfr for LEAPS valuation and trim execution."
-        }
-      ],
-      "outputs": [
-        {
-          "name": "return",
-          "type": "PortfolioState",
-          "description": "New frozen state with leaps_scale and holdings updated iff trim fired. Unchanged if no trim."
-        }
-      ],
-      "raises": [],
-      "ffi_notes": null
-    },
-    {
-      "id": "API-GLIDE-GTT-REENTRY",
-      "name": "_apply_gtt_reentry (GLIDE_PATH branch)",
-      "description": "Existing _apply_gtt_reentry seeds the fresh LEAPS simulation with total * ctx.leaps_fraction. Under GLIDE_PATH it must instead seed with glide_path_target_weight(m_current, ...) * total, where m_current = total / state.hurdle_contributed at the re-entry date. Requires a GLIDE_PATH branch inside _apply_gtt_reentry.",
-      "layer": "python",
-      "pure": true,
-      "inputs": [
-        {
-          "name": "state",
-          "type": "PortfolioState",
-          "description": "Current frozen state at the Defensive->Long transition date, with valid hurdle_contributed."
-        },
-        {
-          "name": "ctx",
-          "type": "BacktestContext",
-          "description": "Provides rebalance_rule, GlidepathConfig, leaps_fraction, base_target_weights."
-        },
-        {
-          "name": "inputs",
-          "type": "DayInputs",
-          "description": "Provides total NAV, date, spot, rfr for LEAPS contract creation."
-        }
-      ],
-      "outputs": [
-        {
-          "name": "return",
-          "type": "PortfolioState",
-          "description": "New frozen state with fresh LEAPS simulation seeded at the glide-path-adjusted weight."
-        }
-      ],
-      "raises": [],
-      "ffi_notes": null
-    },
-    {
-      "id": "API-BUILD-CONTEXT-GP",
-      "name": "_build_context (rfr_series unconditional population)",
-      "description": "Currently rfr_series in BacktestContext is only populated when use_leaps is True. GLIDE_PATH requires rfr_series unconditionally (for the hurdle recurrence). _build_context must populate rfr_series whenever config.rebalance_rule == RebalanceRule.GLIDE_PATH, regardless of use_leaps. The existing forward-fill and NaN validation must also apply in this path.",
-      "layer": "python",
-      "pure": true,
-      "inputs": [
-        {
-          "name": "config",
-          "type": "PortfolioConfig",
-          "description": "Portfolio config, including rebalance_rule and glide_path_config."
-        },
-        {
-          "name": "return_data",
-          "type": "ReturnData",
-          "description": "Return series container, including risk_free_rate (^IRX daily annualized series)."
-        }
-      ],
-      "outputs": [
-        {
-          "name": "return",
-          "type": "BacktestContext",
-          "description": "Fully validated context with rfr_series populated when GLIDE_PATH (even if use_leaps is False)."
-        }
+        {"name": "return", "type": "pd.Series", "description": "Target weight Series indexed by ticker. sum() == 1.0 within 1e-12 for all m >= 0."}
       ],
       "raises": [
-        "ValueError: if rebalance_rule == GLIDE_PATH and rfr_series has leading NaNs before the backtest start date"
+        "ValueError: if 'VTI' not in config.target_weights",
+        "ValueError: if base_sum == 0 (no non-LEAPS, non-VTI assets)"
+      ],
+      "ffi_notes": null
+    },
+    {
+      "id": "API-GP-APPLY-CONTRIBUTION",
+      "name": "_apply_contribution (hurdle and dynamic targets atomic update)",
+      "description": "Existing _apply_contribution fires on is_month_end. When glide_path_config is present: (1) compute new_hurdle = state.hurdle_contributed * (1+rfr)^(1/12) + config.monthly_contribution; (2) compute m = nav_before / new_hurdle; (3) compute new_targets = compute_glide_target_weights(m, config, glidepath_config); (4) return state updated with both fields in a single dataclasses.replace call. Must complete before _apply_rebalance reads either field. Non-glide-path paths unchanged.",
+      "layer": "python",
+      "pure": true,
+      "inputs": [
+        {"name": "state", "type": "PortfolioState", "description": "Current frozen state with hurdle_contributed from prior month-end and dynamic_target_weights from prior update."},
+        {"name": "ctx", "type": "BacktestContext", "description": "Provides config (monthly_contribution, glide_path_config, target_weights) and rebalance_rule."},
+        {"name": "inputs", "type": "DayInputs", "description": "Provides inputs.rfr (annualized ^IRX decimal) and inputs.is_month_end."},
+        {"name": "nav_before", "type": "float", "description": "Pre-contribution NAV; used as total_nav for computing m."}
+      ],
+      "outputs": [
+        {"name": "return", "type": "PortfolioState", "description": "New frozen state with hurdle_contributed and dynamic_target_weights both updated atomically on is_month_end when glide_path_config present. Unchanged on non-month-end days or when glide_path_config is None."}
+      ],
+      "raises": [],
+      "ffi_notes": null
+    },
+    {
+      "id": "API-GP-APPLY-REBALANCE",
+      "name": "_apply_rebalance (dynamic target_w source)",
+      "description": "Existing _apply_rebalance DRIFT path unchanged except for the source of target weights: target_w = state.dynamic_target_weights if state.dynamic_target_weights is not None else ctx.w. Both _should_rebalance and the redistribution step read from target_w. All other DRIFT logic (leaps_scale, partial-close, two-sided rebalancing) is reused without modification. LEAPS may be topped up or trimmed by standard DRIFT. De-levering effect comes entirely from the monthly target update.",
+      "layer": "python",
+      "pure": true,
+      "inputs": [
+        {"name": "state", "type": "PortfolioState", "description": "Post-contribution state; dynamic_target_weights already updated for this month-end."},
+        {"name": "ctx", "type": "BacktestContext", "description": "Provides ctx.w (fallback when dynamic_target_weights is None), leaps_fraction, base_target_w."},
+        {"name": "inputs", "type": "DayInputs", "description": "Provides date, spot, rfr for LEAPS pricing and rebalance execution."}
+      ],
+      "outputs": [
+        {"name": "return", "type": "PortfolioState", "description": "New frozen state with holdings, leaps_scale, and leaps_value updated by DRIFT against dynamic_target_weights. Unchanged if drift band not breached."}
+      ],
+      "raises": [],
+      "ffi_notes": null
+    },
+    {
+      "id": "API-GP-GTT-REENTRY",
+      "name": "_apply_gtt_reentry (glide-path-adjusted seed and allocation)",
+      "description": "When glide_path_config is present and a Defensive->Long GTT transition fires: (1) compute m_current = total / state.hurdle_contributed; (2) call compute_glide_target_weights(m_current, config, glide_path_config) to get current dynamic targets; (3) seed LEAPS with dynamic_targets[leaps_key] * total; (4) allocate each base asset (including VTI) at dynamic_targets[a] * total. VTI receives its current dynamic target allocation from full NAV — treated identically to any other base asset. This is a full rebalance to current dynamic targets, consistent with non-glide-path re-entry behavior. Non-GTT and non-glide-path paths unchanged.",
+      "layer": "python",
+      "pure": true,
+      "inputs": [
+        {"name": "state", "type": "PortfolioState", "description": "Frozen state at the Defensive->Long transition date, with valid hurdle_contributed and dynamic_target_weights."},
+        {"name": "ctx", "type": "BacktestContext", "description": "Provides rebalance_rule, glide_path_config, leaps_fraction, base_target_w, underlying_prices, rfr_series."},
+        {"name": "inputs", "type": "DayInputs", "description": "Provides date, spot, rfr, raw_vix_value for LEAPS contract creation."}
+      ],
+      "outputs": [
+        {"name": "return", "type": "PortfolioState", "description": "New frozen state with LEAPS seeded at dynamic_targets[leaps_key] * total and all base assets (including VTI) allocated at their current dynamic targets."}
+      ],
+      "raises": [],
+      "ffi_notes": null
+    },
+    {
+      "id": "API-GP-BUILD-CONTEXT",
+      "name": "_build_context (rfr_series and VTI validation for glide path)",
+      "description": "When config.glide_path_config is not None: (1) populate rfr_series from return_data.risk_free_rate with forward-fill, regardless of use_leaps; (2) assert 'VTI' present in return_data.returns.columns; (3) assert rfr_series has no leading NaNs before the backtest start date. All existing _build_context logic is unchanged; this is an additional validation and population block gated on glide_path_config presence.",
+      "layer": "python",
+      "pure": true,
+      "inputs": [
+        {"name": "config", "type": "PortfolioConfig", "description": "Portfolio config; glide_path_config field triggers the new population/validation path."},
+        {"name": "return_data", "type": "ReturnData", "description": "Must contain risk_free_rate (^IRX) and returns DataFrame with 'VTI' column when glide_path_config is set."}
+      ],
+      "outputs": [
+        {"name": "return", "type": "BacktestContext", "description": "Fully validated context with rfr_series populated when glide_path_config present, regardless of use_leaps."}
+      ],
+      "raises": [
+        "ValueError: if glide_path_config is not None and 'VTI' absent from return_data.returns.columns",
+        "ValueError: if glide_path_config is not None and rfr_series has leading NaNs before the backtest start date"
       ],
       "ffi_notes": null
     }
@@ -269,223 +232,212 @@
   "features": [
     {
       "id": "F-GP-01",
-      "name": "GlidepathConfig dataclass and RebalanceRule.GLIDE_PATH enum value",
-      "description": "Add @dataclass(frozen=True) GlidepathConfig to _portfolio_types.py with fields half_life_multiple (default 2.0), floor (default 0.05), drift_band (default DRIFT_BAND_RELATIVE). Add GLIDE_PATH = 'glide_path' to the RebalanceRule enum in leverage.py. Add optional glide_path_config: GlidepathConfig | None = None to PortfolioConfig; __post_init__ validates: if glide_path_config is not None, then rebalance_rule == GLIDE_PATH, floor < leaps_fraction, and half_life_multiple > 0.",
+      "name": "GlidepathConfig dataclass and PortfolioConfig extension",
+      "description": "Add @dataclass(frozen=True) GlidepathConfig to _portfolio_types.py with fields half_life_multiple (default 2.0), floor (default 0.05), vti_alpha (default 0.65). No drift_band field — uses DRIFT_BAND_RELATIVE from consts.py. Add optional glide_path_config: GlidepathConfig | None = None to PortfolioConfig. __post_init__ validates when glide_path_config is not None: rebalance_rule == DRIFT, floor < leaps_fraction, half_life_multiple > 0, 0.0 <= vti_alpha <= 1.0, 'VTI' in target_weights with value 0.0. No RebalanceRule.GLIDE_PATH enum is added.",
       "phase": "1",
       "priority": 1,
       "status": "not_started",
       "layer": "python",
       "dependencies": [],
-      "linked_schemas": [
-        "S-GLIDE-CONFIG",
-        "S-PORTFOLIO-CONFIG-GP"
-      ],
+      "linked_schemas": ["S-GP-CONFIG", "S-GP-PORTFOLIO-CONFIG"],
       "linked_apis": [],
       "invariants": {
         "temporal_bounds": null,
         "accounting_oracle": null,
         "composition_scope": "ATOMIC",
-        "plausibility_range": "floor in (0, 1); w0 = leaps_fraction in (0, 1); half_life_multiple > 0",
+        "plausibility_range": "floor in (0, 1); leaps_fraction in (0, 1); floor < leaps_fraction; half_life_multiple > 0; vti_alpha in [0.0, 1.0]",
         "realism_requirements": null
       },
       "performance_requirements": {
         "complexity_budget": "O(1)",
-        "notes": "Config construction and validation are constant-time."
+        "notes": "Config construction and __post_init__ validation are constant-time."
       },
       "property_based_testing": {
         "enabled": false,
         "strategies": [],
         "layers": [],
-        "rationale_if_disabled": "Project uses pytest only; no hypothesis. Coverage via tabulated example-based unit tests."
+        "rationale_if_disabled": "Project uses pytest only; no hypothesis. Validation paths covered by tabulated unit tests."
       },
       "mutation_testing": {
         "enabled": false,
-        "rationale_if_disabled": "Project uses pytest only; no mutmut in the toolchain."
+        "rationale_if_disabled": "Project uses pytest only; no mutmut in toolchain."
       },
       "acceptance_criteria": [
-        "GlidepathConfig() constructs with default half_life_multiple=2.0, floor=0.05, drift_band=0.10 (DRIFT_BAND_RELATIVE).",
-        "GlidepathConfig is frozen: attribute assignment after construction raises FrozenInstanceError.",
-        "RebalanceRule.GLIDE_PATH is importable from finance.leverage with value 'glide_path'.",
-        "PortfolioConfig with glide_path_config set and rebalance_rule != GLIDE_PATH raises ValueError in __post_init__.",
+        "GlidepathConfig() constructs with defaults half_life_multiple=2.0, floor=0.05, vti_alpha=0.65.",
+        "GlidepathConfig is frozen: attribute assignment raises FrozenInstanceError.",
+        "PortfolioConfig with glide_path_config set and rebalance_rule != DRIFT raises ValueError.",
         "PortfolioConfig with glide_path_config.floor >= leaps_fraction raises ValueError.",
+        "PortfolioConfig with glide_path_config.vti_alpha outside [0.0, 1.0] raises ValueError.",
+        "PortfolioConfig with glide_path_config set and 'VTI' absent from target_weights raises ValueError.",
         "PortfolioConfig with glide_path_config=None and rebalance_rule=DRIFT constructs identically to pre-change behavior."
       ],
       "test_requirements": [
         {
           "type": "unit",
-          "description": "Construct valid GlidepathConfig with defaults and custom values; assert fields and immutability."
+          "description": "Construct valid GlidepathConfig with defaults and custom values; assert all three fields and immutability."
         },
         {
           "type": "unit",
-          "description": "Assert RebalanceRule.GLIDE_PATH importable and distinct from QUARTERLY and DRIFT."
-        },
-        {
-          "type": "unit",
-          "description": "PortfolioConfig __post_init__ validation: floor >= w0 raises; rebalance_rule mismatch raises; None path unchanged."
+          "description": "__post_init__ validation: floor >= leaps_fraction raises; rebalance_rule != DRIFT raises; vti_alpha out-of-range raises; VTI absent from target_weights raises; None path is unchanged."
         }
       ],
       "edge_cases": [
-        "half_life_multiple = 0 must raise ValueError.",
-        "floor = 0.0 is semantically allowed (full de-lever to zero) but does not change the functional form.",
-        "glide_path_config set but leaps_fraction == 0 (no LEAPS in target_weights) should raise ValueError in __post_init__ since floor < w0 would be violated."
+        "vti_alpha = 0.0: all freed weight to base assets, none to VTI — valid degenerate.",
+        "vti_alpha = 1.0: all freed weight to VTI, none to base — valid degenerate.",
+        "floor = 0.0: full de-lever to zero LEAPS allowed; functional form unchanged.",
+        "leaps_fraction == 0 with glide_path_config set: floor < w0 violated, raises ValueError."
       ],
       "clarification_needed": false,
       "clarification_notes": null
     },
     {
       "id": "F-GP-02",
-      "name": "glide_path_target_weight() pure function",
-      "description": "Add pure function glide_path_target_weight(m, w0, floor, half_life_multiple) to _backtest_steps.py alongside existing pure helpers. Implements: lam = ln(2) / half_life_multiple; active_weight = (w0 - floor) * exp(-lam * max(m - 1.0, 0.0)); return floor + active_weight. Must satisfy the three key invariants: w(1.0) == w0; w(m) -> floor as m -> inf; monotone non-increasing for m >= 1.",
+      "name": "glide_path_leaps_weight() pure function",
+      "description": "Add pure function glide_path_leaps_weight(m, w0, floor, half_life_multiple) to _backtest_steps.py alongside existing pure helpers. Implements: lam = ln(2) / half_life_multiple; active = (w0 - floor) * exp(-lam * max(m-1.0, 0.0)); return floor + active. Key invariants: w(m<=1.0)==w0; w(m)->floor as m->inf; monotone non-increasing for m>=1.",
       "phase": "2",
       "priority": 1,
       "status": "not_started",
       "layer": "python",
-      "dependencies": [
-        "F-GP-01"
-      ],
+      "dependencies": ["F-GP-01"],
       "linked_schemas": [],
-      "linked_apis": [
-        "API-GLIDE-TARGET-WEIGHT"
-      ],
+      "linked_apis": ["API-GP-LEAPS-WEIGHT"],
       "invariants": {
-        "temporal_bounds": "m is a function of current-state quantities only: total_nav(t) and hurdle_contributed(t). No forward values.",
-        "accounting_oracle": "w(1.0) == w0 exactly (exp term = 1.0); w(inf) = floor (exp term -> 0); w(m) in [floor, w0] for all m >= 0.",
+        "temporal_bounds": "m is derived from current-state quantities only: total_nav(t) / hurdle_contributed(t). No forward values.",
+        "accounting_oracle": "w(1.0) == w0 exactly (exp(0)=1); w(inf) -> floor (exp->0); result in [floor, w0] for all m >= 0.",
         "composition_scope": "ATOMIC",
         "plausibility_range": "[floor, w0] for all m >= 0",
         "realism_requirements": null
       },
       "performance_requirements": {
         "complexity_budget": "O(1)",
-        "notes": "Scalar computation with one exp call."
+        "notes": "One exp call per invocation."
       },
       "property_based_testing": {
         "enabled": false,
         "strategies": [],
         "layers": [],
-        "rationale_if_disabled": "Project uses pytest only; no hypothesis. Invariants verified with tabulated values across the m range."
+        "rationale_if_disabled": "Project uses pytest only; no hypothesis. Invariants verified with tabulated values and a monotonicity sweep."
       },
       "mutation_testing": {
         "enabled": false,
-        "rationale_if_disabled": "Project uses pytest only; no mutmut in the toolchain."
+        "rationale_if_disabled": "Project uses pytest only; no mutmut in toolchain."
       },
       "acceptance_criteria": [
-        "glide_path_target_weight(m=1.0, w0=0.40, floor=0.05, half_life_multiple=2.0) == 0.40 within 1e-12.",
-        "glide_path_target_weight(m=3.0, w0=0.40, floor=0.05, half_life_multiple=2.0) == 0.05 + 0.35 * exp(-ln(2)) within 1e-12 (i.e., 0.05 + 0.175 = 0.225).",
-        "Return value is in [floor, w0] for m in [0.0, 100.0] with w0=0.40, floor=0.05, half_life_multiple=2.0.",
-        "Function is monotone non-increasing for m >= 1.0 (verified across 1000 evenly-spaced m values).",
+        "glide_path_leaps_weight(m=1.0, w0=0.40, floor=0.05, half_life_multiple=2.0) == 0.40 within 1e-12.",
+        "glide_path_leaps_weight(m=3.0, w0=0.40, floor=0.05, half_life_multiple=2.0) == 0.05 + 0.35*exp(-ln(2)) within 1e-12 (== 0.225).",
+        "Result is in [0.05, 0.40] for all m in [0.0, 100.0] with those parameters.",
+        "Result is monotone non-increasing for m in [1.0, 100.0] (verified at 1000 points).",
         "half_life_multiple <= 0 raises ValueError; floor >= w0 raises ValueError."
       ],
       "test_requirements": [
         {
           "type": "unit",
-          "description": "Tabulated values at m=0.5, 1.0, 1.5, 2.0, 3.0, 10.0 against hand-computed reference within 1e-12."
+          "description": "Tabulated values at m=0.5, 1.0, 1.5, 2.0, 3.0, 10.0 against hand-computed references within 1e-12."
         },
         {
           "type": "unit",
-          "description": "Assert [floor, w0] bound holds across a sweep of m from 0 to 100; assert monotonicity for m >= 1.0."
+          "description": "Bound and monotonicity check: sweep m from 0 to 100 in 1000 steps; assert all in [floor, w0] and non-increasing for m>=1."
         },
         {
           "type": "unit",
-          "description": "Assert ValueError on half_life_multiple <= 0 and floor >= w0."
+          "description": "ValueError on half_life_multiple <= 0 and floor >= w0."
         }
       ],
       "edge_cases": [
-        "m < 1.0 (portfolio underwater): function must return w0 exactly (max(m-1, 0) == 0).",
-        "m == 1.0: exp term is exp(0) = 1, so return w0 exactly.",
-        "Very large m (e.g. 1000): exp term approaches 0, return must converge to floor within floating-point tolerance."
+        "m < 1.0: max(m-1,0)==0, so result == w0 exactly.",
+        "m == 1.0: exp(0)==1, result == w0 exactly.",
+        "m == 1000: exp term rounds to 0.0 in float64; result == floor within 1e-15."
       ],
       "clarification_needed": false,
       "clarification_notes": null
     },
     {
       "id": "F-GP-03",
-      "name": "hurdle_contributed field on PortfolioState and initialization",
-      "description": "Add hurdle_contributed: float field to the PortfolioState frozen dataclass in _portfolio_types.py. Initialize to config.initial_nav in _build_initial_state. The field is always present on PortfolioState regardless of rebalance_rule; it is only written by the GLIDE_PATH branch of _apply_contribution and only read in _apply_rebalance and _apply_gtt_reentry when GLIDE_PATH is active.",
+      "name": "compute_glide_target_weights() pure function",
+      "description": "Add pure function compute_glide_target_weights(m, config, glidepath_config) -> pd.Series to _backtest_steps.py. Computes w_leaps = glide_path_leaps_weight(m, w0, floor, half_life_multiple); w_freed = w0 - w_leaps; distributes w_freed as: vti_alpha * w_freed to 'VTI', (1-vti_alpha) * w_freed proportionally among non-LEAPS non-VTI base assets by their original weights. Returns normalized pd.Series indexed by all ticker keys. Key invariants: result.sum()==1.0; result at m==1.0 equals config.target_weights (with VTI=0.0); VTI weight and all base weights monotone non-decreasing in m.",
       "phase": "2",
       "priority": 1,
       "status": "not_started",
       "layer": "python",
-      "dependencies": [
-        "F-GP-01"
-      ],
-      "linked_schemas": [
-        "S-PORTFOLIO-STATE-GP"
-      ],
-      "linked_apis": [],
+      "dependencies": ["F-GP-01", "F-GP-02"],
+      "linked_schemas": [],
+      "linked_apis": ["API-GP-COMPUTE-TARGETS"],
       "invariants": {
-        "temporal_bounds": "hurdle_contributed(t) is a function of contributions and rfr through t only. No forward values.",
-        "accounting_oracle": "Recurrence: hurdle(t) = hurdle(t-1) * (1+rfr_t)^(1/12) + contribution_t. After N months from initial_nav I with monthly contribution C and constant rfr r_f, hurdle = I*(1+r_f)^(N/12) + C * sum_{k=0}^{N-1} (1+r_f)^(k/12) (geometric series). Verify against closed-form for a constant-rfr scenario.",
-        "composition_scope": "INTEGRATION",
-        "plausibility_range": "hurdle_contributed >= initial_nav for all t >= 0 (Rf-growth and positive contributions are both non-negative)",
-        "realism_requirements": "Integration test must exercise at least 12 monthly steps to verify the recurrence accumulates correctly across multiple months."
+        "temporal_bounds": "m is derived from current-state quantities only. No forward values.",
+        "accounting_oracle": "sum(result) == 1.0 within 1e-12 for all m. At m==1.0, result[k] == config.target_weights[k] for all k within 1e-12. result['VTI'] == (w0 - glide_path_leaps_weight(m)) * vti_alpha within 1e-12.",
+        "composition_scope": "ATOMIC",
+        "plausibility_range": "All weights in [0, 1]; sum == 1.0; LEAPS weight in [floor, w0]; VTI weight in [0, w0*vti_alpha].",
+        "realism_requirements": null
       },
       "performance_requirements": {
-        "complexity_budget": "O(1)",
-        "notes": "Single scalar multiply and add per month-end; O(n) over the full backtest."
+        "complexity_budget": "O(k)",
+        "notes": "k = number of assets in target_weights; typically O(1) for the small fixed portfolio."
       },
       "property_based_testing": {
         "enabled": false,
         "strategies": [],
         "layers": [],
-        "rationale_if_disabled": "Project uses pytest only; no hypothesis. Recurrence accuracy verified against closed-form analytic formula in integration test."
+        "rationale_if_disabled": "Project uses pytest only; no hypothesis. Sum and identity invariants verified at tabulated m values."
       },
       "mutation_testing": {
         "enabled": false,
-        "rationale_if_disabled": "Project uses pytest only; no mutmut in the toolchain."
+        "rationale_if_disabled": "Project uses pytest only; no mutmut in toolchain."
       },
       "acceptance_criteria": [
-        "PortfolioState constructs with hurdle_contributed field present and equal to the passed value.",
-        "_build_initial_state sets hurdle_contributed = config.initial_nav (within 1e-9).",
-        "After 12 monthly steps with constant rfr=0.05 and monthly_contribution=10000, hurdle_contributed matches the closed-form geometric sum within 1e-6.",
-        "hurdle_contributed never decreases between steps (monotone non-decreasing, since rfr >= 0 and contributions >= 0)."
+        "result.sum() == 1.0 within 1e-12 for m in [0.5, 1.0, 1.5, 2.0, 5.0, 10.0].",
+        "At m==1.0, result equals config.target_weights (with VTI==0.0) within 1e-12 for all keys.",
+        "result['VTI'] == (w0 - glide_path_leaps_weight(m)) * vti_alpha within 1e-12 at m==2.0.",
+        "All base asset weights are >= their original target_weights values (non-decreasing) for m > 1.0.",
+        "ValueError if 'VTI' not in config.target_weights; ValueError if base_sum == 0."
       ],
       "test_requirements": [
         {
           "type": "unit",
-          "description": "Construct PortfolioState with explicit hurdle_contributed; assert field presence and immutability."
+          "description": "Tabulated outputs at m=1.0, 2.0, 5.0: verify sum==1.0, VTI weight, LEAPS weight, and base weights against hand-computed references within 1e-12."
         },
         {
           "type": "unit",
-          "description": "_build_initial_state returns state with hurdle_contributed == initial_nav."
+          "description": "Identity check: at m==1.0, result matches config.target_weights for all keys within 1e-12."
         },
         {
-          "type": "integration",
-          "description": "tests/test_glide_path_hurdle_integration.py: run a minimal GLIDE_PATH backtest for 12+ months with known constant rfr; assert hurdle_contributed at each month-end matches the analytic closed-form within 1e-6."
+          "type": "unit",
+          "description": "Monotonicity: VTI weight and each base weight non-decreasing across m in [1.0, 10.0] at 100 points."
+        },
+        {
+          "type": "unit",
+          "description": "ValueError paths: VTI absent from target_weights; base_sum==0."
         }
       ],
       "edge_cases": [
-        "rfr == 0.0 (ZIRP scenario): monthly factor = 1.0, hurdle grows by exactly monthly_contribution each month.",
-        "monthly_contribution == 0 (no contributions): hurdle grows at pure Rf compounding.",
-        "Non-GLIDE_PATH rules: hurdle_contributed is initialized and carried forward but never updated — it remains equal to initial_nav throughout. This is the correct no-op behavior."
+        "m < 1.0: w_freed==0, result == config.target_weights (VTI remains 0.0).",
+        "vti_alpha==0.0: VTI weight always 0.0; all freed weight to base assets.",
+        "vti_alpha==1.0: all freed weight to VTI; base asset weights equal original target_weights at all m.",
+        "Single base asset (base_sum == one asset weight): proportional distribution trivially correct."
       ],
       "clarification_needed": false,
       "clarification_notes": null
     },
     {
       "id": "F-GP-04",
-      "name": "_build_context rfr_series unconditional population for GLIDE_PATH",
-      "description": "Currently rfr_series in BacktestContext is only populated when use_leaps is True. GLIDE_PATH requires rfr_series for the hurdle recurrence even when use_leaps is False. Modify _build_context to populate rfr_series (from return_data.risk_free_rate via ^IRX, with existing forward-fill) whenever config.rebalance_rule == RebalanceRule.GLIDE_PATH, regardless of use_leaps. The existing NaN-validation assertion must also apply in this new code path.",
+      "name": "PortfolioState hurdle_contributed and dynamic_target_weights fields",
+      "description": "Add two fields to the frozen PortfolioState dataclass in _portfolio_types.py: hurdle_contributed: float (initialized to config.initial_nav in _build_initial_state); dynamic_target_weights: pd.Series | None (initialized to None when glide_path_config is None; initialized to compute_glide_target_weights(m=1.0, ...) when glide_path_config is present — equals config.target_weights at m=1.0, no day-1 disruption). Both fields carried forward via dataclasses.replace. When glide_path_config is None, hurdle_contributed is initialized to initial_nav and never modified.",
       "phase": "2",
       "priority": 1,
       "status": "not_started",
       "layer": "python",
-      "dependencies": [
-        "F-GP-01"
-      ],
-      "linked_schemas": [],
-      "linked_apis": [
-        "API-BUILD-CONTEXT-GP"
-      ],
+      "dependencies": ["F-GP-01", "F-GP-03"],
+      "linked_schemas": ["S-GP-PORTFOLIO-STATE"],
+      "linked_apis": [],
       "invariants": {
-        "temporal_bounds": "rfr_series must be aligned to the backtest index with no leading NaNs before the start date.",
-        "accounting_oracle": "rfr_series values are the annualized ^IRX rate; no computation — source is return_data.risk_free_rate.",
-        "composition_scope": "ATOMIC",
-        "plausibility_range": "rfr_series values in [0, 1] (0–100% annualized); forward-filled, no NaN after start.",
-        "realism_requirements": null
+        "temporal_bounds": "hurdle_contributed(t) = f(initial_nav, contributions[0..t], rfr[0..t]). No forward values. dynamic_target_weights(t) = compute_glide_target_weights(m(t)) = f(hurdle_contributed(t), total_nav(t)).",
+        "accounting_oracle": "hurdle_contributed >= initial_nav for all t (Rf >= 0, contributions >= 0). dynamic_target_weights.sum() == 1.0 within 1e-12 when not None.",
+        "composition_scope": "INTEGRATION",
+        "plausibility_range": "hurdle_contributed in [initial_nav, inf); dynamic_target_weights.sum() == 1.0; dynamic_target_weights is None iff glide_path_config is None.",
+        "realism_requirements": "Integration test must verify hurdle_contributed accumulates correctly over at least 12 monthly steps and dynamic_target_weights evolves monotonically."
       },
       "performance_requirements": {
-        "complexity_budget": "O(n)",
-        "notes": "Forward-fill over the index is linear; no change from the existing use_leaps path."
+        "complexity_budget": "O(k)",
+        "notes": "k = number of assets; initialization is O(k) for the Series; dataclasses.replace is O(1)."
       },
       "property_based_testing": {
         "enabled": false,
@@ -495,62 +447,57 @@
       },
       "mutation_testing": {
         "enabled": false,
-        "rationale_if_disabled": "Project uses pytest only; no mutmut in the toolchain."
+        "rationale_if_disabled": "Project uses pytest only; no mutmut in toolchain."
       },
       "acceptance_criteria": [
-        "_build_context with rebalance_rule=GLIDE_PATH and use_leaps=False produces a BacktestContext where rfr_series is not None and has no NaN values.",
-        "_build_context with rebalance_rule=DRIFT (not GLIDE_PATH) and use_leaps=False still produces rfr_series=None (no regression to existing behavior).",
-        "If rfr_series has leading NaNs before the backtest start, _build_context raises ValueError."
+        "_build_initial_state with glide_path_config=None sets hurdle_contributed == initial_nav within 1e-9 and dynamic_target_weights is None.",
+        "_build_initial_state with glide_path_config set initializes dynamic_target_weights to config.target_weights (with VTI=0.0) within 1e-12 for all keys.",
+        "PortfolioState with both new fields constructs and freezes correctly; attribute assignment raises FrozenInstanceError.",
+        "hurdle_contributed never decreases across 12 monthly steps with non-negative rfr and contributions."
       ],
       "test_requirements": [
         {
           "type": "unit",
-          "description": "Build context with GLIDE_PATH and use_leaps=False; assert rfr_series is not None and NaN-free."
+          "description": "_build_initial_state: assert hurdle_contributed == initial_nav and dynamic_target_weights is None (no glide path)."
         },
         {
           "type": "unit",
-          "description": "Build context with DRIFT and use_leaps=False; assert rfr_series is None (existing behavior unchanged)."
+          "description": "_build_initial_state with glide_path_config: assert dynamic_target_weights matches config.target_weights at m=1.0 within 1e-12."
         },
         {
-          "type": "unit",
-          "description": "Synthetic rfr series with leading NaN on the first backtest date; assert ValueError from _build_context."
+          "type": "integration",
+          "description": "tests/test_glide_path_state_integration.py: 12-month DRIFT+glide_path backtest; assert hurdle_contributed at each month-end matches analytic closed-form within 1e-6 and dynamic_target_weights.sum()==1.0 at every step."
         }
       ],
       "edge_cases": [
-        "use_leaps=True and rebalance_rule=GLIDE_PATH: both conditions populate rfr_series — must not double-populate or conflict.",
-        "return_data.risk_free_rate is entirely NaN (degenerate input): should raise ValueError rather than returning a silently all-NaN rfr_series."
+        "rfr==0.0 (ZIRP): monthly factor==1.0, hurdle grows by exactly monthly_contribution each month.",
+        "monthly_contribution==0: hurdle grows at pure Rf compounding.",
+        "Non-glide-path rule: hurdle_contributed initialized to initial_nav and never modified; dynamic_target_weights remains None throughout."
       ],
       "clarification_needed": false,
       "clarification_notes": null
     },
     {
       "id": "F-GP-05",
-      "name": "_apply_contribution hurdle_contributed recurrence update",
-      "description": "Modify the existing _apply_contribution function in _backtest_steps.py. On is_month_end when rebalance_rule == GLIDE_PATH: compute monthly_rf = (1.0 + inputs.rfr) ** (1.0 / 12.0); new_hurdle = state.hurdle_contributed * monthly_rf + ctx.config.monthly_contribution; return updated state via dataclasses.replace(state, hurdle_contributed=new_hurdle). Non-GLIDE_PATH paths are unchanged. The update must happen before _apply_rebalance reads hurdle_contributed.",
-      "phase": "3",
+      "name": "_build_context rfr_series population and VTI validation for glide path",
+      "description": "Modify _build_context to populate rfr_series whenever config.glide_path_config is not None, regardless of use_leaps. Apply existing forward-fill and NaN-validation logic. Assert 'VTI' is present in return_data.returns.columns when glide_path_config is set. All existing _build_context behavior (use_leaps path, GTT path, etc.) is unchanged.",
+      "phase": "2",
       "priority": 1,
       "status": "not_started",
       "layer": "python",
-      "dependencies": [
-        "F-GP-03",
-        "F-GP-04"
-      ],
-      "linked_schemas": [
-        "S-PORTFOLIO-STATE-GP"
-      ],
-      "linked_apis": [
-        "API-UPDATE-HURDLE"
-      ],
+      "dependencies": ["F-GP-01"],
+      "linked_schemas": ["S-GP-BACKTEST-CONTEXT"],
+      "linked_apis": ["API-GP-BUILD-CONTEXT"],
       "invariants": {
-        "temporal_bounds": "inputs.rfr is the per-day ^IRX rate at the current month-end — no future values used. hurdle_contributed(t) = f(hurdle_contributed(t-1), rfr(t), contribution_t).",
-        "accounting_oracle": "Recurrence: new_hurdle = old * (1+rfr)^(1/12) + contribution. Verify against F-GP-03 integration test analytic formula.",
-        "composition_scope": "INTEGRATION",
-        "plausibility_range": "new_hurdle >= old_hurdle (rfr >= 0, contribution >= 0); new_hurdle >= initial_nav.",
-        "realism_requirements": "Integration test must cover at least 24 monthly steps with varying rfr values from a synthetic ^IRX series."
+        "temporal_bounds": "rfr_series must be aligned to the backtest index with no leading NaNs before the start date.",
+        "accounting_oracle": "rfr_series values sourced from return_data.risk_free_rate (^IRX); forward-filled; no computation.",
+        "composition_scope": "ATOMIC",
+        "plausibility_range": "rfr_series values in [0, 1]; no NaN after start date.",
+        "realism_requirements": null
       },
       "performance_requirements": {
-        "complexity_budget": "O(1)",
-        "notes": "Two floating-point operations per month-end."
+        "complexity_budget": "O(n)",
+        "notes": "Forward-fill over the index is linear; same as existing use_leaps path."
       },
       "property_based_testing": {
         "enabled": false,
@@ -560,68 +507,60 @@
       },
       "mutation_testing": {
         "enabled": false,
-        "rationale_if_disabled": "Project uses pytest only; no mutmut in the toolchain."
+        "rationale_if_disabled": "Project uses pytest only; no mutmut in toolchain."
       },
       "acceptance_criteria": [
-        "On is_month_end with GLIDE_PATH, returned state has hurdle_contributed == old * (1+rfr)^(1/12) + monthly_contribution within 1e-9.",
-        "On is_month_end with DRIFT, hurdle_contributed is unchanged from the input state (no regression).",
-        "On a non-month-end day with GLIDE_PATH, hurdle_contributed is unchanged.",
-        "hurdle_contributed monotonically non-decreases across all month-ends in a synthetic 24-month backtest with non-negative rfr and contributions."
+        "_build_context with glide_path_config set and use_leaps=False produces BacktestContext where rfr_series is not None and NaN-free.",
+        "_build_context with glide_path_config=None and use_leaps=False still produces rfr_series=None (no regression).",
+        "_build_context with glide_path_config set and 'VTI' absent from return_data.returns.columns raises ValueError.",
+        "_build_context with glide_path_config set and rfr_series having leading NaNs before start date raises ValueError."
       ],
       "test_requirements": [
         {
           "type": "unit",
-          "description": "Single month-end step with GLIDE_PATH: assert new hurdle == old * (1+rfr)^(1/12) + contribution within 1e-9."
+          "description": "glide_path_config set, use_leaps=False: assert rfr_series not None and NaN-free."
         },
         {
           "type": "unit",
-          "description": "Single month-end step with DRIFT: assert hurdle_contributed unchanged."
+          "description": "glide_path_config=None, use_leaps=False: assert rfr_series is None."
         },
         {
           "type": "unit",
-          "description": "Non-month-end day with GLIDE_PATH: assert hurdle_contributed unchanged."
+          "description": "glide_path_config set, 'VTI' absent from returns: assert ValueError."
         },
         {
-          "type": "integration",
-          "description": "tests/test_glide_path_hurdle_integration.py: 24-month synthetic GLIDE_PATH backtest with time-varying ^IRX; assert hurdle_contributed at each month-end matches analytic recurrence within 1e-6."
+          "type": "unit",
+          "description": "glide_path_config set, rfr_series with leading NaN on start date: assert ValueError."
         }
       ],
       "edge_cases": [
-        "rfr = 0.0 on a month-end: monthly_rf = 1.0, new_hurdle = old + contribution.",
-        "monthly_contribution = 0.0: new_hurdle = old * (1+rfr)^(1/12) exactly.",
-        "Very high rfr (e.g. 0.20): factor = (1.20)^(1/12) ≈ 1.0153 — should not overflow or NaN."
+        "use_leaps=True and glide_path_config set: both conditions populate rfr_series — must not double-populate or overwrite.",
+        "return_data.risk_free_rate entirely NaN: raises ValueError, not silent all-NaN series."
       ],
       "clarification_needed": false,
       "clarification_notes": null
     },
     {
       "id": "F-GP-06",
-      "name": "_apply_rebalance GLIDE_PATH trim dispatch",
-      "description": "Add a GLIDE_PATH dispatch branch to the existing _apply_rebalance function in _backtest_steps.py. At each month-end when GLIDE_PATH: (1) compute m = total_val / state.hurdle_contributed; (2) compute target_w = glide_path_target_weight(m, ctx.leaps_fraction, glide_path_config.floor, glide_path_config.half_life_multiple); (3) compute current_leaps_weight = leaps_value / total_val; (4) if current_leaps_weight > target_w + drift_band, trim LEAPS to target_w * total_val using the existing leaps_scale mechanism, redirect proceeds to base at base_target_w. No top-up if current_leaps_weight <= target_w + drift_band (one-sided cap). Reuse the existing leaps_scale dict and partial-close accumulation pattern from the DRIFT path.",
-      "phase": "4",
+      "name": "_apply_contribution atomic update of hurdle_contributed and dynamic_target_weights",
+      "description": "Modify _apply_contribution to atomically update hurdle_contributed and dynamic_target_weights on is_month_end when glide_path_config is present. Steps: (1) new_hurdle = state.hurdle_contributed * (1+inputs.rfr)^(1/12) + config.monthly_contribution; (2) m = nav_before / new_hurdle; (3) new_targets = compute_glide_target_weights(m, config, glide_path_config); (4) return dataclasses.replace(state, hurdle_contributed=new_hurdle, dynamic_target_weights=new_targets). Both fields updated in a single replace call — no intermediate state with inconsistent hurdle/targets. Non-glide-path paths unchanged.",
+      "phase": "3",
       "priority": 1,
       "status": "not_started",
       "layer": "python",
-      "dependencies": [
-        "F-GP-02",
-        "F-GP-05"
-      ],
-      "linked_schemas": [
-        "S-GLIDE-CONFIG"
-      ],
-      "linked_apis": [
-        "API-GLIDE-REBALANCE"
-      ],
+      "dependencies": ["F-GP-03", "F-GP-04", "F-GP-05"],
+      "linked_schemas": ["S-GP-PORTFOLIO-STATE"],
+      "linked_apis": ["API-GP-APPLY-CONTRIBUTION"],
       "invariants": {
-        "temporal_bounds": "All inputs are current-state quantities at the month-end date. No forward values.",
-        "accounting_oracle": "After trim: leaps_value_new == target_w * total_val within 1e-6 (when trim fires). Total NAV is conserved: proceeds_to_base + leaps_value_new == leaps_value_old within 1e-6.",
+        "temporal_bounds": "inputs.rfr is the per-day ^IRX rate at the current month-end — no future values. new_hurdle = f(old_hurdle, rfr(t), contribution_t).",
+        "accounting_oracle": "new_hurdle = old * (1+rfr)^(1/12) + contribution. Verify against closed-form geometric series after N months of constant rfr. new_targets.sum() == 1.0 within 1e-12.",
         "composition_scope": "INTEGRATION",
-        "plausibility_range": "Post-trim leaps_weight in [floor, w0]; trim fires iff leaps_weight > target_w + drift_band.",
-        "realism_requirements": "Integration test must verify trim fires at the correct m threshold and does not fire below the drift band, across a synthetic 25-year backtest equivalent (monthly steps)."
+        "plausibility_range": "new_hurdle >= old_hurdle; dynamic_target_weights.sum() == 1.0; both updated atomically.",
+        "realism_requirements": "Integration test must cover at least 24 monthly steps with time-varying rfr; assert hurdle and targets consistent at every step."
       },
       "performance_requirements": {
         "complexity_budget": "O(k)",
-        "notes": "k = number of open LEAPS contracts; typically O(1) since only one active contract exists at a time."
+        "notes": "k = number of assets for compute_glide_target_weights; O(1) for hurdle arithmetic."
       },
       "property_based_testing": {
         "enabled": false,
@@ -631,70 +570,62 @@
       },
       "mutation_testing": {
         "enabled": false,
-        "rationale_if_disabled": "Project uses pytest only; no mutmut in the toolchain."
+        "rationale_if_disabled": "Project uses pytest only; no mutmut in toolchain."
       },
       "acceptance_criteria": [
-        "When current_leaps_weight > target_w + drift_band, leaps_value after trim == target_w * total_val within 1e-6.",
-        "Total NAV is conserved across the trim: (leaps_value_after + base_holdings_after) == (leaps_value_before + base_holdings_before) within 1e-6.",
-        "When current_leaps_weight <= target_w + drift_band, state is returned unchanged (no trim).",
-        "Trim does NOT fire when m < 1.0 (portfolio underwater): target_w == w0, so current_leaps_weight <= w0 + drift_band is always satisfied at initialization (no spurious trim at startup).",
-        "DRIFT and QUARTERLY rebalance paths are byte-for-byte unchanged (no regression in existing tests)."
+        "On is_month_end with glide_path_config: returned hurdle_contributed == old * (1+rfr)^(1/12) + monthly_contribution within 1e-9.",
+        "On is_month_end with glide_path_config: returned dynamic_target_weights.sum() == 1.0 within 1e-12.",
+        "On is_month_end without glide_path_config (plain DRIFT): hurdle_contributed and dynamic_target_weights unchanged.",
+        "On non-month-end day with glide_path_config: hurdle_contributed and dynamic_target_weights unchanged.",
+        "hurdle_contributed monotonically non-decreases across 24 months with non-negative rfr and contributions."
       ],
       "test_requirements": [
         {
           "type": "unit",
-          "description": "Construct synthetic state with leaps_weight = w0 + 2*drift_band; verify trim fires and leaps_value_after == target_w * total_val within 1e-6."
+          "description": "Single month-end with glide_path_config: assert new_hurdle == expected within 1e-9 and new_targets.sum()==1.0 within 1e-12."
         },
         {
           "type": "unit",
-          "description": "Construct synthetic state with leaps_weight = w0 + 0.5*drift_band; verify no trim (state unchanged)."
+          "description": "Month-end without glide_path_config: assert both fields unchanged."
         },
         {
           "type": "unit",
-          "description": "NAV conservation: assert total holdings unchanged across trim within 1e-6."
+          "description": "Non-month-end with glide_path_config: assert both fields unchanged."
         },
         {
           "type": "integration",
-          "description": "tests/test_glide_path_rebalance_integration.py: 12-month GLIDE_PATH backtest; assert trim fires when m > 1 and leaps appreciates above target; assert trim does not fire when m < 1."
+          "description": "tests/test_glide_path_contribution_integration.py: 24-month synthetic DRIFT+glide_path backtest with time-varying ^IRX; assert hurdle matches analytic recurrence within 1e-6 and targets sum to 1.0 at every month-end."
         }
       ],
       "edge_cases": [
-        "m exactly == 1.0: target_w == w0 exactly, trim can only fire if current_leaps_weight > w0 + drift_band (e.g. due to LEAPS appreciation), which is the correct behavior.",
-        "leaps_value == 0.0 (no open contracts): current_leaps_weight == 0, no trim regardless of m.",
-        "total_val == 0.0: guard against division by zero (degenerate state, should not occur in a funded backtest).",
-        "Large m (e.g. 20x): target_w approaches floor; trim fires heavily if leaps_weight >> floor + drift_band."
+        "rfr==0.0: monthly factor==1.0, hurdle grows by exactly monthly_contribution.",
+        "monthly_contribution==0.0: hurdle grows at pure Rf compounding.",
+        "m computed from nav_before (pre-contribution) — consistent with the plan's step ordering."
       ],
       "clarification_needed": false,
       "clarification_notes": null
     },
     {
       "id": "F-GP-07",
-      "name": "_apply_gtt_reentry GLIDE_PATH seed adjustment",
-      "description": "Modify _apply_gtt_reentry to seed the fresh LEAPS simulation at the glide-path-adjusted weight when rebalance_rule == GLIDE_PATH. At the Defensive->Long transition date: compute m_current = total / state.hurdle_contributed; compute seed_weight = glide_path_target_weight(m_current, ctx.leaps_fraction, ...); seed initial_capital = seed_weight * total (replacing the fixed ctx.leaps_fraction * total). Non-GTT and non-GLIDE_PATH paths are unchanged.",
+      "name": "_apply_rebalance dynamic target_w source for DRIFT + glide path",
+      "description": "Modify the DRIFT path of _apply_rebalance with a single target weight source change: target_w = state.dynamic_target_weights if state.dynamic_target_weights is not None else ctx.w. Both _should_rebalance and the redistribution step use target_w. No other change to _apply_rebalance. All DRIFT mechanics (leaps_scale, partial-close, two-sided rebalancing, drift band) are reused unchanged. LEAPS may be topped up or trimmed. De-levering effect comes entirely from the monthly target update in F-GP-06.",
       "phase": "4",
-      "priority": 2,
+      "priority": 1,
       "status": "not_started",
       "layer": "python",
-      "dependencies": [
-        "F-GP-02",
-        "F-GP-05"
-      ],
-      "linked_schemas": [
-        "S-PORTFOLIO-STATE-GP"
-      ],
-      "linked_apis": [
-        "API-GLIDE-GTT-REENTRY"
-      ],
+      "dependencies": ["F-GP-06"],
+      "linked_schemas": ["S-GP-PORTFOLIO-STATE"],
+      "linked_apis": ["API-GP-APPLY-REBALANCE"],
       "invariants": {
-        "temporal_bounds": "m_current uses state.hurdle_contributed at the re-entry date — no forward values.",
-        "accounting_oracle": "seed_weight = glide_path_target_weight(m_current); new_leaps_value + base_holdings == total within 1e-6 post-reentry.",
+        "temporal_bounds": "state.dynamic_target_weights was set in _apply_contribution earlier this month-end — no forward values.",
+        "accounting_oracle": "Total NAV conserved across rebalance: sum(holdings_new) + leaps_value_new == sum(holdings_old) + leaps_value_old within 1e-6. DRIFT fired iff _should_rebalance(current_weights, target_w) is True.",
         "composition_scope": "INTEGRATION",
-        "plausibility_range": "seed_weight in [floor, w0]; initial_capital in [floor * total, w0 * total].",
-        "realism_requirements": "Integration test must exercise at least one Defensive->Long transition after significant wealth accumulation (m > 1.5) to verify the reduced seed weight is applied correctly."
+        "plausibility_range": "Post-rebalance weights within DRIFT_BAND_RELATIVE of dynamic_target_weights for all assets.",
+        "realism_requirements": "Integration test must verify DRIFT fires against dynamic targets (not ctx.w) and that LEAPS is topped up when below target as well as trimmed when above."
       },
       "performance_requirements": {
-        "complexity_budget": "O(1)",
-        "notes": "Single glide_path_target_weight call plus existing _apply_gtt_reentry logic."
+        "complexity_budget": "O(k)",
+        "notes": "k = number of assets; unchanged from existing DRIFT path complexity."
       },
       "property_based_testing": {
         "enabled": false,
@@ -704,32 +635,97 @@
       },
       "mutation_testing": {
         "enabled": false,
-        "rationale_if_disabled": "Project uses pytest only; no mutmut in the toolchain."
+        "rationale_if_disabled": "Project uses pytest only; no mutmut in toolchain."
       },
       "acceptance_criteria": [
-        "Under GLIDE_PATH with m_current = 2.0 (w0=0.40, floor=0.05, half_life=2.0), initial_capital at re-entry == glide_path_target_weight(2.0, 0.40, 0.05, 2.0) * total within 1e-6.",
-        "Under DRIFT/QUARTERLY, initial_capital at re-entry is unchanged from pre-change behavior (ctx.leaps_fraction * total) — no regression.",
-        "Total NAV is conserved post-reentry: new_leaps_value + base_holdings == total within 1e-6.",
-        "seed_weight is in [floor, w0] for any m_current >= 0."
+        "When glide_path_config is active, _should_rebalance is called with state.dynamic_target_weights (not ctx.w).",
+        "When glide_path_config is None, _should_rebalance uses ctx.w — no regression to existing behavior.",
+        "NAV is conserved across any DRIFT rebalance: sum(holdings_new)+leaps_new == sum(holdings_old)+leaps_old within 1e-6.",
+        "LEAPS is topped up (not just trimmed) when its weight is below dynamic target by more than drift band — two-sided behavior confirmed.",
+        "Existing DRIFT and QUARTERLY test suite passes without modification."
       ],
       "test_requirements": [
         {
           "type": "unit",
-          "description": "Construct synthetic state with m_current=2.0 and GLIDE_PATH; assert initial_capital at re-entry matches analytic target within 1e-6."
+          "description": "Construct state with dynamic_target_weights set and leaps below target by 2*drift_band; verify DRIFT tops up LEAPS (two-sided)."
         },
         {
           "type": "unit",
-          "description": "DRIFT path: assert initial_capital == ctx.leaps_fraction * total unchanged."
+          "description": "Construct state with glide_path_config=None; verify ctx.w is used (no regression)."
+        },
+        {
+          "type": "unit",
+          "description": "NAV conservation: assert sum(holdings)+leaps unchanged within 1e-6 after rebalance fires."
         },
         {
           "type": "integration",
-          "description": "tests/test_glide_path_gtt_reentry_integration.py: GTT-enabled GLIDE_PATH backtest with a simulated Defensive->Long transition at m > 1.5; assert LEAPS seed weight matches glide_path_target_weight(m) within 1e-6."
+          "description": "tests/test_glide_path_rebalance_integration.py: 25-year synthetic DRIFT+glide_path backtest; assert LEAPS weight tracks dynamic target within drift band over time; assert LEAPS is both topped up and trimmed at different m values."
         }
       ],
       "edge_cases": [
-        "Re-entry at m < 1.0: seed_weight == w0 (full leverage restored on re-entry after a drawdown — correct behavior).",
-        "Re-entry at m == 1.0: seed_weight == w0 exactly.",
-        "No GTT (gtt_config=None): _apply_gtt_reentry is never called; no change."
+        "dynamic_target_weights is None (non-glide-path DRIFT): falls back to ctx.w — existing behavior preserved.",
+        "VTI weight in dynamic_target_weights grows from 0 to positive: DRIFT routes capital to VTI when base assets become overweight.",
+        "m falls below 1.0 after drawdown: dynamic_target_weights returns to original weights (VTI target back to 0.0, LEAPS target back to w0); DRIFT tops up LEAPS toward w0."
+      ],
+      "clarification_needed": false,
+      "clarification_notes": null
+    },
+    {
+      "id": "F-GP-08",
+      "name": "_apply_gtt_reentry glide-path-adjusted allocation",
+      "description": "Modify _apply_gtt_reentry to use compute_glide_target_weights when glide_path_config is present. At a Defensive->Long GTT transition: (1) compute m_current = total / state.hurdle_contributed; (2) dynamic_targets = compute_glide_target_weights(m_current, config, glide_path_config); (3) seed LEAPS with dynamic_targets[leaps_key] * total; (4) allocate each base asset (including VTI) at dynamic_targets[a] * total. VTI receives its current dynamic target allocation from total NAV — treated identically to any other base asset. Non-glide-path and non-GTT paths unchanged.",
+      "phase": "4",
+      "priority": 2,
+      "status": "not_started",
+      "layer": "python",
+      "dependencies": ["F-GP-03", "F-GP-06"],
+      "linked_schemas": ["S-GP-PORTFOLIO-STATE"],
+      "linked_apis": ["API-GP-GTT-REENTRY"],
+      "invariants": {
+        "temporal_bounds": "m_current = total / state.hurdle_contributed at the re-entry date — no forward values.",
+        "accounting_oracle": "sum(dynamic_targets.values()) == 1.0 within 1e-12. sum(new_holdings.values()) + new_leaps_value == total within 1e-6 post-reentry.",
+        "composition_scope": "INTEGRATION",
+        "plausibility_range": "LEAPS seed weight in [floor, w0]; VTI allocation in [0, w0 * vti_alpha * total]; total NAV conserved within 1e-6.",
+        "realism_requirements": "Integration test must exercise at least one Defensive->Long transition after m > 1.5 to verify m-adjusted seed and VTI allocation."
+      },
+      "performance_requirements": {
+        "complexity_budget": "O(k)",
+        "notes": "One compute_glide_target_weights call plus existing re-entry logic."
+      },
+      "property_based_testing": {
+        "enabled": false,
+        "strategies": [],
+        "layers": [],
+        "rationale_if_disabled": "Project uses pytest only; no hypothesis."
+      },
+      "mutation_testing": {
+        "enabled": false,
+        "rationale_if_disabled": "Project uses pytest only; no mutmut in toolchain."
+      },
+      "acceptance_criteria": [
+        "Under glide_path_config with m_current=2.0, LEAPS initial_capital == dynamic_targets[leaps_key] * total within 1e-6.",
+        "VTI allocation at re-entry == dynamic_targets['VTI'] * total within 1e-6.",
+        "Total NAV post-reentry == pre-reentry total within 1e-6.",
+        "Under non-glide-path DRIFT, re-entry behavior is unchanged from pre-change implementation."
+      ],
+      "test_requirements": [
+        {
+          "type": "unit",
+          "description": "Construct state with m_current=2.0 and glide_path_config; assert LEAPS seed and VTI allocation match dynamic_targets * total within 1e-6."
+        },
+        {
+          "type": "unit",
+          "description": "Non-glide-path path: assert initial_capital == ctx.leaps_fraction * total (unchanged)."
+        },
+        {
+          "type": "integration",
+          "description": "tests/test_glide_path_gtt_reentry_integration.py: GTT-enabled DRIFT+glide_path backtest with a Defensive->Long transition at m > 1.5; assert LEAPS seed weight and VTI allocation match compute_glide_target_weights(m) * total within 1e-6."
+        }
+      ],
+      "edge_cases": [
+        "Re-entry at m < 1.0: dynamic_targets == original target_weights (VTI=0.0, LEAPS=w0); full leverage restored.",
+        "Re-entry at m == 1.0: same as above; VTI allocation == 0.0.",
+        "No GTT (gtt_config=None): _apply_gtt_reentry never called; no change."
       ],
       "clarification_needed": false,
       "clarification_notes": null
@@ -738,90 +734,78 @@
   "risks": [
     {
       "id": "R-GP-01",
-      "description": "hurdle_contributed ordering hazard: if _apply_rebalance reads hurdle_contributed before _apply_contribution has updated it for the current month-end, the NAV multiple m(t) will be computed against the stale prior-month hurdle, causing the trim to fire at the wrong threshold.",
+      "description": "Step ordering hazard: if _apply_rebalance reads dynamic_target_weights before _apply_contribution has updated them for the current month-end, DRIFT fires against stale targets.",
       "severity": "high",
-      "mitigation": "Enforce in the backtest loop that _apply_contribution (which updates hurdle_contributed) always runs before _apply_rebalance on is_month_end days. Add an explicit assertion or comment in the dispatch order. Verified by the integration test in F-GP-05 / F-GP-06 which checks hurdle matches the analytic recurrence at each trim event.",
-      "linked_features": [
-        "F-GP-05",
-        "F-GP-06"
-      ]
+      "mitigation": "Enforce in the backtest loop that _apply_contribution (which atomically updates hurdle_contributed and dynamic_target_weights) always completes before _apply_rebalance on is_month_end days. Add an explicit ordering comment in the dispatch. Verified by the integration test in F-GP-06/F-GP-07.",
+      "linked_features": ["F-GP-06", "F-GP-07"]
     },
     {
       "id": "R-GP-02",
-      "description": "rfr_series NaN regression for non-LEAPS GLIDE_PATH backtests: if _build_context is not modified, rfr_series remains None when use_leaps=False, causing a None-dereference in _apply_contribution when it attempts to read inputs.rfr for the hurdle update.",
+      "description": "rfr_series None-dereference for non-LEAPS glide-path backtests: if _build_context is not modified, rfr_series remains None when use_leaps=False, causing AttributeError in _apply_contribution when reading inputs.rfr for the hurdle update.",
       "severity": "high",
-      "mitigation": "F-GP-04 explicitly gates rfr_series population on rebalance_rule == GLIDE_PATH regardless of use_leaps. Unit test in F-GP-04 exercises this path directly.",
-      "linked_features": [
-        "F-GP-04",
-        "F-GP-05"
-      ]
+      "mitigation": "F-GP-05 populates rfr_series whenever glide_path_config is present regardless of use_leaps. Unit test in F-GP-05 exercises this path directly.",
+      "linked_features": ["F-GP-05", "F-GP-06"]
     },
     {
       "id": "R-GP-03",
-      "description": "DRIFT/QUARTERLY regression: adding GLIDE_PATH dispatch branches to _apply_rebalance and _apply_contribution could silently alter DRIFT/QUARTERLY behavior if a conditional is mis-scoped (e.g. an early return or missing else).",
+      "description": "Regression to existing DRIFT/QUARTERLY behavior: conditional mis-scoping in the modified _apply_contribution or _apply_rebalance could silently alter non-glide-path DRIFT behavior.",
       "severity": "medium",
-      "mitigation": "All GLIDE_PATH branches are guarded by explicit rebalance_rule == GLIDE_PATH checks. Existing test suite for DRIFT and QUARTERLY must pass without modification (acceptance criterion in F-GP-06). No shared mutable state is modified in the GLIDE_PATH paths.",
-      "linked_features": [
-        "F-GP-05",
-        "F-GP-06",
-        "F-GP-07"
-      ]
+      "mitigation": "All glide-path branches are guarded by explicit glide_path_config is not None checks. Existing DRIFT and QUARTERLY test suite must pass without modification (acceptance criterion in F-GP-07).",
+      "linked_features": ["F-GP-06", "F-GP-07", "F-GP-08"]
     },
     {
       "id": "R-GP-04",
-      "description": "PortfolioState schema extension breaks existing deserialization or copy code: adding hurdle_contributed as a required field (no default) to PortfolioState causes any existing call site that constructs PortfolioState by positional arguments or keyword arguments without this field to raise TypeError.",
+      "description": "PortfolioState schema extension breaks existing construction sites: adding hurdle_contributed (required float) and dynamic_target_weights (required Series | None) causes all existing PortfolioState call sites not providing these fields to raise TypeError.",
       "severity": "medium",
-      "mitigation": "Audit all PortfolioState construction sites in _backtest_steps.py and tests/ before adding the field. Consider defaulting hurdle_contributed=0.0 to avoid breaking non-GLIDE_PATH construction, or provide a default of -1.0 to signal 'unused' explicitly. Alternatively, update all construction sites in the same commit.",
-      "linked_features": [
-        "F-GP-03"
-      ]
+      "mitigation": "Audit all PortfolioState construction sites in _backtest_steps.py and tests/ before adding fields. Use defaults or update all call sites in the same commit. Tests in F-GP-04 verify construction and immutability.",
+      "linked_features": ["F-GP-04"]
     },
     {
       "id": "R-GP-05",
-      "description": "Semantic confusion between leaps_fraction (fixed target weight for QUARTERLY/DRIFT) and glide-path target weight: code that reads ctx.leaps_fraction as the effective target weight will be incorrect under GLIDE_PATH, where the effective target is time-varying.",
+      "description": "Spurious VTI rebalance at m=1.0: if dynamic_target_weights['VTI'] is not exactly 0.0 at m=1.0 due to floating-point accumulation, DRIFT may fire a small VTI buy on the first month-end.",
+      "severity": "low",
+      "mitigation": "compute_glide_target_weights invariant test (F-GP-03) asserts VTI==0.0 at m==1.0 within 1e-12. At m==1.0 w_freed==0.0 exactly (w_leaps==w0), so the multiplication result is 0.0 in float64 — not an accumulation path.",
+      "linked_features": ["F-GP-03", "F-GP-07"]
+    },
+    {
+      "id": "R-GP-06",
+      "description": "GTT re-entry VTI allocation inconsistency: if _apply_gtt_reentry uses ctx.leaps_fraction (pre-glide-path fixed weight) rather than compute_glide_target_weights, LEAPS is over-seeded and VTI receives zero allocation.",
       "severity": "medium",
-      "mitigation": "All GLIDE_PATH trim and reentry paths compute the effective target explicitly via glide_path_target_weight() rather than reading ctx.leaps_fraction as the trim target. The acceptance criteria for F-GP-06 and F-GP-07 include explicit checks that the trim targets match glide_path_target_weight() output, not ctx.leaps_fraction.",
-      "linked_features": [
-        "F-GP-06",
-        "F-GP-07"
-      ]
+      "mitigation": "F-GP-08 specifies that _apply_gtt_reentry calls compute_glide_target_weights(m_current) explicitly when glide_path_config is present. Acceptance criterion verifies LEAPS seed and VTI allocation match dynamic_targets * total within 1e-6.",
+      "linked_features": ["F-GP-08"]
+    },
+    {
+      "id": "R-GP-07",
+      "description": "Atomic update violation: if hurdle_contributed and dynamic_target_weights are updated in separate dataclasses.replace calls, an intermediate PortfolioState exists with inconsistent hurdle/targets.",
+      "severity": "medium",
+      "mitigation": "F-GP-06 explicitly requires both fields updated in a single dataclasses.replace call. Code review must confirm there is no intermediate replace between the two updates.",
+      "linked_features": ["F-GP-06"]
     }
   ],
   "implementation_phases": [
     {
       "phase": 1,
-      "name": "Types and Enum",
-      "description": "Add GlidepathConfig dataclass to _portfolio_types.py, RebalanceRule.GLIDE_PATH to leverage.py, and glide_path_config field to PortfolioConfig with __post_init__ validation. No backtest loop changes.",
-      "feature_ids": [
-        "F-GP-01"
-      ]
+      "name": "Types and Config",
+      "description": "Add GlidepathConfig dataclass to _portfolio_types.py and glide_path_config field to PortfolioConfig with __post_init__ validation. No RebalanceRule changes. No backtest loop changes.",
+      "feature_ids": ["F-GP-01"]
     },
     {
       "phase": 2,
-      "name": "Pure Function and State Field",
-      "description": "Add glide_path_target_weight() pure function to _backtest_steps.py. Add hurdle_contributed field to PortfolioState with _build_initial_state initialization. Modify _build_context to populate rfr_series unconditionally under GLIDE_PATH.",
-      "feature_ids": [
-        "F-GP-02",
-        "F-GP-03",
-        "F-GP-04"
-      ]
+      "name": "Pure Functions, State Fields, and Context Validation",
+      "description": "Add glide_path_leaps_weight() and compute_glide_target_weights() pure functions to _backtest_steps.py. Add hurdle_contributed and dynamic_target_weights fields to PortfolioState with _build_initial_state initialization. Modify _build_context to populate rfr_series and validate VTI when glide_path_config is present.",
+      "feature_ids": ["F-GP-02", "F-GP-03", "F-GP-04", "F-GP-05"]
     },
     {
       "phase": 3,
-      "name": "Hurdle Recurrence Update",
-      "description": "Modify _apply_contribution to update hurdle_contributed on month-end under GLIDE_PATH. All other contribution paths unchanged.",
-      "feature_ids": [
-        "F-GP-05"
-      ]
+      "name": "Monthly Atomic State Update",
+      "description": "Modify _apply_contribution to atomically update hurdle_contributed and dynamic_target_weights on month-end when glide_path_config is present. All other contribution paths unchanged.",
+      "feature_ids": ["F-GP-06"]
     },
     {
       "phase": 4,
-      "name": "Rebalance Trim and GTT Re-entry",
-      "description": "Add GLIDE_PATH dispatch branch to _apply_rebalance (one-sided trim) and _apply_gtt_reentry (m-adjusted seed). Full integration tests across all phases.",
-      "feature_ids": [
-        "F-GP-06",
-        "F-GP-07"
-      ]
+      "name": "DRIFT Integration and GTT Re-entry",
+      "description": "Modify _apply_rebalance DRIFT path to read target_w from state.dynamic_target_weights when not None. Modify _apply_gtt_reentry to allocate all assets at compute_glide_target_weights(m_current) when glide_path_config is present. Full integration tests across all phases.",
+      "feature_ids": ["F-GP-07", "F-GP-08"]
     }
   ]
 }
