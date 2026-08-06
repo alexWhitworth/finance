@@ -3,6 +3,18 @@
 A Python library for backtesting multi-asset portfolios. Includes optional synthetic leverage 
 via DITM VTI LEAPS and a macro-economic based market timing signal. 
 
+## tl;dr (for most investors):
+
+From various tests and analyses when building this library, the following guidance applies to most
+investors:
+
+1. Prefer `RebalanceRule.DRIFT` to `GttConfig`. GTT (described below) does a great job with
+macro-economic market drawdowns (eg. GFC), but not monetary driven ones (eg. 2022).
+    - I expect Glide path rebalancing, once the feature is built, will be even better.
+2. Use LEAPS leverage, in `AccountType.TAX_SHELTERED` accounts. There is major tax drag if in
+`AccountType.TAXABLE`.
+3. Have a diverse, multi-asset portfolio as described in the below Motivation.
+
 ## Motivation
 
 The library is motivated by the desire to rigorously evaluate multi-asset portfolios within 
@@ -148,6 +160,7 @@ and sharp crashes (eg. COVID).
 
 - **Note:** Bug with GTT x LEAPS. See [Issue #1](https://github.com/alexWhitworth/finance/issues/1). 
 GTT w/o LEAPS works fine
+- **Note #2:** GTT is generally out-performed by `RebalanceRule.DRIFT`. 
 
 ```python
 from finance.gtt import fetch_gtt_signal_data
