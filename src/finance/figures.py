@@ -7,9 +7,11 @@ pass ``output_path=None`` to suppress saving.
 
 from __future__ import annotations
 
+import math
 import os
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import plotnine as p9
 
@@ -554,3 +556,196 @@ def _metrics_to_row(m: PerformanceMetrics) -> dict[str, object]:
         "skewness": m.skewness,
         "excess_kurtosis": m.excess_kurtosis,
     }
+
+
+# ---------------------------------------------------------------------------
+# 6. Pareto frontier dot plot
+# ---------------------------------------------------------------------------
+
+_METRIC_LABELS: dict[str, str] = {
+    "annualized_return": "Ann. Return",
+    "annualized_std": "Ann. Std",
+    "max_drawdown": "Max Drawdown",
+    "sharpe": "Sharpe",
+    "sortino": "Sortino",
+    "calmar": "Calmar",
+    "omega": "Omega",
+    "skewness": "Skewness",
+    "excess_kurtosis": "Ex. Kurtosis",
+}
+
+# Metrics where higher is better (used to orient the Pareto frontier).
+_HIGHER_IS_BETTER: frozenset[str] = frozenset({
+    "annualized_return", "sharpe", "sortino", "calmar", "omega", "skewness",
+})
+
+
+def _pareto_frontier(df: pd.DataFrame, x_metric: str, y_metric: str) -> pd.DataFrame:
+    """Return the Pareto-dominant rows from *df* for the given metric pair.
+
+    A point is Pareto-dominant when no other point is at least as good on both
+    axes and strictly better on one.  "Better" is defined per
+    ``_HIGHER_IS_BETTER``: higher is better for return/ratio metrics, lower is
+    better for risk metrics (std, max_drawdown).
+
+    Arguments:
+        df: DataFrame with columns matching *x_metric* and *y_metric*.
+        x_metric: PerformanceMetrics field name for the x-axis.
+        y_metric: PerformanceMetrics field name for the y-axis.
+
+    Returns:
+        Subset of *df* containing only Pareto-dominant rows, sorted by
+        x-axis value so the dashed frontier line connects correctly.
+    """
+    x = df[x_metric].to_numpy()
+    y = df[y_metric].to_numpy()
+
+    x_sign = 1.0 if x_metric in _HIGHER_IS_BETTER else -1.0
+    y_sign = 1.0 if y_metric in _HIGHER_IS_BETTER else -1.0
+
+    xs = x * x_sign
+    ys = y * y_sign
+
+    dominated = np.zeros(len(df), dtype=bool)
+    for i in range(len(df)):
+        for j in range(len(df)):
+            if i == j:
+                continue
+            if xs[j] >= xs[i] and ys[j] >= ys[i] and (xs[j] > xs[i] or ys[j] > ys[i]):
+                dominated[i] = True
+                break
+
+    frontier = df[~dominated].copy()
+    return frontier.sort_values(x_metric)
+
+
+def _plot_pareto(
+    portfolios: dict[str, PerformanceMetrics],
+    metrics: tuple[str, str],
+) -> p9.ggplot:
+    """Dot plot of portfolios on two metrics with a Pareto frontier overlay.
+
+    Arguments:
+        portfolios: Mapping of portfolio label → PerformanceMetrics.
+        metrics: Two-tuple of PerformanceMetrics field names (x_metric, y_metric).
+
+    Returns:
+        A plotnine ggplot object.
+
+    Raises:
+        ValueError: If either metric name is not a field of PerformanceMetrics.
+    """
+    x_metric, y_metric = metrics
+    valid = set(_METRIC_LABELS)
+    for m in (x_metric, y_metric):
+        if m not in valid:
+            raise ValueError(f"Unknown metric {m!r}. Valid options: {sorted(valid)}")
+
+    rows = [
+        {"label": label, x_metric: getattr(pm, x_metric), y_metric: getattr(pm, y_metric)}
+        for label, pm in portfolios.items()
+    ]
+    data = pd.DataFrame(rows)
+
+    frontier = _pareto_frontier(data, x_metric, y_metric)
+
+    x_lab = _METRIC_LABELS[x_metric]
+    y_lab = _METRIC_LABELS[y_metric]
+
+    plot = (
+        p9.ggplot(data, p9.aes(x=x_metric, y=y_metric, color="label"))
+        + p9.geom_point(size=3)
+        + p9.geom_line(
+            data=frontier,
+            mapping=p9.aes(x=x_metric, y=y_metric),
+            linetype="dashed",
+            color="black",
+            inherit_aes=False,
+            size=0.6,
+        )
+        + p9.labs(x=x_lab, y=y_lab, color="Portfolio")
+        + p9.theme_grey()
+        + p9.theme(legend_position="bottom")
+    )
+    return plot
+
+
+def plot_pareto(
+    portfolios: dict[str, PerformanceMetrics],
+    metrics: list[str],
+    output_path: Path | None = _FIGURES_DIR / "pareto_grid.png",
+) -> p9.ggplot:
+    """Grid of pairwise Pareto frontier plots for the requested metrics.
+
+    Produces one panel per unique (x, y) metric pair (lower triangle of the
+    pairwise matrix) arranged in a grid that is as square as possible.
+
+    Arguments:
+        portfolios: Mapping of portfolio label → PerformanceMetrics.
+        metrics: List of PerformanceMetrics field names to compare pairwise.
+        output_path: Destination PNG path, or None to skip saving.
+
+    Returns:
+        A plotnine ggplot object with ``facet_wrap`` panels.
+
+    Raises:
+        ValueError: If fewer than two metrics are supplied.
+    """
+    if len(metrics) < 2:
+        raise ValueError("At least two metrics are required for a pairwise grid.")
+
+    pairs = [
+        (x_metric, y_metric)
+        for i, x_metric in enumerate(metrics)
+        for y_metric in metrics[i + 1:]
+    ]
+
+    rows: list[dict] = []
+    frontier_rows: list[dict] = []
+
+    for x_metric, y_metric in pairs:
+        panel = f"{_METRIC_LABELS[x_metric]} vs {_METRIC_LABELS[y_metric]}"
+        for label, pm in portfolios.items():
+            rows.append({
+                "label": label,
+                "x": getattr(pm, x_metric),
+                "y": getattr(pm, y_metric),
+                "panel": panel,
+            })
+        sub = pd.DataFrame([
+            {"label": label, x_metric: getattr(pm, x_metric), y_metric: getattr(pm, y_metric)}
+            for label, pm in portfolios.items()
+        ])
+        frontier = _pareto_frontier(sub, x_metric, y_metric)
+        for _, frow in frontier.iterrows():
+            frontier_rows.append({"x": frow[x_metric], "y": frow[y_metric], "panel": panel})
+
+    data = pd.DataFrame(rows)
+    frontier_data = pd.DataFrame(frontier_rows)
+
+    n_panels = len(pairs)
+    ncol = math.ceil(math.sqrt(n_panels))
+
+    plot = (
+        p9.ggplot(data, p9.aes(x="x", y="y", color="label"))
+        + p9.geom_point(size=2.5)
+        + p9.geom_line(
+            data=frontier_data,
+            mapping=p9.aes(x="x", y="y"),
+            linetype="dashed",
+            color="black",
+            inherit_aes=False,
+            size=0.5,
+        )
+        + p9.facet_wrap("panel", ncol=ncol, scales="free")
+        + p9.labs(x="", y="", color="Portfolio")
+        + p9.theme_grey()
+        + p9.theme(
+            figure_size=(4 * ncol, 4 * math.ceil(n_panels / ncol)),
+            legend_position="bottom",
+        )
+    )
+
+    if output_path is not None:
+        _save(plot, output_path)
+    return plot

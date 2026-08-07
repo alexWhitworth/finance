@@ -10,10 +10,12 @@ investors:
 
 1. Prefer `RebalanceRule.DRIFT` to `GttConfig`. GTT (described below) does a great job with
 macro-economic market drawdowns (eg. GFC), but not monetary driven ones (eg. 2022).
-    - I expect Glide path rebalancing, once the feature is built, will be even better.
-2. Use LEAPS leverage, in `AccountType.TAX_SHELTERED` accounts. There is major tax drag if in
-`AccountType.TAXABLE`.
+    - **NOTE:** I expect Glide path rebalancing, once the feature is built, will be even better.
+2. Use LEAPS leverage. But solely in `AccountType.TAX_SHELTERED` accounts. There is major tax
+drag if in `AccountType.TAXABLE`.
 3. Have a diverse, multi-asset portfolio as described in the below Motivation.
+    - `GttConfig` works well for equity only portfolios. But a multi-asset portfolio is better
+    for most investors.
 
 ## Motivation
 
