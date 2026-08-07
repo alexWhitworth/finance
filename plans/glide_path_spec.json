@@ -1,0 +1,1320 @@
+{
+  "spec_version": "1.0.0",
+  "generated_at": "2026-08-07T00:00:00Z",
+  "project": {
+    "name": "Finance Live Portfolio Management API",
+    "description": "Live portfolio management layer alongside the existing backtest engine. Adds LivePortfolio input type, rebalance planning, LEAPS greeks, volatility reporting, GTT status, and a LEAPS DCA entry signal.",
+    "overview": "Two distinct flows: the existing run_backtest() path and a new live management path. Live management accepts a user-constructed LivePortfolio (brokerage state) and produces RebalancePlan, PortfolioGreeks, VolatilityReport, and GttStatus. A bridge function (as_live_portfolio) converts BacktestResult.final_state into a LivePortfolio. A new dca_signal module computes a multi-factor LEAPS DCA entry score. Phase 0 refactors are a strict prerequisite."
+  },
+  "tech_stack": {
+    "language": "Python",
+    "python_version": "3.14",
+    "rust": {
+      "enabled": false,
+      "edition": null,
+      "pyo3_version": null,
+      "build_tool": null
+    },
+    "frameworks": ["pytest"],
+    "testing": {
+      "unit": "pytest",
+      "property_based": "hypothesis",
+      "mutation": "mutmut"
+    },
+    "key_libraries": ["pandas", "numpy", "scipy", "yfinance", "fredapi"],
+    "graphics": null
+  },
+  "build": {
+    "dev_install_cmd": "uv pip install -e .",
+    "requires_rust_toolchain": false
+  },
+  "data_schemas": [
+    {
+      "id": "DS-001",
+      "name": "LivePortfolio",
+      "description": "User's current brokerage portfolio state as of a specific date. Self-contained and user-constructible without understanding backtest internals.",
+      "immutable": true,
+      "layer": "python",
+      "fields": [
+        {"name": "as_of_date", "type": "pd.Timestamp", "required": true, "description": "Date these holdings reflect."},
+        {"name": "holdings", "type": "dict[str, float]", "required": true, "description": "Base asset ticker → current dollar value."},
+        {"name": "target_weights", "type": "dict[str, float]", "required": true, "description": "Target allocation. Must sum to 1.0 within 1e-6."},
+        {"name": "leaps_contracts", "type": "tuple[tuple[LeapsContract, float], ...]", "required": true, "description": "Active LEAPS contracts with surviving fraction (scale ∈ (0, 1]). Empty tuple if no LEAPS."},
+        {"name": "gtt_regime", "type": "int | None", "required": true, "description": "Current GTT regime: 1=Long, 0=Defensive, None=inactive."},
+        {"name": "defensive_sleeve", "type": "float", "required": false, "description": "Dollar value in GTT defensive allocation. Default 0.0."},
+        {"name": "leaps_pool", "type": "float", "required": false, "description": "Force-closed LEAPS proceeds parked during defensive window. Default 0.0."}
+      ]
+    },
+    {
+      "id": "DS-002",
+      "name": "NavBreakdown",
+      "description": "NAV decomposition for a LivePortfolio.",
+      "immutable": true,
+      "layer": "python",
+      "fields": [
+        {"name": "base_nav", "type": "float", "required": true, "description": "Sum of base asset holdings."},
+        {"name": "leaps_nav", "type": "float", "required": true, "description": "Mark-to-market value of all active LEAPS contracts (caller-supplied)."},
+        {"name": "defensive_sleeve", "type": "float", "required": true, "description": "GTT-swept capital."},
+        {"name": "leaps_pool", "type": "float", "required": true, "description": "Parked force-closed LEAPS proceeds."},
+        {"name": "total_nav", "type": "float", "required": true, "description": "base_nav + leaps_nav + defensive_sleeve + leaps_pool."}
+      ]
+    },
+    {
+      "id": "DS-003",
+      "name": "HoldingView",
+      "description": "Single asset row in a portfolio weight drift analysis.",
+      "immutable": true,
+      "layer": "python",
+      "fields": [
+        {"name": "ticker", "type": "str", "required": true, "description": "Asset identifier."},
+        {"name": "dollar_value", "type": "float", "required": true, "description": "Current dollar value."},
+        {"name": "actual_weight", "type": "float", "required": true, "description": "dollar_value / total_nav."},
+        {"name": "target_weight", "type": "float", "required": true, "description": "From LivePortfolio.target_weights (0.0 if absent)."},
+        {"name": "weight_drift", "type": "float", "required": true, "description": "actual_weight - target_weight (signed)."},
+        {"name": "relative_drift", "type": "float | None", "required": true, "description": "weight_drift / target_weight; None when target_weight == 0."}
+      ]
+    },
+    {
+      "id": "DS-004",
+      "name": "TradeOrder",
+      "description": "Single buy/sell instruction from a rebalance simulation.",
+      "immutable": true,
+      "layer": "python",
+      "fields": [
+        {"name": "ticker", "type": "str", "required": true, "description": "Asset to trade."},
+        {"name": "current_value", "type": "float", "required": true, "description": "Dollar value before rebalance."},
+        {"name": "target_value", "type": "float", "required": true, "description": "Dollar value after rebalance."},
+        {"name": "trade_amount", "type": "float", "required": true, "description": "target_value - current_value. Positive = buy, negative = sell."},
+        {"name": "current_weight", "type": "float", "required": true, "description": "Realized weight before rebalance."},
+        {"name": "target_weight", "type": "float", "required": true, "description": "Target weight from LivePortfolio."}
+      ]
+    },
+    {
+      "id": "DS-005",
+      "name": "RebalancePlan",
+      "description": "Simulated rebalance outcome for a LivePortfolio. Pure: does not mutate portfolio.",
+      "immutable": true,
+      "layer": "python",
+      "fields": [
+        {"name": "as_of_date", "type": "pd.Timestamp", "required": true, "description": "Date of the simulation."},
+        {"name": "would_trigger", "type": "bool", "required": true, "description": "Whether the rebalance rule fires at this date."},
+        {"name": "trigger_reason", "type": "str", "required": true, "description": "One of: quarterly_scheduled | drift_threshold | not_triggered."},
+        {"name": "trades", "type": "tuple[TradeOrder, ...]", "required": true, "description": "Per-asset buy/sell instructions. Empty tuple if not triggered."},
+        {"name": "leaps_trim", "type": "float", "required": true, "description": "Dollar reduction to LEAPS (positive = LEAPS partially closed). Non-zero only when DRIFT rule fires and LEAPS overweight."},
+        {"name": "holdings_view", "type": "tuple[HoldingView, ...]", "required": true, "description": "Per-asset drift breakdown before rebalance."}
+      ]
+    },
+    {
+      "id": "DS-006",
+      "name": "VolatilityReport",
+      "description": "Portfolio volatility analysis snapshot.",
+      "immutable": true,
+      "layer": "python",
+      "fields": [
+        {"name": "as_of_date", "type": "pd.Timestamp", "required": true, "description": "Snapshot date."},
+        {"name": "vol_model", "type": "VolatilityModel", "required": true, "description": "Full VolatilityModel (ewma_vols, rolling_corr, cov_matrix)."},
+        {"name": "portfolio_vol", "type": "float", "required": true, "description": "Forecasted annualized portfolio volatility (sigma_hat_p)."},
+        {"name": "contribution_table", "type": "pd.DataFrame", "required": true, "description": "DataFrame from build_vol_contribution_table(). Columns: sigma_tilde, sigma_hat, rho_VTI, contrib."},
+        {"name": "weights_used", "type": "pd.Series", "required": true, "description": "Realized weights used in contribution computation."}
+      ]
+    },
+    {
+      "id": "DS-007",
+      "name": "GttStatus",
+      "description": "Current GTT signal state.",
+      "immutable": true,
+      "layer": "python",
+      "fields": [
+        {"name": "as_of_date", "type": "pd.Timestamp", "required": true, "description": "Date of evaluation."},
+        {"name": "regime", "type": "int", "required": true, "description": "1=Long, 0=Defensive."},
+        {"name": "ue_signal", "type": "int", "required": true, "description": "UE_12M signal value at as_of_date (0 or 1)."},
+        {"name": "vix_signal", "type": "int", "required": true, "description": "VIX_5D signal value at as_of_date (0 or 1)."},
+        {"name": "vix_current", "type": "float", "required": true, "description": "Raw VIX value at as_of_date (decimal, e.g. 0.21)."},
+        {"name": "vix_threshold", "type": "float", "required": true, "description": "P90 threshold used."},
+        {"name": "price_vs_sma200", "type": "str", "required": true, "description": "above | below | warming_up."},
+        {"name": "signal_data", "type": "GttSignalData", "required": true, "description": "Full GttSignalData for audit/reproducibility."}
+      ]
+    },
+    {
+      "id": "DS-008",
+      "name": "ContractGreeks",
+      "description": "Black-Scholes greeks for a single LeapsContract. All position-level fields scaled by (n_contracts * CONTRACT_MULTIPLIER * leaps_scale).",
+      "immutable": true,
+      "layer": "python",
+      "fields": [
+        {"name": "contract", "type": "LeapsContract", "required": true, "description": "Source LeapsContract."},
+        {"name": "as_of_date", "type": "pd.Timestamp", "required": true, "description": "Evaluation date."},
+        {"name": "spot", "type": "float", "required": true, "description": "Spot price used."},
+        {"name": "iv", "type": "float", "required": true, "description": "Implied volatility used."},
+        {"name": "risk_free_rate", "type": "float", "required": true, "description": "Risk-free rate used."},
+        {"name": "time_to_expiry", "type": "float", "required": true, "description": "Years to expiry (floored at TIME_FLOOR)."},
+        {"name": "price", "type": "float", "required": true, "description": "BS call price per share."},
+        {"name": "delta", "type": "float", "required": true, "description": "dV/dS. In (0, 1) for calls."},
+        {"name": "gamma", "type": "float", "required": true, "description": "d²V/dS². Always positive for long calls."},
+        {"name": "vega", "type": "float", "required": true, "description": "dV/dσ per unit IV move."},
+        {"name": "theta", "type": "float", "required": true, "description": "dV/dt in dollars per calendar day (negative for long calls)."},
+        {"name": "vanna", "type": "float", "required": true, "description": "dDelta/dVol."},
+        {"name": "charm", "type": "float", "required": true, "description": "dDelta/dt. Delta decay per calendar day."},
+        {"name": "leaps_scale", "type": "float", "required": true, "description": "Surviving fraction applied."},
+        {"name": "position_delta", "type": "float", "required": true, "description": "delta * n_contracts * CONTRACT_MULTIPLIER * leaps_scale."},
+        {"name": "position_vega", "type": "float", "required": true, "description": "vega * n_contracts * CONTRACT_MULTIPLIER * leaps_scale."},
+        {"name": "position_theta", "type": "float", "required": true, "description": "theta * n_contracts * CONTRACT_MULTIPLIER * leaps_scale."}
+      ]
+    },
+    {
+      "id": "DS-009",
+      "name": "PortfolioGreeks",
+      "description": "Aggregate greeks across all active LEAPS contracts in a LivePortfolio.",
+      "immutable": true,
+      "layer": "python",
+      "fields": [
+        {"name": "as_of_date", "type": "pd.Timestamp", "required": true, "description": "Evaluation date."},
+        {"name": "contracts", "type": "tuple[ContractGreeks, ...]", "required": true, "description": "Per-contract greeks."},
+        {"name": "net_delta", "type": "float", "required": true, "description": "Sum of position_delta."},
+        {"name": "net_vega", "type": "float", "required": true, "description": "Sum of position_vega."},
+        {"name": "net_gamma", "type": "float", "required": true, "description": "Sum of per-position scaled gamma."},
+        {"name": "net_theta", "type": "float", "required": true, "description": "Total dollar theta per calendar day."},
+        {"name": "net_vanna", "type": "float", "required": true, "description": "Sum of per-position scaled vanna."},
+        {"name": "net_charm", "type": "float", "required": true, "description": "Sum of per-position scaled charm."}
+      ]
+    },
+    {
+      "id": "DS-010",
+      "name": "LeapsDcaSignal",
+      "description": "Multi-factor composite entry score for DITM LEAPS DCA timing.",
+      "immutable": true,
+      "layer": "python",
+      "fields": [
+        {"name": "as_of_date", "type": "pd.Timestamp", "required": true, "description": "Evaluation date."},
+        {"name": "ticker", "type": "str", "required": true, "description": "Underlying ticker evaluated (e.g. VTI)."},
+        {"name": "entry_score", "type": "float", "required": true, "description": "Composite score in [0, 100]. Higher = more favorable entry."},
+        {"name": "score_percentile", "type": "float", "required": true, "description": "entry_score rank within the lookback window (0–100)."},
+        {"name": "alpha_t", "type": "float", "required": true, "description": "Tranche allocation fraction in [0, 1]."},
+        {"name": "dca_action", "type": "str", "required": true, "description": "HOLD | TRANCHE | AGGRESSIVE_SWEEP."},
+        {"name": "rsi", "type": "float", "required": true, "description": "14-day RSI at as_of_date."},
+        {"name": "stoch_d", "type": "float", "required": true, "description": "5/3 Stochastic %D at as_of_date."},
+        {"name": "iv_percentile", "type": "float", "required": true, "description": "252-day IV percentile rank (0–100)."},
+        {"name": "iv_current", "type": "float", "required": true, "description": "Raw IV (decimal) at as_of_date."},
+        {"name": "macd_hist", "type": "float", "required": true, "description": "MACD histogram value at as_of_date."},
+        {"name": "macd_bearish_confirmed", "type": "bool", "required": true, "description": "True if MACD histogram negative for ≥ 3 consecutive sessions."},
+        {"name": "macd_gate", "type": "float", "required": true, "description": "Gate multiplier applied (1.0 or macd_gate_floor)."}
+      ]
+    },
+    {
+      "id": "DS-011",
+      "name": "BacktestResult (modified)",
+      "description": "Existing BacktestResult extended with final_state field to enable as_live_portfolio() bridge.",
+      "immutable": true,
+      "layer": "python",
+      "fields": [
+        {"name": "nav_series", "type": "pd.Series", "required": true, "description": "Existing field."},
+        {"name": "weight_history", "type": "pd.DataFrame", "required": true, "description": "Existing field."},
+        {"name": "return_series", "type": "pd.Series", "required": true, "description": "Existing field."},
+        {"name": "leaps_ledger", "type": "LeapsLedger | None", "required": true, "description": "Existing field."},
+        {"name": "config", "type": "PortfolioConfig", "required": true, "description": "Existing field."},
+        {"name": "final_state", "type": "PortfolioState", "required": true, "description": "NEW: loop-end state from run_backtest, enables as_live_portfolio() bridge."}
+      ]
+    },
+    {
+      "id": "DS-012",
+      "name": "PriceData (modified)",
+      "description": "Existing PriceData extended with optional ohlcv field for Stochastic %D computation in DCA signal.",
+      "immutable": true,
+      "layer": "python",
+      "fields": [
+        {"name": "prices", "type": "pd.DataFrame", "required": true, "description": "Existing field."},
+        {"name": "dividends", "type": "pd.DataFrame", "required": true, "description": "Existing field."},
+        {"name": "vol_prices", "type": "pd.DataFrame", "required": true, "description": "Existing field."},
+        {"name": "tickers", "type": "tuple[str, ...]", "required": true, "description": "Existing field."},
+        {"name": "start_date", "type": "str", "required": true, "description": "Existing field."},
+        {"name": "end_date", "type": "str", "required": true, "description": "Existing field."},
+        {"name": "spliced", "type": "bool", "required": true, "description": "Existing field."},
+        {"name": "ohlcv", "type": "pd.DataFrame", "required": false, "description": "NEW: DatetimeIndex × MultiIndex(ticker, field). Empty DataFrame when fetch_ohlcv=False (default)."}
+      ]
+    }
+  ],
+  "api_contracts": [
+    {
+      "id": "AC-001",
+      "name": "get_live_contracts",
+      "description": "Relocated from _backtest_steps._live_contracts to leverage.py. Returns active LeapsContracts from a ledger as of a given date.",
+      "layer": "python",
+      "pure": true,
+      "inputs": [
+        {"name": "ledger", "type": "LeapsLedger"},
+        {"name": "current_date", "type": "pd.Timestamp"}
+      ],
+      "outputs": [{"type": "list[LeapsContract]"}],
+      "raises": [],
+      "ffi_notes": null
+    },
+    {
+      "id": "AC-002",
+      "name": "should_rebalance",
+      "description": "Relocated from _backtest_steps._should_rebalance to rebalance.py. Determines if a rebalance should trigger given current weights, target weights, rule, and band.",
+      "layer": "python",
+      "pure": true,
+      "inputs": [
+        {"name": "current_weights", "type": "pd.Series"},
+        {"name": "target_weights", "type": "pd.Series"},
+        {"name": "rule", "type": "RebalanceRule"},
+        {"name": "band", "type": "float", "default": "DRIFT_BAND_RELATIVE"}
+      ],
+      "outputs": [{"type": "bool"}],
+      "raises": [],
+      "ffi_notes": null
+    },
+    {
+      "id": "AC-003",
+      "name": "bs_call_gamma",
+      "description": "Black-Scholes gamma for a call: N'(d1) * e^(-q*T) / (S * sigma * sqrt(T)).",
+      "layer": "python",
+      "pure": true,
+      "inputs": [
+        {"name": "spot", "type": "float"},
+        {"name": "strike", "type": "float"},
+        {"name": "time_to_expiry", "type": "float"},
+        {"name": "iv", "type": "float"},
+        {"name": "risk_free_rate", "type": "float"},
+        {"name": "dividend_yield", "type": "float"}
+      ],
+      "outputs": [{"type": "float", "description": "Gamma. Always positive for long calls."}],
+      "raises": [],
+      "ffi_notes": null
+    },
+    {
+      "id": "AC-004",
+      "name": "bs_call_vega",
+      "description": "Black-Scholes vega for a call: S * e^(-q*T) * N'(d1) * sqrt(T) per unit of vol.",
+      "layer": "python",
+      "pure": true,
+      "inputs": [
+        {"name": "spot", "type": "float"},
+        {"name": "strike", "type": "float"},
+        {"name": "time_to_expiry", "type": "float"},
+        {"name": "iv", "type": "float"},
+        {"name": "risk_free_rate", "type": "float"},
+        {"name": "dividend_yield", "type": "float"}
+      ],
+      "outputs": [{"type": "float", "description": "Vega per unit IV move."}],
+      "raises": [],
+      "ffi_notes": null
+    },
+    {
+      "id": "AC-005",
+      "name": "bs_call_theta",
+      "description": "Black-Scholes theta for a call: annualized form divided by 365 for per-calendar-day value.",
+      "layer": "python",
+      "pure": true,
+      "inputs": [
+        {"name": "spot", "type": "float"},
+        {"name": "strike", "type": "float"},
+        {"name": "time_to_expiry", "type": "float"},
+        {"name": "iv", "type": "float"},
+        {"name": "risk_free_rate", "type": "float"},
+        {"name": "dividend_yield", "type": "float"}
+      ],
+      "outputs": [{"type": "float", "description": "Theta in dollars per calendar day (negative for long calls)."}],
+      "raises": [],
+      "ffi_notes": null
+    },
+    {
+      "id": "AC-006",
+      "name": "bs_call_charm",
+      "description": "Black-Scholes charm (delta decay per day): -e^(-q*T) * N'(d1) * [2*(r-q)*T - d2*sigma*sqrt(T)] / (2*T*sigma*sqrt(T)).",
+      "layer": "python",
+      "pure": true,
+      "inputs": [
+        {"name": "spot", "type": "float"},
+        {"name": "strike", "type": "float"},
+        {"name": "time_to_expiry", "type": "float"},
+        {"name": "iv", "type": "float"},
+        {"name": "risk_free_rate", "type": "float"},
+        {"name": "dividend_yield", "type": "float"}
+      ],
+      "outputs": [{"type": "float", "description": "Charm (dDelta/dt) per calendar day."}],
+      "raises": [],
+      "ffi_notes": null
+    },
+    {
+      "id": "AC-007",
+      "name": "compute_contract_greeks",
+      "description": "Compute all BS greeks for one LeapsContract at caller-supplied market conditions.",
+      "layer": "python",
+      "pure": true,
+      "inputs": [
+        {"name": "contract", "type": "LeapsContract"},
+        {"name": "spot", "type": "float"},
+        {"name": "iv", "type": "float"},
+        {"name": "as_of_date", "type": "pd.Timestamp"},
+        {"name": "risk_free_rate", "type": "float", "default": "0.0"},
+        {"name": "leaps_scale", "type": "float", "default": "1.0"}
+      ],
+      "outputs": [{"type": "ContractGreeks"}],
+      "raises": [],
+      "ffi_notes": null
+    },
+    {
+      "id": "AC-008",
+      "name": "compute_portfolio_greeks",
+      "description": "Compute greeks for all active contracts in a LivePortfolio. Returns all-zero PortfolioGreeks when portfolio.leaps_contracts is empty.",
+      "layer": "python",
+      "pure": true,
+      "inputs": [
+        {"name": "portfolio", "type": "LivePortfolio"},
+        {"name": "spot", "type": "float"},
+        {"name": "iv", "type": "float"},
+        {"name": "risk_free_rate", "type": "float", "default": "0.0"}
+      ],
+      "outputs": [{"type": "PortfolioGreeks"}],
+      "raises": [],
+      "ffi_notes": null
+    },
+    {
+      "id": "AC-009",
+      "name": "as_live_portfolio",
+      "description": "Bridge from a completed BacktestResult to a LivePortfolio. Uses get_live_contracts() to filter active contracts and pulls leaps_scale from final_state.",
+      "layer": "python",
+      "pure": true,
+      "inputs": [
+        {"name": "result", "type": "BacktestResult"},
+        {"name": "gtt_active", "type": "bool", "default": "False"}
+      ],
+      "outputs": [{"type": "LivePortfolio"}],
+      "raises": [],
+      "ffi_notes": null
+    },
+    {
+      "id": "AC-010",
+      "name": "compute_nav_breakdown",
+      "description": "Decompose LivePortfolio NAV into components. leaps_mtm is caller-supplied current LEAPS mark-to-market.",
+      "layer": "python",
+      "pure": true,
+      "inputs": [
+        {"name": "portfolio", "type": "LivePortfolio"},
+        {"name": "leaps_mtm", "type": "float", "default": "0.0"}
+      ],
+      "outputs": [{"type": "NavBreakdown"}],
+      "raises": [],
+      "ffi_notes": null
+    },
+    {
+      "id": "AC-011",
+      "name": "compute_holdings_view",
+      "description": "Compute per-asset weight drift against target_weights.",
+      "layer": "python",
+      "pure": true,
+      "inputs": [
+        {"name": "portfolio", "type": "LivePortfolio"},
+        {"name": "nav", "type": "NavBreakdown"}
+      ],
+      "outputs": [{"type": "tuple[HoldingView, ...]"}],
+      "raises": [],
+      "ffi_notes": null
+    },
+    {
+      "id": "AC-012",
+      "name": "compute_rebalance_plan",
+      "description": "Simulate rebalance trades without executing them. Pure. Uses should_rebalance() from rebalance.py. Assumes Long regime.",
+      "layer": "python",
+      "pure": true,
+      "inputs": [
+        {"name": "portfolio", "type": "LivePortfolio"},
+        {"name": "nav", "type": "NavBreakdown"},
+        {"name": "rebalance_rule", "type": "RebalanceRule"},
+        {"name": "is_rebal_date", "type": "bool"},
+        {"name": "is_month_end", "type": "bool"}
+      ],
+      "outputs": [{"type": "RebalancePlan"}],
+      "raises": [],
+      "ffi_notes": null
+    },
+    {
+      "id": "AC-013",
+      "name": "compute_volatility_report",
+      "description": "Run the full vol stack on current portfolio weights. Calls build_volatility_model() and build_vol_contribution_table(). Weights derived from realized holdings.",
+      "layer": "python",
+      "pure": true,
+      "inputs": [
+        {"name": "portfolio", "type": "LivePortfolio"},
+        {"name": "return_data", "type": "ReturnData"}
+      ],
+      "outputs": [{"type": "VolatilityReport"}],
+      "raises": ["ValueError: if return_data does not cover portfolio.as_of_date"],
+      "ffi_notes": null
+    },
+    {
+      "id": "AC-014",
+      "name": "compute_gtt_status",
+      "description": "Fetch current GTT signal and return structured status. Delegates to fetch_gtt_signal_data (two network calls: FRED + yfinance). Not pure — I/O boundary.",
+      "layer": "python",
+      "pure": false,
+      "inputs": [
+        {"name": "as_of_date", "type": "pd.Timestamp"},
+        {"name": "vix_p90_threshold", "type": "float"},
+        {"name": "start_date", "type": "str"},
+        {"name": "equity_prices", "type": "pd.Series | None", "default": "None"}
+      ],
+      "outputs": [{"type": "GttStatus"}],
+      "raises": [],
+      "ffi_notes": null
+    },
+    {
+      "id": "AC-015",
+      "name": "compute_leaps_dca_signal",
+      "description": "Compute the multi-factor DITM LEAPS DCA entry signal for a single ticker. Slices price_data to [:as_of_date] before all computations (T1 invariant).",
+      "layer": "python",
+      "pure": true,
+      "inputs": [
+        {"name": "price_data", "type": "PriceData", "description": "Must be built with fetch_vol_indices=True and fetch_ohlcv=True."},
+        {"name": "ticker", "type": "str"},
+        {"name": "as_of_date", "type": "pd.Timestamp"},
+        {"name": "hold_pctile", "type": "float", "default": "25.0"},
+        {"name": "aggressive_pctile", "type": "float", "default": "75.0"},
+        {"name": "rsi_window", "type": "int", "default": "14"},
+        {"name": "macd_fast", "type": "int", "default": "12"},
+        {"name": "macd_slow", "type": "int", "default": "26"},
+        {"name": "macd_signal_window", "type": "int", "default": "9"},
+        {"name": "stoch_k", "type": "int", "default": "5"},
+        {"name": "stoch_d", "type": "int", "default": "3"},
+        {"name": "iv_window", "type": "int", "default": "252"},
+        {"name": "lookback", "type": "int", "default": "504"},
+        {"name": "min_lookback", "type": "int", "default": "252"},
+        {"name": "w_rsi", "type": "float", "default": "0.20"},
+        {"name": "w_stoch", "type": "float", "default": "0.15"},
+        {"name": "w_iv", "type": "float", "default": "0.35"},
+        {"name": "w_macd", "type": "float", "default": "0.30"},
+        {"name": "use_macd_gate", "type": "bool", "default": "True"},
+        {"name": "macd_gate_floor", "type": "float", "default": "0.5"}
+      ],
+      "outputs": [{"type": "LeapsDcaSignal"}],
+      "raises": [
+        "ValueError: if ticker not in price_data.prices",
+        "ValueError: if price_data.ohlcv is empty (fetch_ohlcv not requested)",
+        "ValueError: if price_data.vol_prices has no column for ticker's IV proxy",
+        "ValueError: if w_rsi + w_stoch + w_iv + w_macd does not sum to 1.0 within 1e-6",
+        "ValueError: if fewer than min_lookback trading days available up to as_of_date"
+      ],
+      "ffi_notes": null
+    },
+    {
+      "id": "AC-016",
+      "name": "build_price_data (modified)",
+      "description": "Existing build_price_data extended with fetch_ohlcv parameter. When True, retains full OHLCV response from yf.download instead of discarding everything except Close.",
+      "layer": "python",
+      "pure": false,
+      "inputs": [
+        {"name": "...", "type": "existing params"},
+        {"name": "fetch_ohlcv", "type": "bool", "default": "False"}
+      ],
+      "outputs": [{"type": "PriceData", "description": "ohlcv field populated when fetch_ohlcv=True, else empty DataFrame."}],
+      "raises": [],
+      "ffi_notes": null
+    }
+  ],
+  "features": [
+    {
+      "id": "F-001",
+      "name": "Phase 0a: Relocate get_live_contracts to leverage.py",
+      "description": "Move _live_contracts from _backtest_steps.py to leverage.py, rename to get_live_contracts. Update all call sites in _backtest_steps.py to import from leverage. Pure refactor — no behavior change.",
+      "phase": "0a",
+      "priority": 1,
+      "status": "not_started",
+      "layer": "python",
+      "dependencies": [],
+      "linked_schemas": [],
+      "linked_apis": ["AC-001"],
+      "invariants": {
+        "temporal_bounds": null,
+        "accounting_oracle": null,
+        "composition_scope": "ATOMIC",
+        "plausibility_range": null,
+        "realism_requirements": null
+      },
+      "performance_requirements": {
+        "complexity_budget": "O(n) where n = number of contracts in ledger"
+      },
+      "property_based_testing": {
+        "enabled": true,
+        "rationale": "Pure function over a list — property: returned contracts always have expiry_date > current_date"
+      },
+      "mutation_testing": {
+        "enabled": true,
+        "rationale_if_disabled": null
+      },
+      "acceptance_criteria": [
+        "uv run pytest passes unchanged after relocation (non-regression I13)",
+        "get_live_contracts importable from finance.leverage",
+        "_backtest_steps.py no longer defines _live_contracts"
+      ],
+      "test_requirements": [
+        {"file": "tests/test_leverage.py", "description": "Unit test: get_live_contracts returns only contracts with expiry_date > current_date"}
+      ],
+      "edge_cases": [
+        "ledger with no entries returns empty list",
+        "all contracts expired returns empty list"
+      ],
+      "clarification_needed": false,
+      "clarification_notes": null
+    },
+    {
+      "id": "F-002",
+      "name": "Phase 0b: Create finance/rebalance.py with should_rebalance",
+      "description": "Create finance/rebalance.py. Move _should_rebalance from _backtest_steps.py, rename to should_rebalance. Update call site in _backtest_steps.py. Pure refactor — no behavior change.",
+      "phase": "0b",
+      "priority": 1,
+      "status": "not_started",
+      "layer": "python",
+      "dependencies": [],
+      "linked_schemas": [],
+      "linked_apis": ["AC-002"],
+      "invariants": {
+        "temporal_bounds": null,
+        "accounting_oracle": null,
+        "composition_scope": "ATOMIC",
+        "plausibility_range": null,
+        "realism_requirements": null
+      },
+      "performance_requirements": {
+        "complexity_budget": "O(n) where n = number of assets in weights"
+      },
+      "property_based_testing": {
+        "enabled": true,
+        "rationale": "Pure function: property: QUARTERLY rule never triggers when is_rebal_date=False (I8)"
+      },
+      "mutation_testing": {
+        "enabled": true,
+        "rationale_if_disabled": null
+      },
+      "acceptance_criteria": [
+        "uv run pytest passes unchanged after relocation (non-regression I13)",
+        "should_rebalance importable from finance.rebalance",
+        "_backtest_steps.py no longer defines _should_rebalance"
+      ],
+      "test_requirements": [
+        {"file": "tests/test_rebalance.py", "description": "Unit test: QUARTERLY rule returns False when is_rebal_date=False (I8)"}
+      ],
+      "edge_cases": [
+        "DRIFT rule with weights exactly at band boundary",
+        "empty weights series"
+      ],
+      "clarification_needed": false,
+      "clarification_notes": null
+    },
+    {
+      "id": "F-003",
+      "name": "Phase 1a: Add BacktestResult.final_state field",
+      "description": "Add final_state: PortfolioState as a required field on BacktestResult in _portfolio_types.py. Required field — no default. Non-breaking because BacktestResult is only constructed inside run_backtest.",
+      "phase": "1a",
+      "priority": 2,
+      "status": "not_started",
+      "layer": "python",
+      "dependencies": ["F-001", "F-002"],
+      "linked_schemas": ["DS-011"],
+      "linked_apis": [],
+      "invariants": {
+        "temporal_bounds": null,
+        "accounting_oracle": null,
+        "composition_scope": "ATOMIC",
+        "plausibility_range": null,
+        "realism_requirements": null
+      },
+      "performance_requirements": {
+        "complexity_budget": "O(1)"
+      },
+      "property_based_testing": {
+        "enabled": false,
+        "rationale_if_disabled": "Schema-only change; tested via non-regression suite"
+      },
+      "mutation_testing": {
+        "enabled": false,
+        "rationale_if_disabled": "Dataclass field addition only; no logic to mutate"
+      },
+      "acceptance_criteria": [
+        "BacktestResult has final_state attribute accessible post-construction",
+        "uv run pytest passes unchanged (non-regression I13)"
+      ],
+      "test_requirements": [
+        {"file": "tests/test_portfolio.py", "description": "Verify BacktestResult.final_state is populated and is a PortfolioState instance after run_backtest"}
+      ],
+      "edge_cases": [
+        "Backtest with single date — final_state populated"
+      ],
+      "clarification_needed": false,
+      "clarification_notes": null
+    },
+    {
+      "id": "F-004",
+      "name": "Phase 1b: Pass final state into BacktestResult in run_backtest",
+      "description": "Pass loop-end state into BacktestResult(...) in run_backtest in portfolio.py.",
+      "phase": "1b",
+      "priority": 2,
+      "status": "not_started",
+      "layer": "python",
+      "dependencies": ["F-003"],
+      "linked_schemas": ["DS-011"],
+      "linked_apis": [],
+      "invariants": {
+        "temporal_bounds": "final_state reflects state as of the last backtest date — no future data",
+        "accounting_oracle": "result.nav_series.iloc[-1] ≈ total NAV reconstructible from final_state",
+        "composition_scope": "ATOMIC",
+        "plausibility_range": null,
+        "realism_requirements": null
+      },
+      "performance_requirements": {
+        "complexity_budget": "O(1) — single assignment at loop end"
+      },
+      "property_based_testing": {
+        "enabled": false,
+        "rationale_if_disabled": "Assignment-only change tested via non-regression suite"
+      },
+      "mutation_testing": {
+        "enabled": true,
+        "rationale_if_disabled": null
+      },
+      "acceptance_criteria": [
+        "BacktestResult.final_state.as_of_date equals last date in nav_series",
+        "uv run pytest passes unchanged (non-regression I13)"
+      ],
+      "test_requirements": [
+        {"file": "tests/test_portfolio.py", "description": "Assert final_state.as_of_date == result.nav_series.index[-1]"}
+      ],
+      "edge_cases": [],
+      "clarification_needed": false,
+      "clarification_notes": null
+    },
+    {
+      "id": "F-005",
+      "name": "Phase 1c: Implement as_live_portfolio bridge",
+      "description": "Implement as_live_portfolio(result, gtt_active) in portfolio_manager.py. Converts BacktestResult.final_state to LivePortfolio using get_live_contracts().",
+      "phase": "1c",
+      "priority": 2,
+      "status": "not_started",
+      "layer": "python",
+      "dependencies": ["F-001", "F-003", "F-004"],
+      "linked_schemas": ["DS-001", "DS-011"],
+      "linked_apis": ["AC-009"],
+      "invariants": {
+        "temporal_bounds": "as_of_date = final_state date; contracts filtered to expiry > that date",
+        "accounting_oracle": "NavBreakdown.total_nav ≈ result.nav_series.iloc[-1] (I11)",
+        "composition_scope": "INTEGRATION",
+        "plausibility_range": "total_nav within 1e-6 of nav_series.iloc[-1]",
+        "realism_requirements": "Requires full backtest run against minimum 3-year VTI price slice (I11)"
+      },
+      "performance_requirements": {
+        "complexity_budget": "O(k) where k = number of active contracts"
+      },
+      "property_based_testing": {
+        "enabled": true,
+        "rationale": "Property: when backtest has no LEAPS, leaps_contracts is empty tuple"
+      },
+      "mutation_testing": {
+        "enabled": true,
+        "rationale_if_disabled": null
+      },
+      "acceptance_criteria": [
+        "Returns LivePortfolio with target_weights summing to 1.0 ± 1e-6",
+        "compute_nav_breakdown(result).total_nav ≈ result.nav_series.iloc[-1] within 1e-6 (I11)"
+      ],
+      "test_requirements": [
+        {"file": "tests/test_portfolio_manager.py", "description": "Unit: as_live_portfolio with no LEAPS returns empty leaps_contracts"},
+        {"file": "tests/test_portfolio_manager_integration.py", "description": "INTEGRATION: full backtest run → as_live_portfolio → NavBreakdown.total_nav ≈ nav_series.iloc[-1] (I11)"}
+      ],
+      "edge_cases": [
+        "final_state.leaps_ledger is None — returns empty leaps_contracts tuple",
+        "all contracts in ledger are expired — returns empty leaps_contracts tuple"
+      ],
+      "clarification_needed": false,
+      "clarification_notes": null
+    },
+    {
+      "id": "F-006",
+      "name": "Phase 2a: Add missing BS greeks to leverage.py",
+      "description": "Add bs_call_gamma, bs_call_vega, bs_call_theta, bs_call_charm as pure functions in leverage.py, using existing _bs_d1 helper and scalar-float signature pattern.",
+      "phase": "2a",
+      "priority": 3,
+      "status": "not_started",
+      "layer": "python",
+      "dependencies": ["F-001", "F-002"],
+      "linked_schemas": [],
+      "linked_apis": ["AC-003", "AC-004", "AC-005", "AC-006"],
+      "invariants": {
+        "temporal_bounds": null,
+        "accounting_oracle": "Analytic reference: ATM call, S=K=100, T=1yr, σ=0.20, r=0, q=0. Known BS values: gamma≈0.01994, vega≈79.54, theta≈-6.307/365, charm≈-0.0...",
+        "composition_scope": "ATOMIC",
+        "plausibility_range": "gamma > 0; theta < 0 for long call with T > TIME_FLOOR; delta ∈ (0,1)",
+        "realism_requirements": null
+      },
+      "performance_requirements": {
+        "complexity_budget": "O(1) — scalar analytic formulas"
+      },
+      "property_based_testing": {
+        "enabled": true,
+        "rationale": "Properties: gamma > 0 for any valid inputs; theta < 0 when T > TIME_FLOOR; all outputs finite for valid inputs"
+      },
+      "mutation_testing": {
+        "enabled": true,
+        "rationale_if_disabled": null
+      },
+      "acceptance_criteria": [
+        "bs_call_gamma(100, 100, 1.0, 0.20, 0.0, 0.0) ≈ 0.019894 within 1e-5",
+        "bs_call_theta(100, 100, 1.0, 0.20, 0.0, 0.0) < 0",
+        "bs_call_vega(100, 100, 1.0, 0.20, 0.0, 0.0) ≈ 0.7954 within 1e-4 (per unit of vol, not per 1%)"
+      ],
+      "test_requirements": [
+        {"file": "tests/test_leverage.py", "description": "Unit: analytic reference values for ATM call at T=1yr, σ=0.20"}
+      ],
+      "edge_cases": [
+        "T → TIME_FLOOR: gamma and charm approach extremes; time floor prevents division by zero",
+        "Deep ITM / deep OTM: delta near 1 or 0, gamma near 0"
+      ],
+      "clarification_needed": false,
+      "clarification_notes": null
+    },
+    {
+      "id": "F-007",
+      "name": "Phase 3a-b: ContractGreeks/PortfolioGreeks dataclasses and compute_contract_greeks",
+      "description": "Define ContractGreeks and PortfolioGreeks frozen dataclasses in finance/greeks.py. Implement compute_contract_greeks(contract, spot, iv, as_of_date, risk_free_rate, leaps_scale).",
+      "phase": "3a",
+      "priority": 4,
+      "status": "not_started",
+      "layer": "python",
+      "dependencies": ["F-006"],
+      "linked_schemas": ["DS-008", "DS-009"],
+      "linked_apis": ["AC-007"],
+      "invariants": {
+        "temporal_bounds": "time_to_expiry = (expiry_date - as_of_date).days / 365; floored at TIME_FLOOR",
+        "accounting_oracle": "ContractGreeks.price == bs_call_price() with identical inputs within 1e-9 (I7)",
+        "composition_scope": "ATOMIC",
+        "plausibility_range": "delta ∈ (0, 1) (I4); gamma > 0 (I5); theta < 0 for T > TIME_FLOOR (I6)",
+        "realism_requirements": null
+      },
+      "performance_requirements": {
+        "complexity_budget": "O(1) per contract"
+      },
+      "property_based_testing": {
+        "enabled": true,
+        "rationale": "Properties: I4 (delta ∈ (0,1)), I5 (gamma > 0), I6 (theta < 0), I7 (price consistency)"
+      },
+      "mutation_testing": {
+        "enabled": true,
+        "rationale_if_disabled": null
+      },
+      "acceptance_criteria": [
+        "ContractGreeks.price matches bs_call_price() with identical inputs within 1e-9 (I7)",
+        "ContractGreeks.delta ∈ (0, 1) for any valid LEAPS call (I4)",
+        "ContractGreeks.gamma > 0 for long call (I5)",
+        "ContractGreeks.theta < 0 for long call with T > TIME_FLOOR (I6)"
+      ],
+      "test_requirements": [
+        {"file": "tests/test_greeks.py", "description": "Unit: known inputs verify all greeks fields; price vs bs_call_price consistency (I7)"}
+      ],
+      "edge_cases": [
+        "leaps_scale < 1: position_delta/vega/theta scaled proportionally",
+        "time_to_expiry just above TIME_FLOOR: no crash"
+      ],
+      "clarification_needed": false,
+      "clarification_notes": null
+    },
+    {
+      "id": "F-008",
+      "name": "Phase 3c: Implement compute_portfolio_greeks",
+      "description": "Implement compute_portfolio_greeks(portfolio, spot, iv, risk_free_rate) in finance/greeks.py. Returns all-zero PortfolioGreeks with empty contracts tuple when portfolio.leaps_contracts is empty.",
+      "phase": "3c",
+      "priority": 4,
+      "status": "not_started",
+      "layer": "python",
+      "dependencies": ["F-007"],
+      "linked_schemas": ["DS-001", "DS-009"],
+      "linked_apis": ["AC-008"],
+      "invariants": {
+        "temporal_bounds": null,
+        "accounting_oracle": "net_delta == sum(cg.position_delta for cg in contracts)",
+        "composition_scope": "INTEGRATION",
+        "plausibility_range": "net_delta ∈ (0, n_contracts_total * 100) for any live LEAPS portfolio (I12)",
+        "realism_requirements": "Requires a LivePortfolio with live LEAPS for I12 bound check"
+      },
+      "performance_requirements": {
+        "complexity_budget": "O(k) where k = number of active LEAPS contracts"
+      },
+      "property_based_testing": {
+        "enabled": true,
+        "rationale": "Property: net_delta equals sum of position_deltas (I12 partial check)"
+      },
+      "mutation_testing": {
+        "enabled": true,
+        "rationale_if_disabled": null
+      },
+      "acceptance_criteria": [
+        "Empty leaps_contracts → PortfolioGreeks with all net_ fields = 0.0",
+        "net_delta ∈ (0, n_contracts_total * 100) for any live LEAPS portfolio (I12)"
+      ],
+      "test_requirements": [
+        {"file": "tests/test_greeks.py", "description": "Unit: empty portfolio returns zero-valued PortfolioGreeks"},
+        {"file": "tests/test_greeks_integration.py", "description": "INTEGRATION: LivePortfolio with known LEAPS → net_delta within domain bounds (I12)"}
+      ],
+      "edge_cases": [
+        "Single contract portfolio",
+        "Multiple contracts with different leaps_scale values"
+      ],
+      "clarification_needed": false,
+      "clarification_notes": null
+    },
+    {
+      "id": "F-009",
+      "name": "Phase 4a: LivePortfolio dataclass with validation",
+      "description": "Define LivePortfolio frozen dataclass in finance/portfolio_manager.py with __post_init__ validation: target_weights sum, leaps_scale range, expiry > as_of_date.",
+      "phase": "4a",
+      "priority": 5,
+      "status": "not_started",
+      "layer": "python",
+      "dependencies": ["F-001"],
+      "linked_schemas": ["DS-001"],
+      "linked_apis": [],
+      "invariants": {
+        "temporal_bounds": "contract.expiry_date > as_of_date enforced at construction (I9)",
+        "accounting_oracle": null,
+        "composition_scope": "ATOMIC",
+        "plausibility_range": "target_weights sum ∈ [1.0 - 1e-6, 1.0 + 1e-6] (I10)",
+        "realism_requirements": null
+      },
+      "performance_requirements": {
+        "complexity_budget": "O(n) validation where n = len(target_weights) + len(leaps_contracts)"
+      },
+      "property_based_testing": {
+        "enabled": true,
+        "rationale": "Properties: I9 (expired contract raises), I10 (bad weights raises), leaps_scale ∉ (0,1] raises"
+      },
+      "mutation_testing": {
+        "enabled": true,
+        "rationale_if_disabled": null
+      },
+      "acceptance_criteria": [
+        "Raises ValueError when target_weights do not sum to 1.0 ± 1e-6 (I10)",
+        "Raises ValueError when contract.expiry_date <= as_of_date (I9)",
+        "Raises ValueError when leaps_scale ∉ (0, 1]"
+      ],
+      "test_requirements": [
+        {"file": "tests/test_portfolio_manager.py", "description": "Unit: all three validation paths raise ValueError with correct message"}
+      ],
+      "edge_cases": [
+        "Empty leaps_contracts: no expiry validation needed",
+        "target_weights with 0.0 weight entry: valid as long as sum = 1.0"
+      ],
+      "clarification_needed": false,
+      "clarification_notes": null
+    },
+    {
+      "id": "F-010",
+      "name": "Phase 4b: compute_nav_breakdown and compute_holdings_view",
+      "description": "Implement NavBreakdown, HoldingView dataclasses plus compute_nav_breakdown() and compute_holdings_view() in portfolio_manager.py.",
+      "phase": "4b",
+      "priority": 5,
+      "status": "not_started",
+      "layer": "python",
+      "dependencies": ["F-009"],
+      "linked_schemas": ["DS-002", "DS-003"],
+      "linked_apis": ["AC-010", "AC-011"],
+      "invariants": {
+        "temporal_bounds": null,
+        "accounting_oracle": "total_nav = base_nav + leaps_nav + defensive_sleeve + leaps_pool (I1); arithmetic, assert within 1e-9",
+        "composition_scope": "ATOMIC",
+        "plausibility_range": "sum(h.actual_weight) <= 1.0 + 1e-9 (I2)",
+        "realism_requirements": null
+      },
+      "performance_requirements": {
+        "complexity_budget": "O(n) where n = number of holdings"
+      },
+      "property_based_testing": {
+        "enabled": true,
+        "rationale": "Properties: I1 (NAV identity), I2 (weight sum bound)"
+      },
+      "mutation_testing": {
+        "enabled": true,
+        "rationale_if_disabled": null
+      },
+      "acceptance_criteria": [
+        "NavBreakdown.total_nav == base_nav + leaps_nav + defensive_sleeve + leaps_pool within 1e-9 (I1)",
+        "sum(h.actual_weight for h in holdings_view) <= 1.0 + 1e-9 (I2)"
+      ],
+      "test_requirements": [
+        {"file": "tests/test_portfolio_manager.py", "description": "Unit: synthetic LivePortfolio verifies I1 and I2"}
+      ],
+      "edge_cases": [
+        "Portfolio with defensive_sleeve > 0: actual_weight sum < 1.0",
+        "Holdings with zero value asset"
+      ],
+      "clarification_needed": false,
+      "clarification_notes": null
+    },
+    {
+      "id": "F-011",
+      "name": "Phase 4c: compute_rebalance_plan",
+      "description": "Implement TradeOrder and RebalancePlan dataclasses plus compute_rebalance_plan() in portfolio_manager.py. Uses should_rebalance() from rebalance.py. Assumes Long regime.",
+      "phase": "4c",
+      "priority": 5,
+      "status": "not_started",
+      "layer": "python",
+      "dependencies": ["F-002", "F-009", "F-010"],
+      "linked_schemas": ["DS-004", "DS-005"],
+      "linked_apis": ["AC-012"],
+      "invariants": {
+        "temporal_bounds": null,
+        "accounting_oracle": "sum(t.trade_amount for t in plan.trades) ≈ 0.0 within 1e-6 (I3); no cash created/destroyed",
+        "composition_scope": "ATOMIC",
+        "plausibility_range": null,
+        "realism_requirements": null
+      },
+      "performance_requirements": {
+        "complexity_budget": "O(n) where n = number of assets"
+      },
+      "property_based_testing": {
+        "enabled": true,
+        "rationale": "Properties: I3 (trade conservation), I8 (QUARTERLY no-trigger when is_rebal_date=False)"
+      },
+      "mutation_testing": {
+        "enabled": true,
+        "rationale_if_disabled": null
+      },
+      "acceptance_criteria": [
+        "sum(t.trade_amount) ≈ 0.0 within 1e-6 when trades are non-empty (I3)",
+        "would_trigger=False and trigger_reason='not_triggered' when QUARTERLY rule and is_rebal_date=False (I8)",
+        "trades is empty tuple when would_trigger=False"
+      ],
+      "test_requirements": [
+        {"file": "tests/test_portfolio_manager.py", "description": "Unit: trade conservation I3; QUARTERLY no-trigger I8; DRIFT trigger with overweight asset"}
+      ],
+      "edge_cases": [
+        "Defensive portfolio: documented limitation, assumes Long",
+        "leaps_trim non-zero only when DRIFT fires and LEAPS overweight"
+      ],
+      "clarification_needed": false,
+      "clarification_notes": null
+    },
+    {
+      "id": "F-012",
+      "name": "Phase 4d: compute_volatility_report",
+      "description": "Implement VolatilityReport dataclass and compute_volatility_report() in portfolio_manager.py. Calls build_volatility_model() and build_vol_contribution_table() from volatility.py. Uses realized holdings weights.",
+      "phase": "4d",
+      "priority": 5,
+      "status": "not_started",
+      "layer": "python",
+      "dependencies": ["F-009", "F-010"],
+      "linked_schemas": ["DS-006"],
+      "linked_apis": ["AC-013"],
+      "invariants": {
+        "temporal_bounds": "build_volatility_model called with as_of_date=portfolio.as_of_date; uses [:as_of_date] slice",
+        "accounting_oracle": "portfolio_vol consistent with VolatilityModel.cov_matrix and weights_used",
+        "composition_scope": "ATOMIC",
+        "plausibility_range": "portfolio_vol > 0; contribution_table.contrib.sum() ≈ portfolio_vol",
+        "realism_requirements": null
+      },
+      "performance_requirements": {
+        "complexity_budget": "O(n²) for covariance matrix computation where n = number of assets"
+      },
+      "property_based_testing": {
+        "enabled": false,
+        "rationale_if_disabled": "Delegates to existing volatility.py — tested there; property testing of wrapper adds low marginal value"
+      },
+      "mutation_testing": {
+        "enabled": true,
+        "rationale_if_disabled": null
+      },
+      "acceptance_criteria": [
+        "VolatilityReport.portfolio_vol > 0 for any non-trivial portfolio",
+        "Raises ValueError propagated from build_volatility_model when return_data does not cover portfolio.as_of_date"
+      ],
+      "test_requirements": [
+        {"file": "tests/test_portfolio_manager.py", "description": "Unit: synthetic LivePortfolio + synthetic ReturnData verifies report structure and portfolio_vol > 0"}
+      ],
+      "edge_cases": [
+        "return_data date range does not include portfolio.as_of_date: ValueError propagated"
+      ],
+      "clarification_needed": false,
+      "clarification_notes": null
+    },
+    {
+      "id": "F-013",
+      "name": "Phase 4e: compute_gtt_status (I/O boundary)",
+      "description": "Implement GttStatus dataclass and compute_gtt_status() in portfolio_manager.py. Thin wrapper over fetch_gtt_signal_data(). Excluded from coverage (pragma: no cover).",
+      "phase": "4e",
+      "priority": 5,
+      "status": "not_started",
+      "layer": "python",
+      "dependencies": ["F-009"],
+      "linked_schemas": ["DS-007"],
+      "linked_apis": ["AC-014"],
+      "invariants": {
+        "temporal_bounds": "as_of_date passed explicitly; function never infers date from system clock",
+        "accounting_oracle": null,
+        "composition_scope": "ATOMIC",
+        "plausibility_range": "regime ∈ {0, 1}; price_vs_sma200 ∈ {above, below, warming_up}",
+        "realism_requirements": null
+      },
+      "performance_requirements": {
+        "complexity_budget": "O(1) wrapper — I/O latency dominates"
+      },
+      "property_based_testing": {
+        "enabled": false,
+        "rationale_if_disabled": "I/O boundary — network calls cannot be property tested without mocking; excluded from coverage"
+      },
+      "mutation_testing": {
+        "enabled": false,
+        "rationale_if_disabled": "I/O boundary marked pragma: no cover; mutation testing not applicable"
+      },
+      "acceptance_criteria": [
+        "GttStatus.regime ∈ {0, 1}",
+        "GttStatus.price_vs_sma200 ∈ {'above', 'below', 'warming_up'}"
+      ],
+      "test_requirements": [
+        {"file": "tests/test_portfolio_manager.py", "description": "Smoke test with mocked fetch_gtt_signal_data verifying GttStatus field types and valid regime values"}
+      ],
+      "edge_cases": [
+        "SMA200 not yet available (fewer than 200 days of data): warming_up"
+      ],
+      "clarification_needed": false,
+      "clarification_notes": null
+    },
+    {
+      "id": "F-014",
+      "name": "Phase 5a: Add ohlcv field to PriceData and fetch_ohlcv to build_price_data",
+      "description": "Add ohlcv: pd.DataFrame field (default empty DataFrame) to PriceData. Add fetch_ohlcv: bool = False parameter to build_price_data. Retain full yf.download OHLCV response when True. No change to existing interface.",
+      "phase": "5a",
+      "priority": 6,
+      "status": "not_started",
+      "layer": "python",
+      "dependencies": ["F-001", "F-002"],
+      "linked_schemas": ["DS-012"],
+      "linked_apis": ["AC-016"],
+      "invariants": {
+        "temporal_bounds": null,
+        "accounting_oracle": null,
+        "composition_scope": "ATOMIC",
+        "plausibility_range": null,
+        "realism_requirements": null
+      },
+      "performance_requirements": {
+        "complexity_budget": "O(1) additional storage — ohlcv is pre-fetched by yf.download anyway"
+      },
+      "property_based_testing": {
+        "enabled": false,
+        "rationale_if_disabled": "I/O boundary; network call; tested via functional assertion on returned DataFrame shape"
+      },
+      "mutation_testing": {
+        "enabled": false,
+        "rationale_if_disabled": "I/O boundary — yfinance fetch; mutation testing not applicable"
+      },
+      "acceptance_criteria": [
+        "build_price_data(..., fetch_ohlcv=True) returns PriceData with non-empty ohlcv DataFrame",
+        "build_price_data(..., fetch_ohlcv=False) returns PriceData with empty ohlcv DataFrame (existing tests pass unchanged)"
+      ],
+      "test_requirements": [
+        {"file": "tests/test_data.py", "description": "Unit: fetch_ohlcv=False leaves ohlcv empty; shape and MultiIndex structure checked for fetch_ohlcv=True (may be mocked)"}
+      ],
+      "edge_cases": [
+        "yfinance MultiIndex column structure variation: parsing guard normalizes to (ticker, field) before storing"
+      ],
+      "clarification_needed": false,
+      "clarification_notes": null
+    },
+    {
+      "id": "F-015",
+      "name": "Phase 5b-c: LeapsDcaSignal dataclass and compute_leaps_dca_signal",
+      "description": "Define LeapsDcaSignal frozen dataclass in finance/dca_signal.py. Implement compute_leaps_dca_signal() with RSI, Stochastic %D, IV percentile, MACD factors, MACD gate, and score percentile. T1 invariant: slice price_data to [:as_of_date] before all computations.",
+      "phase": "5b",
+      "priority": 6,
+      "status": "not_started",
+      "layer": "python",
+      "dependencies": ["F-014"],
+      "linked_schemas": ["DS-010", "DS-012"],
+      "linked_apis": ["AC-015"],
+      "invariants": {
+        "temporal_bounds": "compute_leaps_dca_signal slices price_data to [:as_of_date] before all rolling windows (T1 / I18)",
+        "accounting_oracle": "entry_score = clip(w_rsi*score_rsi + w_stoch*score_stoch + w_iv*score_iv + w_macd*score_macd, 0, 100) * macd_gate",
+        "composition_scope": "ATOMIC",
+        "plausibility_range": "entry_score ∈ [0, 100] (I14); alpha_t ∈ [0, 1] (I15); dca_action ∈ {HOLD, TRANCHE, AGGRESSIVE_SWEEP} (I16)",
+        "realism_requirements": "Score percentile shift test: multi-date synthetic series of ≥ min_lookback days (I20)"
+      },
+      "performance_requirements": {
+        "complexity_budget": "O(n) where n = trading days in lookback window; MACD bearish_confirmed O(n) via cumsum pattern"
+      },
+      "property_based_testing": {
+        "enabled": true,
+        "rationale": "Properties: I14 (score in [0,100]), I15 (alpha_t in [0,1]), I16 (dca_action membership), I17 (raises on empty ohlcv), I18 (no data after as_of_date used), I19 (weights sum to 1)"
+      },
+      "mutation_testing": {
+        "enabled": true,
+        "rationale_if_disabled": null
+      },
+      "acceptance_criteria": [
+        "entry_score ∈ [0, 100] for all valid inputs (I14)",
+        "alpha_t ∈ [0, 1] after np.clip (I15)",
+        "dca_action ∈ {'HOLD', 'TRANCHE', 'AGGRESSIVE_SWEEP'} (I16)",
+        "Raises ValueError when price_data.ohlcv is empty (I17)",
+        "Raises ValueError when w_rsi + w_stoch + w_iv + w_macd ≠ 1.0 ± 1e-6 (I19)",
+        "Uses no data after as_of_date (I18): verified by constructing a series where appending one extra row changes no output"
+      ],
+      "test_requirements": [
+        {"file": "tests/test_dca_signal.py", "description": "Unit: 3yr synthetic OHLCV+IV series; score bounds I14; MACD gate behavior; alpha_t clipping; action classification; ValueError paths"},
+        {"file": "tests/test_dca_signal.py", "description": "Property-based: hypothesis strategies over valid price/iv ranges verify I14, I15, I16, I18"}
+      ],
+      "edge_cases": [
+        "Stochastic %D NaN for first stoch_k + stoch_d - 1 days: NaN rows dropped before percentile",
+        "min_lookback enforcement: ValueError if insufficient data",
+        "Ticker with no ASSET_VOL_INDEX mapping: fallback to VIX column if present, else ValueError",
+        "macd_bearish_confirmed: requires 3 consecutive negative sessions before gate activates"
+      ],
+      "clarification_needed": false,
+      "clarification_notes": null
+    },
+    {
+      "id": "F-016",
+      "name": "Phase 6: Public surface and __init__.py exports",
+      "description": "Update finance/__init__.py with all new re-exports. Add docstrings on all new public functions and types. Ensure uv run mypy src/ strict clean.",
+      "phase": "6a",
+      "priority": 7,
+      "status": "not_started",
+      "layer": "python",
+      "dependencies": ["F-005", "F-006", "F-007", "F-008", "F-010", "F-011", "F-012", "F-013", "F-015"],
+      "linked_schemas": [],
+      "linked_apis": [],
+      "invariants": {
+        "temporal_bounds": null,
+        "accounting_oracle": null,
+        "composition_scope": "ATOMIC",
+        "plausibility_range": null,
+        "realism_requirements": null
+      },
+      "performance_requirements": {
+        "complexity_budget": "N/A"
+      },
+      "property_based_testing": {
+        "enabled": false,
+        "rationale_if_disabled": "Re-export surface — no logic to test"
+      },
+      "mutation_testing": {
+        "enabled": false,
+        "rationale_if_disabled": "Re-export surface — no logic to mutate"
+      },
+      "acceptance_criteria": [
+        "All types and functions listed in §4h importable from finance directly",
+        "uv run mypy src/ exits 0 in strict mode"
+      ],
+      "test_requirements": [
+        {"file": "tests/test_init.py", "description": "Smoke: import all public names from finance; verify no ImportError"}
+      ],
+      "edge_cases": [],
+      "clarification_needed": false,
+      "clarification_notes": null
+    }
+  ],
+  "risks": [
+    {
+      "id": "R-001",
+      "description": "compute_rebalance_plan called with Defensive portfolio: function assumes Long regime; documented limitation. Returns plan assuming Long; caller must inspect portfolio.gtt_regime.",
+      "severity": "medium",
+      "mitigation": "Document clearly in docstring and plan §7. Callers must guard on portfolio.gtt_regime before calling. Defensive-regime rebalance deferred.",
+      "linked_features": ["F-011"]
+    },
+    {
+      "id": "R-002",
+      "description": "LEAPS near expiry: theta and charm diverge as time_to_expiry → 0. Division by zero risk.",
+      "severity": "medium",
+      "mitigation": "TIME_FLOOR applied in all BS functions. Document the floor in leverage.py. Edge case tested explicitly.",
+      "linked_features": ["F-006", "F-007"]
+    },
+    {
+      "id": "R-003",
+      "description": "as_live_portfolio when backtest had no LEAPS: final_state.leaps_ledger is None.",
+      "severity": "low",
+      "mitigation": "Returns empty leaps_contracts tuple. Tested explicitly in F-005.",
+      "linked_features": ["F-005"]
+    },
+    {
+      "id": "R-004",
+      "description": "compute_leaps_dca_signal called for a ticker with no ASSET_VOL_INDEX mapping (e.g. IWM).",
+      "severity": "medium",
+      "mitigation": "Falls back to VIX column if present; raises ValueError if vol_prices has no usable column. Fallback behavior documented explicitly.",
+      "linked_features": ["F-015"]
+    },
+    {
+      "id": "R-005",
+      "description": "PriceData.ohlcv MultiIndex column structure differs across yfinance versions.",
+      "severity": "low",
+      "mitigation": "Pin yfinance version. Add parsing guard in build_price_data that normalizes MultiIndex to (ticker, field) before storing.",
+      "linked_features": ["F-014"]
+    },
+    {
+      "id": "R-006",
+      "description": "Stochastic %D produces NaN for first stoch_k + stoch_d - 1 days; MACD warm-up period adds more NaN rows. Score percentile window requires min_lookback days.",
+      "severity": "medium",
+      "mitigation": "ValueError raised if fewer than min_lookback days available after slicing to as_of_date. NaN rows dropped before percentile computation.",
+      "linked_features": ["F-015"]
+    },
+    {
+      "id": "R-007",
+      "description": "RebalancePlan.leaps_trim for DRIFT rule cannot replicate leaps_scale update without executing it.",
+      "severity": "medium",
+      "mitigation": "leaps_trim reports dollar amount only; scale update not simulated. Documented limitation in §7.",
+      "linked_features": ["F-011"]
+    },
+    {
+      "id": "R-008",
+      "description": "compute_volatility_report called with return_data not covering portfolio.as_of_date.",
+      "severity": "medium",
+      "mitigation": "build_volatility_model already raises ValueError for out-of-range dates; propagates naturally. Tested in F-012.",
+      "linked_features": ["F-012"]
+    },
+    {
+      "id": "R-009",
+      "description": "MACD macd_bearish_confirmed uses groupby/cumsum pattern which has O(n²) worst case on long series.",
+      "severity": "low",
+      "mitigation": "Acceptable for 5-year daily series (~1250 rows). Document as known performance characteristic.",
+      "linked_features": ["F-015"]
+    }
+  ],
+  "implementation_phases": [
+    {
+      "phase": 0,
+      "name": "Refactor Private Helpers",
+      "description": "Prerequisite for all phases. Relocate get_live_contracts to leverage.py and create finance/rebalance.py with should_rebalance. No behavior change.",
+      "feature_ids": ["F-001", "F-002"]
+    },
+    {
+      "phase": 1,
+      "name": "BacktestResult.final_state and Bridge",
+      "description": "Add final_state field to BacktestResult, wire it in run_backtest, and implement as_live_portfolio bridge function.",
+      "feature_ids": ["F-003", "F-004", "F-005"]
+    },
+    {
+      "phase": 2,
+      "name": "Missing BS Greeks in leverage.py",
+      "description": "Add bs_call_gamma, bs_call_vega, bs_call_theta, bs_call_charm as pure scalar functions.",
+      "feature_ids": ["F-006"]
+    },
+    {
+      "phase": 3,
+      "name": "finance/greeks.py",
+      "description": "Define ContractGreeks and PortfolioGreeks dataclasses and implement compute_contract_greeks and compute_portfolio_greeks.",
+      "feature_ids": ["F-007", "F-008"]
+    },
+    {
+      "phase": 4,
+      "name": "finance/portfolio_manager.py",
+      "description": "Define all output dataclasses and implement the five management functions: nav_breakdown, holdings_view, rebalance_plan, volatility_report, gtt_status.",
+      "feature_ids": ["F-009", "F-010", "F-011", "F-012", "F-013"]
+    },
+    {
+      "phase": 5,
+      "name": "finance/dca_signal.py and PriceData OHLCV Extension",
+      "description": "Add ohlcv field to PriceData and build_price_data, define LeapsDcaSignal, and implement compute_leaps_dca_signal with T1 no-lookahead invariant.",
+      "feature_ids": ["F-014", "F-015"]
+    },
+    {
+      "phase": 6,
+      "name": "Public Surface and Docs",
+      "description": "Update finance/__init__.py with all new re-exports. Docstrings on all new public functions. mypy strict clean.",
+      "feature_ids": ["F-016"]
+    }
+  ]
+}
