@@ -296,7 +296,7 @@
       "description": "Add pure function glide_path_leaps_weight(m, w0, floor, half_life_multiple) to _backtest_steps.py alongside existing pure helpers. Implements: lam = ln(2) / half_life_multiple; active = (w0 - floor) * exp(-lam * max(m-1.0, 0.0)); return floor + active. Key invariants: w(m<=1.0)==w0; w(m)->floor as m->inf; monotone non-increasing for m>=1.",
       "phase": "2",
       "priority": 1,
-      "status": "not_started",
+      "status": "pending_judge",
       "layer": "python",
       "dependencies": ["F-GP-01"],
       "linked_schemas": [],

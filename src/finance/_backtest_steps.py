@@ -25,6 +25,7 @@ Functions (in loop order):
 
 from __future__ import annotations
 
+import math
 from dataclasses import replace
 
 import pandas as pd
@@ -122,6 +123,47 @@ def _should_rebalance(
         if abs(float(current_weights[a]) - t) / t > band:
             return True
     return False
+
+
+def glide_path_leaps_weight(
+    m: float,
+    w0: float,
+    floor: float,
+    half_life_multiple: float,
+) -> float:
+    """Compute the LEAPS target weight at NAV multiple m.
+
+    Implements an exponential decay from w0 toward floor as m rises above 1.0:
+        lam = ln(2) / half_life_multiple
+        w(m) = floor + (w0 - floor) * exp(-lam * max(m - 1.0, 0.0))
+
+    At m <= 1.0 the result equals w0 exactly (no de-levering below break-even).
+    As m -> inf the result approaches floor.
+
+    Arguments:
+        m: NAV multiple: total_nav / hurdle_contributed. May be < 1.0.
+        w0: Initial LEAPS fraction (ctx.leaps_fraction). Full weight at or
+            below break-even.
+        floor: Minimum LEAPS target weight. Must be < w0.
+        half_life_multiple: NAV multiple at which the active weight
+            (w0 - floor) halves. Must be > 0.
+
+    Returns:
+        LEAPS target weight in [floor, w0].
+
+    Raises:
+        ValueError: If half_life_multiple <= 0.
+        ValueError: If floor >= w0.
+    """
+    if half_life_multiple <= 0:
+        raise ValueError(
+            f"half_life_multiple must be > 0; got {half_life_multiple}"
+        )
+    if floor >= w0:
+        raise ValueError(f"floor ({floor}) must be < w0 ({w0})")
+    lam = math.log(2.0) / half_life_multiple
+    active = (w0 - floor) * math.exp(-lam * max(m - 1.0, 0.0))
+    return floor + active
 
 
 # ---------------------------------------------------------------------------
