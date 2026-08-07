@@ -357,7 +357,7 @@
       "description": "Add pure function compute_glide_target_weights(m, config, glidepath_config) -> pd.Series to _backtest_steps.py. Computes w_leaps = glide_path_leaps_weight(m, w0, floor, half_life_multiple); w_freed = w0 - w_leaps; distributes w_freed as: vti_alpha * w_freed to 'VTI', (1-vti_alpha) * w_freed proportionally among non-LEAPS non-VTI base assets by their original weights. Returns normalized pd.Series indexed by all ticker keys. Key invariants: result.sum()==1.0; result at m==1.0 equals config.target_weights (with VTI=0.0); VTI weight and all base weights monotone non-decreasing in m.",
       "phase": "2",
       "priority": 1,
-      "status": "not_started",
+      "status": "pending_judge",
       "layer": "python",
       "dependencies": ["F-GP-01", "F-GP-02"],
       "linked_schemas": [],

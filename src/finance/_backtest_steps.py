@@ -33,6 +33,7 @@ import pandas as pd
 from finance._portfolio_types import (
     BacktestContext,
     DayInputs,
+    GlidepathConfig,
     PortfolioConfig,
     PortfolioState,
 )
@@ -164,6 +165,65 @@ def glide_path_leaps_weight(
     lam = math.log(2.0) / half_life_multiple
     active = (w0 - floor) * math.exp(-lam * max(m - 1.0, 0.0))
     return floor + active
+
+
+def compute_glide_target_weights(
+    m: float,
+    config: PortfolioConfig,
+    glidepath_config: GlidepathConfig,
+) -> pd.Series:
+    """Compute the full normalized target weight vector at NAV multiple m.
+
+    Allocates freed LEAPS weight (w_freed = w0 - w_leaps) as:
+        - vti_alpha * w_freed → 'VTI'
+        - (1 - vti_alpha) * w_freed → distributed proportionally among
+          non-LEAPS, non-VTI base assets by their original target_weights.
+
+    At m <= 1.0, w_freed == 0 and the result equals config.target_weights
+    (with VTI == 0.0). VTI weight and all base weights are monotone
+    non-decreasing in m.
+
+    Arguments:
+        m: NAV multiple: total_nav / hurdle_contributed. m <= 1.0 returns
+            original target_weights with no de-levering.
+        config: Source of original target_weights (including 'VTI': 0.0)
+            and leaps_fraction.
+        glidepath_config: Source of floor, half_life_multiple, vti_alpha.
+
+    Returns:
+        Target weight Series indexed by ticker. sum() == 1.0 within 1e-12
+        for all m >= 0.
+
+    Raises:
+        ValueError: If 'VTI' not in config.target_weights.
+        ValueError: If base_sum == 0 (no non-LEAPS, non-VTI assets).
+    """
+    tw = config.target_weights
+    if "VTI" not in tw:
+        raise ValueError("'VTI' must be in config.target_weights for glide-path")
+
+    leaps_keys = {k for k in tw if k.endswith(LEAPS_KEY_SUFFIX)}
+    w0 = float(sum(tw[k] for k in leaps_keys))
+
+    base_weights = {k: v for k, v in tw.items() if k not in leaps_keys and k != "VTI"}
+    base_sum = sum(base_weights.values())
+    if base_sum == 0:
+        raise ValueError("base_sum == 0: no non-LEAPS, non-VTI assets in target_weights")
+
+    w_leaps = glide_path_leaps_weight(m, w0, glidepath_config.floor, glidepath_config.half_life_multiple)
+    w_freed = w0 - w_leaps
+
+    result = dict(tw)
+    # Distribute freed weight: vti_alpha fraction to VTI, remainder to base assets
+    result["VTI"] = glidepath_config.vti_alpha * w_freed
+    base_scale = (1.0 - glidepath_config.vti_alpha) * w_freed / base_sum
+    for k in base_weights:
+        result[k] = tw[k] + tw[k] * base_scale
+    # LEAPS keys get the decayed weight split proportionally to original shares
+    if w0 > 0:
+        for k in leaps_keys:
+            result[k] = tw[k] * (w_leaps / w0)
+    return pd.Series(result, dtype=float)
 
 
 # ---------------------------------------------------------------------------
