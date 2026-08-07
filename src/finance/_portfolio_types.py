@@ -16,6 +16,7 @@ from finance.consts import (
     GTT_SMA_WINDOW,
     GTT_UNRATE_TRADE_LAG_DAYS,
     GTT_VIX_CONSECUTIVE_DAYS,
+    LEAPS_KEY_SUFFIX,
 )
 from finance.leverage import (
     LeapsConfig,
@@ -26,6 +27,34 @@ from finance.leverage import (
     WeightStrategy,
 )
 from finance.returns import ReturnData
+
+
+@dataclass(frozen=True)
+class GlidepathConfig:
+    """Configuration for the glide-path overlay on a DRIFT portfolio.
+
+    Activates when set on PortfolioConfig.glide_path_config. Controls how
+    the LEAPS target weight decays exponentially from leaps_fraction toward
+    floor as the NAV multiple m(t) = NAV / hurdle_contributed rises above 1.0.
+    Freed LEAPS weight is redistributed to VTI (vti_alpha fraction) and
+    proportionally to non-VTI base assets (1 - vti_alpha fraction).
+
+    Attributes:
+        half_life_multiple: NAV multiple at which the active LEAPS weight
+            above the floor halves. Default 2.0.
+        floor: Minimum LEAPS target weight. Must be < leaps_fraction. Default 0.05.
+        vti_alpha: Fraction of freed LEAPS weight routed to VTI as m grows;
+            remainder expands diversified base assets proportionally. Default 0.65.
+            Must be in [0.0, 1.0].
+
+    Notes:
+        drift_band is not a field here — it is DRIFT_BAND_RELATIVE from consts.py,
+        shared by all DRIFT rebalancing. No RebalanceRule.GLIDE_PATH is added.
+    """
+
+    half_life_multiple: float = 2.0
+    floor: float = 0.05
+    vti_alpha: float = 0.65
 
 
 @dataclass(frozen=True)
@@ -89,11 +118,22 @@ class PortfolioConfig:
         gtt_config: Optional GTT market-timing overlay. None = GTT disabled
             (existing behavior unchanged). When set, non-R_f keys in
             defensive_weights must exist in target_weights.
+        glide_path_config: Optional glide-path overlay. None = glide-path
+            disabled (existing behavior unchanged). When set, rebalance_rule
+            must be DRIFT, 'VTI' must be in target_weights with value 0.0,
+            floor < leaps_fraction, half_life_multiple > 0, and
+            vti_alpha in [0.0, 1.0].
 
     Raises:
         ValueError: If target_weights does not sum to 1.0 within 1e-6.
         ValueError: If gtt_config is set and a non-R_f defensive_weights key is
             absent from target_weights.
+        ValueError: If glide_path_config is set and rebalance_rule != DRIFT.
+        ValueError: If glide_path_config is set and 'VTI' is absent from
+            target_weights.
+        ValueError: If glide_path_config.floor >= leaps_fraction.
+        ValueError: If glide_path_config.half_life_multiple <= 0.
+        ValueError: If glide_path_config.vti_alpha is outside [0.0, 1.0].
     """
 
     target_weights: dict[str, float]
@@ -103,6 +143,7 @@ class PortfolioConfig:
     weight_strategy: WeightStrategy
     leaps_config: LeapsConfig | None = None
     gtt_config: GttConfig | None = None
+    glide_path_config: GlidepathConfig | None = None
 
     def __post_init__(self) -> None:
         total = sum(self.target_weights.values())
@@ -119,6 +160,37 @@ class PortfolioConfig:
             if missing:
                 raise ValueError(
                     f"defensive_weights keys absent from target_weights: {missing}"
+                )
+        if self.glide_path_config is not None:
+            if self.rebalance_rule != RebalanceRule.DRIFT:
+                raise ValueError(
+                    f"glide_path_config requires rebalance_rule=DRIFT; "
+                    f"got {self.rebalance_rule!r}"
+                )
+            if "VTI" not in self.target_weights:
+                raise ValueError(
+                    "glide_path_config requires 'VTI' in target_weights with value 0.0"
+                )
+            leaps_fraction = sum(
+                v
+                for k, v in self.target_weights.items()
+                if k.endswith(LEAPS_KEY_SUFFIX)
+            )
+            gp = self.glide_path_config
+            if gp.floor >= leaps_fraction:
+                raise ValueError(
+                    f"glide_path_config.floor ({gp.floor}) must be < leaps_fraction "
+                    f"({leaps_fraction})"
+                )
+            if gp.half_life_multiple <= 0:
+                raise ValueError(
+                    f"glide_path_config.half_life_multiple must be > 0; "
+                    f"got {gp.half_life_multiple}"
+                )
+            if not (0.0 <= gp.vti_alpha <= 1.0):
+                raise ValueError(
+                    f"glide_path_config.vti_alpha must be in [0.0, 1.0]; "
+                    f"got {gp.vti_alpha}"
                 )
 
 

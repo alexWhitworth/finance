@@ -236,7 +236,7 @@
       "description": "Add @dataclass(frozen=True) GlidepathConfig to _portfolio_types.py with fields half_life_multiple (default 2.0), floor (default 0.05), vti_alpha (default 0.65). No drift_band field — uses DRIFT_BAND_RELATIVE from consts.py. Add optional glide_path_config: GlidepathConfig | None = None to PortfolioConfig. __post_init__ validates when glide_path_config is not None: rebalance_rule == DRIFT, floor < leaps_fraction, half_life_multiple > 0, 0.0 <= vti_alpha <= 1.0, 'VTI' in target_weights with value 0.0. No RebalanceRule.GLIDE_PATH enum is added.",
       "phase": "1",
       "priority": 1,
-      "status": "not_started",
+      "status": "pending_judge",
       "layer": "python",
       "dependencies": [],
       "linked_schemas": ["S-GP-CONFIG", "S-GP-PORTFOLIO-CONFIG"],
