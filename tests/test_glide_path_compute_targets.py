@@ -1,9 +1,7 @@
 """Tests for F-GP-03: compute_glide_target_weights() pure function."""
 
-import math
 
 import numpy as np
-import pandas as pd
 import pytest
 
 from finance._backtest_steps import compute_glide_target_weights, glide_path_leaps_weight

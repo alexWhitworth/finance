@@ -1,7 +1,6 @@
 """Tests for F-GP-04: PortfolioState hurdle_contributed and dynamic_target_weights fields."""
 
 import dataclasses
-import math
 
 import numpy as np
 import pandas as pd
@@ -10,7 +9,6 @@ import pytest
 from finance._backtest_steps import _build_context, _build_initial_state
 from finance._portfolio_types import GlidepathConfig, PortfolioConfig, PortfolioState
 from finance.data import PriceData
-from finance.gtt import GttSignalData
 from finance.leverage import AccountType, LeapsConfig, RebalanceRule, WeightStrategy
 from finance.returns import ReturnData
 
@@ -207,7 +205,8 @@ def test_build_initial_state_no_glide_path_dynamic_weights_none() -> None:
 def test_build_initial_state_with_glide_path_hurdle() -> None:
     """With glide_path_config, hurdle_contributed == initial_nav within 1e-9."""
     gp = GlidepathConfig()
-    state = _build(_make_config(_WEIGHTS_GP, gp=gp, leaps_config=_LEAPS_CONFIG), with_vti_prices=True)
+    config = _make_config(_WEIGHTS_GP, gp=gp, leaps_config=_LEAPS_CONFIG)
+    state = _build(config, with_vti_prices=True)
     np.testing.assert_allclose(state.hurdle_contributed, _INITIAL_NAV, atol=1e-9)
 
 
@@ -227,7 +226,8 @@ def test_build_initial_state_with_glide_path_dynamic_weights_identity() -> None:
 def test_build_initial_state_with_glide_path_dynamic_weights_sum() -> None:
     """With glide_path_config, dynamic_target_weights.sum() == 1.0 within 1e-12."""
     gp = GlidepathConfig()
-    state = _build(_make_config(_WEIGHTS_GP, gp=gp, leaps_config=_LEAPS_CONFIG), with_vti_prices=True)
+    config = _make_config(_WEIGHTS_GP, gp=gp, leaps_config=_LEAPS_CONFIG)
+    state = _build(config, with_vti_prices=True)
     assert state.dynamic_target_weights is not None
     np.testing.assert_allclose(state.dynamic_target_weights.sum(), 1.0, atol=1e-12)
 

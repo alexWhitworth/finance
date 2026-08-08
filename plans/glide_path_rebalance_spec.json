@@ -483,7 +483,7 @@
       "description": "Modify _build_context to populate rfr_series whenever config.glide_path_config is not None, regardless of use_leaps. Apply existing forward-fill and NaN-validation logic. Assert 'VTI' is present in return_data.returns.columns when glide_path_config is set. All existing _build_context behavior (use_leaps path, GTT path, etc.) is unchanged.",
       "phase": "2",
       "priority": 1,
-      "status": "not_started",
+      "status": "pending_judge",
       "layer": "python",
       "dependencies": ["F-GP-01"],
       "linked_schemas": ["S-GP-BACKTEST-CONTEXT"],

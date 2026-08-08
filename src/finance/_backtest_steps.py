@@ -210,7 +210,9 @@ def compute_glide_target_weights(
     if base_sum == 0:
         raise ValueError("base_sum == 0: no non-LEAPS, non-VTI assets in target_weights")
 
-    w_leaps = glide_path_leaps_weight(m, w0, glidepath_config.floor, glidepath_config.half_life_multiple)
+    w_leaps = glide_path_leaps_weight(
+        m, w0, glidepath_config.floor, glidepath_config.half_life_multiple
+    )
     w_freed = w0 - w_leaps
 
     result = dict(tw)
@@ -450,6 +452,21 @@ def _build_context(
             mtm_iv_series = raw_vix.rolling(VIX_MTM_WINDOW).mean().ffill()
 
         leaps_monthly = config.monthly_contribution * leaps_fraction
+
+    if config.glide_path_config is not None:
+        if "VTI" not in return_data.returns.columns:
+            raise ValueError(
+                "glide_path_config is set but 'VTI' is absent from return_data.returns.columns"
+            )
+        start_date = idx[0]
+        raw_rfr_at_start = return_data.risk_free_rate.reindex(idx, method="ffill")
+        if pd.isna(raw_rfr_at_start.iloc[0]):
+            raise ValueError(
+                "glide_path_config is set but rfr_series has leading NaNs before "
+                f"backtest start date {start_date}"
+            )
+        if rfr_series is None:
+            rfr_series = raw_rfr_at_start.fillna(0.0)
 
     base_contribution = config.monthly_contribution * (1.0 - leaps_fraction)
 

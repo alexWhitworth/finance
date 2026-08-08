@@ -54,7 +54,9 @@ def _make_config(
 
 
 def test_glidepath_config_defaults() -> None:
-    """GlidepathConfig() constructs with defaults half_life_multiple=2.0, floor=0.05, vti_alpha=0.65."""
+    """GlidepathConfig() constructs with defaults: half_life_multiple=2.0, floor=0.05,
+    vti_alpha=0.65.
+    """
     gp = GlidepathConfig()
     assert gp.half_life_multiple == 2.0
     assert gp.floor == 0.05
