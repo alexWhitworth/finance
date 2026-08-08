@@ -113,6 +113,7 @@ uv run examples/leaps_drift.py              # LEAPS overlay, taxable vs. tax-she
 uv run examples/volatility_report.py        # vol contribution table + forward vol forecast
 uv run examples/crisis_analysis.py          # GFC / COVID / 2022 per-period metrics
 uv run examples/gtt_leaps.py                # GTT Leaps vs non-GTT Leaps
+uv run examples/portfolio_opt.py            # Optimization across multiple portfolio choices
 
 ```
 
