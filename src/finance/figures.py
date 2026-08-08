@@ -7,13 +7,17 @@ pass ``output_path=None`` to suppress saving.
 
 from __future__ import annotations
 
-import math
+import io
 import os
 from pathlib import Path
 
+import matplotlib.image as mpimg
+import matplotlib.patches as mpatches
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import plotnine as p9
+from matplotlib.figure import Figure
 
 from finance.consts import CRISIS_PERIODS, NBER_RECESSION_PERIODS
 from finance.metrics import PerformanceMetrics, PerformanceReport
@@ -670,82 +674,136 @@ def _plot_pareto(
     return plot
 
 
+_DEFAULT_PARETO_METRICS: list[str] = list(_METRIC_LABELS.keys())
+
+
 def plot_pareto(
     portfolios: dict[str, PerformanceMetrics],
-    metrics: list[str],
+    metrics: list[str] | None = None,
     output_path: Path | None = _FIGURES_DIR / "pareto_grid.png",
-) -> p9.ggplot:
-    """Grid of pairwise Pareto frontier plots for the requested metrics.
+) -> Figure:
+    """Lower-triangular grid of pairwise Pareto frontier plots.
 
-    Produces one panel per unique (x, y) metric pair (lower triangle of the
-    pairwise matrix) arranged in a grid that is as square as possible.
+    The grid has one row and one column per metric.  Cell (row, col) — where
+    row > col — shows the ``_plot_pareto()`` panel for
+    (col_metric, row_metric).  The diagonal and upper triangle are left blank.
+    Shared metric labels run along the bottom edge (x-axis) and left edge
+    (y-axis).  A single legend sits below the grid.
 
     Arguments:
         portfolios: Mapping of portfolio label → PerformanceMetrics.
         metrics: List of PerformanceMetrics field names to compare pairwise.
+            Defaults to all metrics in ``_METRIC_LABELS``.
         output_path: Destination PNG path, or None to skip saving.
 
     Returns:
-        A plotnine ggplot object with ``facet_wrap`` panels.
+        A matplotlib Figure containing the assembled panel grid.
 
     Raises:
         ValueError: If fewer than two metrics are supplied.
     """
+    if metrics is None:
+        metrics = _DEFAULT_PARETO_METRICS
     if len(metrics) < 2:
         raise ValueError("At least two metrics are required for a pairwise grid.")
 
-    pairs = [
-        (x_metric, y_metric)
-        for i, x_metric in enumerate(metrics)
-        for y_metric in metrics[i + 1:]
-    ]
+    n = len(metrics)
+    # Layout constants in inches.  n-1 active columns/rows (lower triangle).
+    cell = 3.0   # each subplot cell
+    ml = 1.4     # left margin (rotated row labels)
+    mb = 1.0     # bottom margin (col labels)
+    mt = 0.6     # top margin (title)
+    mr = 0.2     # right margin
+    lh = 1.2     # legend strip height at bottom
+    fs = 18      # shared label / legend font size
 
-    rows: list[dict] = []
-    frontier_rows: list[dict] = []
+    fig_w = ml + cell * (n - 1) + mr
+    fig_h = mt + cell * (n - 1) + mb + lh
+    fig = plt.figure(figsize=(fig_w, fig_h))
 
-    for x_metric, y_metric in pairs:
-        panel = f"{_METRIC_LABELS[x_metric]} vs {_METRIC_LABELS[y_metric]}"
-        for label, pm in portfolios.items():
-            rows.append({
-                "label": label,
-                "x": getattr(pm, x_metric),
-                "y": getattr(pm, y_metric),
-                "panel": panel,
-            })
-        sub = pd.DataFrame([
-            {"label": label, x_metric: getattr(pm, x_metric), y_metric: getattr(pm, y_metric)}
-            for label, pm in portfolios.items()
-        ])
-        frontier = _pareto_frontier(sub, x_metric, y_metric)
-        for _, frow in frontier.iterrows():
-            frontier_rows.append({"x": frow[x_metric], "y": frow[y_metric], "panel": panel})
+    legend_handles = _build_legend_handles(portfolios, fs)
 
-    data = pd.DataFrame(rows)
-    frontier_data = pd.DataFrame(frontier_rows)
+    for row in range(1, n):
+        for col in range(row):
+            ax = fig.add_axes([
+                (ml + col * cell) / fig_w,
+                (lh + mb + (n - 1 - row) * cell) / fig_h,
+                cell / fig_w,
+                cell / fig_h,
+            ])
+            panel = _plot_pareto(portfolios, (metrics[col], metrics[row]))
+            panel = panel + p9.theme(
+                legend_position="none",
+                axis_title_x=p9.element_blank(),
+                axis_title_y=p9.element_blank(),
+                axis_text=p9.element_text(size=18),
+                figure_size=(cell, cell),
+            )
+            buf = io.BytesIO()
+            panel.save(buf, format="png", verbose=False, dpi=130)
+            buf.seek(0)
+            ax.imshow(mpimg.imread(buf), aspect="auto")
+            ax.set_axis_off()
 
-    n_panels = len(pairs)
-    ncol = math.ceil(math.sqrt(n_panels))
-
-    plot = (
-        p9.ggplot(data, p9.aes(x="x", y="y", color="label"))
-        + p9.geom_point(size=2.5)
-        + p9.geom_line(
-            data=frontier_data,
-            mapping=p9.aes(x="x", y="y"),
-            linetype="dashed",
-            color="black",
-            inherit_aes=False,
-            size=0.5,
+    # Row labels - rotated, vertically centred on each cell row
+    for row in range(1, n):
+        y_mid = (lh + mb + (n - 1 - row) * cell + cell / 2) / fig_h
+        fig.text(
+            ml * 0.35 / fig_w, y_mid,
+            _METRIC_LABELS[metrics[row]],
+            va="center", ha="center", fontsize=fs, rotation=90,
         )
-        + p9.facet_wrap("panel", ncol=ncol, scales="free")
-        + p9.labs(x="", y="", color="Portfolio")
-        + p9.theme_grey()
-        + p9.theme(
-            figure_size=(4 * ncol, 4 * math.ceil(n_panels / ncol)),
-            legend_position="bottom",
+
+    # Column labels - horizontally centred beneath each cell column
+    for col in range(n - 1):
+        x_mid = (ml + col * cell + cell / 2) / fig_w
+        fig.text(
+            x_mid, (lh + mb * 0.35) / fig_h,
+            _METRIC_LABELS[metrics[col]],
+            va="center", ha="center", fontsize=fs,
         )
+
+    # Place legend in the empty upper-right corner (row 0, col n-3 onwards).
+    legend_x = (ml + (n - 3) * cell) / fig_w
+    legend_y = (lh + mb + cell * (n - 2) + cell * 0.9) / fig_h
+    fig.legend(
+        handles=legend_handles,
+        loc="upper left",
+        bbox_to_anchor=(legend_x, legend_y),
+        frameon=True,
+        fontsize=fs,
     )
 
+    fig.suptitle("Pairwise Pareto Frontier Grid", fontsize=fs + 4, y=0.99)
+
     if output_path is not None:
-        _save(plot, output_path)
-    return plot
+        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+        fig.savefig(str(output_path), dpi=150)
+
+    return fig
+
+
+def _build_legend_handles(
+    portfolios: dict[str, PerformanceMetrics],
+    fontsize: int,
+) -> list[mpatches.Patch]:
+    """Build legend Patch handles using mizani's hue palette.
+
+    Uses the same ``hue_pal`` that plotnine's ``scale_color_discrete`` applies,
+    so colours match the dots in every panel exactly.
+
+    Arguments:
+        portfolios: Mapping of portfolio label → PerformanceMetrics.
+        fontsize: Font size passed through (unused here, kept for call-site symmetry).
+
+    Returns:
+        List of Patch objects suitable for ``fig.legend()``.
+    """
+    from mizani.palettes import hue_pal
+
+    labels = list(portfolios.keys())
+    colours = hue_pal()(len(labels))
+    return [
+        mpatches.Patch(color=colour, label=label)
+        for label, colour in zip(labels, colours, strict=True)
+    ]
