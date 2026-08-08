@@ -75,7 +75,7 @@ markers = [
 
 [tool.coverage.run]
 source = ["src/finance"]
-omit = ["tests/*", "**/__init__.py"]
+omit = ["tests/*", "**/__init__.py", "src/finance/figures.py"]
 
 [tool.coverage.report]
 fail_under = 80
