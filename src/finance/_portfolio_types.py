@@ -302,6 +302,14 @@ class PortfolioState:
         leaps_scale: Surviving fraction per contract in (0, 1].
         all_window_ledgers: Immutable accumulator of per-Long-window ledgers.
         all_gtt_closes: Immutable accumulator of GTT force-close events.
+        hurdle_contributed: Running Rf-compounded contribution denominator for m(t).
+            Initialized to config.initial_nav in _build_initial_state. Updated monthly
+            when glide_path_config is active: new = old * (1+rfr)^(1/12) + contribution.
+            Unchanged when glide_path_config is None.
+        dynamic_target_weights: Current glide-path target weight vector, indexed by
+            ticker. None when glide_path_config is None. When active, initialized to
+            config.target_weights at m=1.0 and updated monthly to
+            compute_glide_target_weights(m). Replaces ctx.w in DRIFT rebalancing.
     """
 
     holdings: dict[str, float]
@@ -315,6 +323,8 @@ class PortfolioState:
     leaps_scale: dict[LeapsContract, float]
     all_window_ledgers: tuple[LeapsLedger, ...]
     all_gtt_closes: tuple[LeapsGttCloseEvent, ...]
+    hurdle_contributed: float = 0.0
+    dynamic_target_weights: pd.Series | None = None
 
 
 @dataclass(frozen=True)

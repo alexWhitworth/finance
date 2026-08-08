@@ -532,6 +532,12 @@ def _build_initial_state(ctx: BacktestContext) -> PortfolioState:
     }
     leaps_scale: dict[LeapsContract, float] = {}
 
+    gp = ctx.config.glide_path_config
+    hurdle_contributed = ctx.config.initial_nav
+    dynamic_target_weights: pd.Series | None = None
+    if gp is not None:
+        dynamic_target_weights = compute_glide_target_weights(1.0, ctx.config, gp)
+
     return PortfolioState(
         holdings=holdings,
         defensive_sleeve=0.0,
@@ -544,6 +550,8 @@ def _build_initial_state(ctx: BacktestContext) -> PortfolioState:
         leaps_scale=leaps_scale,
         all_window_ledgers=all_window_ledgers,
         all_gtt_closes=(),
+        hurdle_contributed=hurdle_contributed,
+        dynamic_target_weights=dynamic_target_weights,
     )
 
 

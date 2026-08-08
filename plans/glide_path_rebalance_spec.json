@@ -423,7 +423,7 @@
       "description": "Add two fields to the frozen PortfolioState dataclass in _portfolio_types.py: hurdle_contributed: float (initialized to config.initial_nav in _build_initial_state); dynamic_target_weights: pd.Series | None (initialized to None when glide_path_config is None; initialized to compute_glide_target_weights(m=1.0, ...) when glide_path_config is present — equals config.target_weights at m=1.0, no day-1 disruption). Both fields carried forward via dataclasses.replace. When glide_path_config is None, hurdle_contributed is initialized to initial_nav and never modified.",
       "phase": "2",
       "priority": 1,
-      "status": "not_started",
+      "status": "pending_judge",
       "layer": "python",
       "dependencies": ["F-GP-01", "F-GP-03"],
       "linked_schemas": ["S-GP-PORTFOLIO-STATE"],
