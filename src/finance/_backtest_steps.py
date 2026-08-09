@@ -1107,7 +1107,9 @@ def _apply_gtt_reentry(
     window. Step order is load-bearing:
 
     1. Compute total NAV (holdings + sleeve + pool).
-    2. Allocate base holdings at (1 - leaps_fraction) * total * base_target_w.
+    2. Allocate base holdings (including VTI when glide path is active) and seed
+       LEAPS capital at current dynamic weights when glide_path_config is present;
+       otherwise allocate at the fixed (1 - leaps_fraction) * base_target_w split.
     3. Zero defensive_sleeve and leaps_pool.
     4. If LEAPS active: run fresh simulation for new Long window; price creation
        contracts at creation IV = max(raw_vix_value, ctx.iv) — NOT smoothed MTM IV
@@ -1126,14 +1128,26 @@ def _apply_gtt_reentry(
 
     Notes:
         Invariant A2: sum(new_holdings.values()) + new_leaps_value == total within 1e-9.
-        Invariant A4: new_leaps_value == total * ctx.leaps_fraction within 1e-6.
+        Invariant A4 (non-glide-path): new_leaps_value == total * ctx.leaps_fraction within 1e-6.
+        Invariant A4 (glide-path): new_leaps_value == dynamic_targets[leaps_key] * total within 1e-6.
     """
     if not (ctx.gtt_active and state.prev_regime == 0 and inputs.regime_t == 1):
         return state
 
     total = sum(state.holdings.values()) + state.defensive_sleeve + state.leaps_pool
-    base_total = total * (1.0 - ctx.leaps_fraction)
-    new_holdings = {a: base_total * float(ctx.base_target_w[a]) for a in ctx.base_assets}
+
+    # F-GP-08: when glide path is active, allocate all assets at current dynamic targets.
+    gp = ctx.config.glide_path_config
+    if gp is not None:
+        m_current = total / state.hurdle_contributed
+        dynamic_targets = compute_glide_target_weights(m_current, ctx.config, gp)
+        new_holdings = {a: float(dynamic_targets[a]) * total for a in ctx.base_assets}
+        leaps_seed = float(sum(dynamic_targets[k] for k in ctx.leaps_keys)) * total
+    else:
+        base_total = total * (1.0 - ctx.leaps_fraction)
+        new_holdings = {a: base_total * float(ctx.base_target_w[a]) for a in ctx.base_assets}
+        leaps_seed = total * ctx.leaps_fraction
+
     new_sleeve = 0.0
     new_pool = 0.0
     new_leaps_value = 0.0
@@ -1152,7 +1166,7 @@ def _apply_gtt_reentry(
             ctx.config.leaps_config,
             risk_free_series=ctx.return_data.risk_free_rate,
             iv_series=ctx.raw_vix,
-            initial_capital=total * ctx.leaps_fraction,
+            initial_capital=leaps_seed,
         )
         new_window_ledgers = (*state.all_window_ledgers, new_ledger)
 

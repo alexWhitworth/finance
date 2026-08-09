@@ -78,7 +78,7 @@ uv run ruff check src/ tests/  # lint
 uv run mypy src/               # type-check
 ```
 
-- **696 tests · 98.5% line coverage · ruff clean · mypy strict clean**
+- **711 tests · 98.5% line coverage · ruff clean · mypy strict clean**
 - **Note:** No `mutmut` or `hypothesis` tests. Contributions welcomed!
 
 ## Usage
@@ -113,10 +113,10 @@ uv run examples/basic_backtest.py 2>&1 | tee basic_backtest.log
 
 uv run examples/basic_backtest.py           # full backtest + performance table + NAV chart
 uv run examples/basic_gtt.py                # GTT signal vs. buy-and-hold comparison
-uv run examples/leaps_drift.py              # LEAPS overlay, taxable vs. tax-sheltered
+uv run examples/leaps_tax.py.               # LEAPS overlay, taxable vs. tax-sheltered
 uv run examples/volatility_report.py        # vol contribution table + forward vol forecast
 uv run examples/crisis_analysis.py          # GFC / COVID / 2022 per-period metrics
-uv run examples/gtt_leaps.py                # GTT Leaps vs non-GTT Leaps
+uv run examples/gtt_leaps.py                # GTT with Leaps. All rebalance rules
 uv run examples/portfolio_opt.py            # Optimization across multiple portfolio choices
 
 ```
