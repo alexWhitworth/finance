@@ -1067,6 +1067,12 @@ def _apply_rebalance(
                         for a in ctx.base_assets:
                             holdings[a] += net_proceeds * base_target_norm.get(a, 0.0)
                     leaps_value = target_leaps_now
+                elif leaps_value < target_leaps_now and state.dynamic_target_weights is not None:
+                    shortage = target_leaps_now - leaps_value
+                    if ctx.base_assets:
+                        for a in ctx.base_assets:
+                            holdings[a] -= shortage * base_target_norm.get(a, 0.0)
+                    leaps_value = target_leaps_now
 
     if (
         holdings == state.holdings
