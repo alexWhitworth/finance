@@ -900,11 +900,17 @@ def _apply_contribution(
     ctx.leaps_monthly is added to leaps_pool whenever ctx.use_leaps is True,
     regardless of regime (Bug 3 fix — old guard was gtt_active and regime_t==0).
 
+    When glide_path_config is present (on month-end only): atomically updates
+    hurdle_contributed = old * (1+rfr)^(1/12) + monthly_contribution and
+    dynamic_target_weights = compute_glide_target_weights(m, config, gp),
+    where m = nav_before / new_hurdle. Both fields updated in a single
+    dataclasses.replace call — no intermediate inconsistent state.
+
     Arguments:
         state: Current PortfolioState before contribution.
         inputs: DayInputs for the current trading day.
         ctx: BacktestContext with contribution amounts, weights, and GTT flags.
-        nav_before: NAV computed before this contribution step.
+        nav_before: Pre-contribution NAV; used as total_nav when computing m(t).
 
     Returns:
         Updated PortfolioState, or state unchanged on non-month-end days.
@@ -913,7 +919,29 @@ def _apply_contribution(
         Accounting invariant (Long month-end):
         sum(new.holdings.values()) == sum(old.holdings.values()) + ctx.base_contribution
     """
-    if not inputs.is_month_end or not ctx.base_assets:
+    if not inputs.is_month_end:
+        return state
+
+    gp = ctx.config.glide_path_config
+
+    # Glide-path: atomic hurdle + dynamic target update on every month-end.
+    new_hurdle = state.hurdle_contributed
+    new_dynamic_targets = state.dynamic_target_weights
+    if gp is not None:
+        new_hurdle = (
+            state.hurdle_contributed * (1.0 + inputs.rfr) ** (1.0 / 12)
+            + ctx.config.monthly_contribution
+        )
+        m = nav_before / new_hurdle if new_hurdle > 0.0 else 1.0
+        new_dynamic_targets = compute_glide_target_weights(m, ctx.config, gp)
+
+    if not ctx.base_assets:
+        if gp is not None:
+            return replace(
+                state,
+                hurdle_contributed=new_hurdle,
+                dynamic_target_weights=new_dynamic_targets,
+            )
         return state
 
     alloc = {
@@ -947,6 +975,8 @@ def _apply_contribution(
         defensive_sleeve=new_sleeve,
         leaps_pool=new_pool,
         leaps_value=new_leaps_value,
+        hurdle_contributed=new_hurdle,
+        dynamic_target_weights=new_dynamic_targets,
     )
 
 
@@ -992,6 +1022,12 @@ def _apply_rebalance(
                 holdings[k] = 0.0
 
     if ctx.config.rebalance_rule == RebalanceRule.DRIFT and inputs.is_month_end:
+        # F-GP-07: use dynamic_target_weights when glide path is active.
+        target_w = (
+            state.dynamic_target_weights
+            if state.dynamic_target_weights is not None
+            else ctx.w
+        )
         base_val = sum(holdings.values())
         total_val = base_val + leaps_value
         if total_val > 0.0:
@@ -1002,9 +1038,26 @@ def _apply_rebalance(
                 share = float(ctx.w[k]) / ctx.leaps_fraction if ctx.leaps_fraction > 0 else 0.0
                 weights_now[k] = leaps_value * share / total_val
             current_weights = pd.Series(weights_now)
-            if _should_rebalance(current_weights, ctx.w, RebalanceRule.DRIFT):
-                holdings = {a: base_val * float(ctx.base_target_w[a]) for a in ctx.base_assets}
-                target_leaps_now = total_val * ctx.leaps_fraction
+            if _should_rebalance(current_weights, target_w, RebalanceRule.DRIFT):
+                # Recompute base target weights from target_w for redistribution.
+                base_target_from_target_w = {
+                    a: float(target_w[a])
+                    for a in ctx.base_assets
+                    if a in target_w.index
+                }
+                base_target_sum = sum(base_target_from_target_w.values())
+                if base_target_sum > 0:
+                    base_target_norm = {
+                        a: v / base_target_sum for a, v in base_target_from_target_w.items()
+                    }
+                else:
+                    base_target_norm = {a: float(ctx.base_target_w[a]) for a in ctx.base_assets}
+                holdings = {a: base_val * base_target_norm.get(a, 0.0) for a in ctx.base_assets}
+                # LEAPS fraction from target_w (supports glide-path decay).
+                target_leaps_fraction = sum(
+                    float(target_w[k]) for k in ctx.leaps_keys if k in target_w.index
+                )
+                target_leaps_now = total_val * target_leaps_fraction
                 if leaps_value > target_leaps_now and leaps_value > 0:
                     close_scale = target_leaps_now / leaps_value
                     net_proceeds = leaps_value - target_leaps_now
@@ -1012,7 +1065,7 @@ def _apply_rebalance(
                         leaps_scale[c] = leaps_scale.get(c, 1.0) * close_scale
                     if ctx.base_assets:
                         for a in ctx.base_assets:
-                            holdings[a] += net_proceeds * float(ctx.base_target_w[a])
+                            holdings[a] += net_proceeds * base_target_norm.get(a, 0.0)
                     leaps_value = target_leaps_now
 
     if (
