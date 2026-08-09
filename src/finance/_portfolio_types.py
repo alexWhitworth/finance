@@ -171,6 +171,12 @@ class PortfolioConfig:
                 raise ValueError(
                     "glide_path_config requires 'VTI' in target_weights with value 0.0"
                 )
+            vti_val = self.target_weights["VTI"]
+            if abs(vti_val) > 1e-9:
+                raise ValueError(
+                    f"glide_path_config requires 'VTI' in target_weights with value 0.0; "
+                    f"got {vti_val}"
+                )
             leaps_fraction = sum(
                 v
                 for k, v in self.target_weights.items()

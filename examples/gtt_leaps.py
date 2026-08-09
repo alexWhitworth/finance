@@ -33,12 +33,12 @@ load_dotenv()
 
 WEIGHTS = {
     "VTI": 0.0,
-    "VXUS": 0.15,
+    "VTI_LEAPS": 0.4,
+    "VXUS": 0.2,
     "GLD": 0.10,
     "MUB": 0.10,
-    "KMLM": 0.15,
+    "KMLM": 0.10,
     "VGIT": 0.10,
-    "VTI_LEAPS": 0.4,
 }
 
 DEFENSIVE_WEIGHTS = {

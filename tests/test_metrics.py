@@ -651,3 +651,36 @@ def test_build_performance_report_tax_summary_populated_with_leaps() -> None:
     assert report.tax_summary is not None
     assert isinstance(report.tax_summary.n_rolls, int)
     assert report.tax_summary.total_tax >= 0.0
+
+
+def test_build_performance_report_leaps_key_in_vol_table() -> None:
+    """VTI_LEAPS weight is preserved in the vol contribution table (not stripped)."""
+    rng = np.random.default_rng(77)
+    n = 504
+    idx = _bdate_range(n)
+    leaps_weights = {"VTI_LEAPS": 0.4, "VXUS": 0.35, "GLD": 0.25}
+    port_returns = pd.Series(rng.normal(0.0004, 0.01, n), index=idx)
+    nav = _nav_from_returns(port_returns)
+    weights_df = pd.DataFrame({t: 1.0 / 3 for t in ("VTI", "VXUS", "GLD")}, index=idx)
+    config = PortfolioConfig(
+        target_weights=leaps_weights,
+        initial_nav=1_000_000.0,
+        monthly_contribution=0.0,
+        rebalance_rule=RebalanceRule.QUARTERLY,
+        weight_strategy=WeightStrategy.USER_SPECIFIED,
+    )
+    br = BacktestResult(
+        nav_series=nav,
+        weight_history=weights_df,
+        return_series=port_returns,
+        leaps_ledger=None,
+        config=config,
+    )
+    pd_obj = _make_price_data(n + 1)
+    rd = _make_return_data(n)
+    vm = build_volatility_model(rd)
+    report = build_performance_report(br, pd_obj, rd, vm)
+    assert "VTI_LEAPS" in report.vol_contribution_table.index
+    assert "VXUS" in report.vol_contribution_table.index
+    assert "GLD" in report.vol_contribution_table.index
+    assert abs(report.vol_contribution_table["contrib"].sum() - 1.0) < 1e-6

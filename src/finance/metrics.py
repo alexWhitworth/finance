@@ -13,7 +13,6 @@ from scipy import stats as scipy_stats
 from finance._portfolio_types import BacktestResult
 from finance.consts import (
     CRISIS_PERIODS,
-    LEAPS_KEY_SUFFIX,
     MIN_CRISIS_OBSERVATIONS,
     TRADING_DAYS_PER_YEAR,
 )
@@ -368,7 +367,6 @@ def build_performance_report(
         )
 
     weights = pd.Series(backtest_result.config.target_weights)
-    weights = weights[~weights.index.str.endswith(LEAPS_KEY_SUFFIX)]
     weights = weights / weights.sum()
     vol_table = build_vol_contribution_table(weights, return_data, vol_model)
     fwd_vol = forecast_portfolio_vol(weights, vol_model)

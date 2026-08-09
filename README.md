@@ -48,8 +48,12 @@ hike)
 - **TEY adjustment:** muni returns scaled to tax-equivalent yield at 40.8% NIIT
 - **LEAPS leverage:** DITM VTI LEAPS (50% strike, Black-Scholes pricing), with tax-aware biannual
 roll with LTCG preservation, and taxable vs. tax-sheltered scenarios
-- **Rebalancing** — Quarterly to user-specified weights or monthly threshold-drift (extensible to
-risk parity)
+- **Rebalancing** — Three options currently supported (extensible to risk parity):
+    1. Quarterly: to exact user-specified weights
+    2. Monthly: allowing threshold-drift vs user-specified weights
+    3. Glide-path: deleverage the portfolio overtime, using exponential decay proportional to
+    wealth accumulation over time. (_see [glide_path_rebalance](./plans/glide_path_rebalance_spec.json)
+    for details_)
 - **Portfolio Volatility Forecasting/Attribution:** EWMA vol (λ=0.95), 36-month rolling weekly
 correlations, per-asset contribution table summing to 1
 - **Asset Splicing** - For commonly used ETFs (eg VTI, MUB), automatic splicing the the oldest 
@@ -74,7 +78,7 @@ uv run ruff check src/ tests/  # lint
 uv run mypy src/               # type-check
 ```
 
-- **598 tests · 97.66% line coverage · ruff clean · mypy strict clean**
+- **696 tests · 98.5% line coverage · ruff clean · mypy strict clean**
 - **Note:** No `mutmut` or `hypothesis` tests. Contributions welcomed!
 
 ## Usage

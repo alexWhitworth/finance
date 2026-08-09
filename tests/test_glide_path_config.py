@@ -207,3 +207,18 @@ def test_portfolio_config_glide_path_leaps_fraction_zero_raises() -> None:
     }
     with pytest.raises(ValueError, match="floor"):
         _make_config(weights=weights_no_leaps)
+
+
+def test_portfolio_config_glide_path_vti_nonzero_raises() -> None:
+    """VTI present but value != 0.0 raises ValueError."""
+    weights = {
+        "VTI": 0.10,
+        "VTI_LEAPS": 0.40,
+        "VXUS": 0.20,
+        "GLD": 0.10,
+        "MUB": 0.10,
+        "KMLM": 0.05,
+        "VGIT": 0.05,
+    }
+    with pytest.raises(ValueError, match="value 0.0"):
+        _make_config(weights=weights)

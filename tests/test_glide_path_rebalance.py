@@ -309,17 +309,26 @@ def test_leaps_topped_up_when_below_dynamic_target() -> None:
     inputs = _month_end_day(dates[0])
     new_state = _apply_rebalance(state_low, inputs, ctx)
 
-    # Two-sided: leaps_value should be topped up toward the target
-    # When LEAPS is below target, capital moves FROM base holdings TO leaps.
-    # The new holdings total should be less than before (capital redirected).
+    # Two-sided: leaps_value must be topped up toward the target (the critical assertion).
+    target_leaps_val = total * leaps_target_frac
+    np.testing.assert_allclose(
+        new_state.leaps_value,
+        target_leaps_val,
+        atol=1e-6,
+        err_msg=f"LEAPS not topped up: before={leaps_val_low:.2f}, after={new_state.leaps_value:.2f}, target={target_leaps_val:.2f}",
+    )
+    assert new_state.leaps_value > leaps_val_low, (
+        f"Expected LEAPS top-up; got leaps_value={new_state.leaps_value:.2f} not > {leaps_val_low:.2f}"
+    )
+
+    # Base holdings must have shrunk (capital redirected to LEAPS top-up).
     new_total_holdings = sum(new_state.holdings.values())
     old_total_holdings = sum(state_low.holdings.values())
-    # Base shrinks when LEAPS is below target and capital is reallocated
-    # (holdings are reset to base_val * base_target_norm in the rebalance path)
-    assert new_total_holdings <= old_total_holdings + 1e-6, (
-        f"Expected base holdings to not increase beyond old; got {new_total_holdings:.2f}"
+    assert new_total_holdings < old_total_holdings - 1e-6, (
+        f"Expected base holdings to shrink; got {new_total_holdings:.2f} vs {old_total_holdings:.2f}"
     )
-    # NAV must be conserved
+
+    # NAV must be conserved.
     old_nav = old_total_holdings + leaps_val_low
     new_nav = new_total_holdings + new_state.leaps_value
     np.testing.assert_allclose(new_nav, old_nav, atol=1e-6)
