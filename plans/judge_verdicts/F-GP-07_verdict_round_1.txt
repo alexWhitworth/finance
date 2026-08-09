@@ -1,0 +1,126 @@
+================================================================================
+JUDGE VERDICT — F-GP-07
+Feature: _apply_rebalance dynamic target_w source for DRIFT + glide path
+Round: 1
+Date: 2026-08-09
+Reviewer: Judge Agent (light/mid-weight; no mutmut/hypothesis)
+================================================================================
+
+VERDICT: FAIL
+
+--------------------------------------------------------------------------------
+SCORECARD
+--------------------------------------------------------------------------------
+Acceptance Criteria:
+  [MET]       _should_rebalance called with dynamic_target_weights when gp active
+  [MET]       Fallback to ctx.w when gp=None (no regression)
+  [MET]       NAV conserved within 1e-6 across DRIFT rebalance
+  [UNMET]     LEAPS topped up (not just trimmed) when below dynamic target
+  [MET]       Existing DRIFT/QUARTERLY suite passes without modification
+
+Test Coverage: 98% (_backtest_steps.py); 99% total suite
+Tests Passing: 695/695
+Mutation Testing: Not run (per scope)
+
+--------------------------------------------------------------------------------
+FINDINGS
+--------------------------------------------------------------------------------
+
+[BLOCKING] Acceptance criterion "LEAPS topped up" is unmet — one-sided
+  implementation
+  File: src/finance/_backtest_steps.py, lines 1061-1069
+
+  The spec states:
+    "LEAPS is topped up (not just trimmed) when its weight is below dynamic
+    target by more than drift band — two-sided behavior confirmed."
+
+  The production code at line 1061:
+      if leaps_value > target_leaps_now and leaps_value > 0:
+          ...
+          leaps_value = target_leaps_now
+
+  This branch fires ONLY when leaps_value > target_leaps_now (LEAPS overweight).
+  There is no code path that increases leaps_value when it is below target.
+  When leaps_value < target_leaps_now the `if` condition is False and execution
+  falls through with leaps_value unchanged.
+
+  Confirmed at runtime:
+      leaps_before=18000.00  leaps_target=40000.00  leaps_after=18000.00
+      topped_up=False
+
+  The spec's "De-levering effect comes entirely from the monthly target update"
+  describes WHY the LEAPS weight falls over time — not an excuse for asymmetric
+  rebalancing. The DRIFT check (_should_rebalance) already fires correctly when
+  LEAPS is below target by more than the drift band, but the redistribution step
+  that follows does nothing to top it up.
+
+  Fix: After line 1055 (holdings redistribution), add a top-up branch:
+      elif leaps_value < target_leaps_now:
+          # LEAPS underweight: redirect capital from base holdings to LEAPS
+          shortage = target_leaps_now - leaps_value
+          for a in ctx.base_assets:
+              holdings[a] -= shortage * base_target_norm.get(a, 0.0)
+          leaps_value = target_leaps_now
+
+  (Proceeds come from base holdings proportionally; leaps_scale is untouched
+  because no contract is being partially closed.)
+
+[BLOCKING] Acceptance criterion masked by vacuous test
+  File: tests/test_glide_path_rebalance.py, lines 292-325
+  (test_leaps_topped_up_when_below_dynamic_target)
+
+  This test name promises "topped up" but its assertions are:
+    1. assert new_total_holdings <= old_total_holdings + 1e-6
+    2. np.testing.assert_allclose(new_nav, old_nav, atol=1e-6)
+
+  Neither assertion checks whether new_state.leaps_value > leaps_val_low.
+  Because the production code is a no-op for the underweight case, both
+  assertions pass vacuously: holdings are unchanged, NAV is unchanged, and
+  no assertion fails. The test gives a false green signal for unimplemented
+  behavior.
+
+  Fix: The test must assert `new_state.leaps_value > leaps_val_low` (or
+  assert allclose to `target_leaps_now`) for it to be meaningful. Once the
+  top-up branch is implemented, this test should also assert that base holdings
+  decreased by the shortage amount.
+
+[ADVISORY] LEAPS share for current_weights uses ctx.w (original weights) rather
+  than target_w
+  File: src/finance/_backtest_steps.py, lines 1037-1039
+
+  When computing current_weights for _should_rebalance, the LEAPS share is
+  computed as:
+      share = float(ctx.w[k]) / ctx.leaps_fraction if ctx.leaps_fraction > 0 else 0.0
+      weights_now[k] = leaps_value * share / total_val
+
+  This uses ctx.w[k] / ctx.leaps_fraction (original proportions) rather than
+  target_w[k] / target_leaps_fraction (dynamic proportions). For a single LEAPS
+  key (VTI_LEAPS) this produces the same result since there is only one contract.
+  For a multi-LEAPS key portfolio this would compute incorrect per-key weights.
+  Low risk with the current single-underlying constraint, but worth noting for
+  future extension.
+
+--------------------------------------------------------------------------------
+REQUIRED ACTIONS
+--------------------------------------------------------------------------------
+1. [ACTOR — BLOCKING] Implement the LEAPS top-up branch in _apply_rebalance
+   for the case leaps_value < target_leaps_now. Capital should come from base
+   holdings proportionally (base_target_norm). See fix guidance above.
+
+2. [ACTOR — BLOCKING] Fix test_leaps_topped_up_when_below_dynamic_target to
+   assert new_state.leaps_value >= leaps_val_low * (1 + DRIFT_BAND_RELATIVE)
+   (or assert_allclose to target_leaps_now). The test must fail before the fix
+   and pass after.
+
+3. [ACTOR — ADVISORY] Consider deleting test_hurdle_matches_analytic_single_step
+   (found blocking in F-GP-06 verdict) when revisiting the contribution tests.
+
+--------------------------------------------------------------------------------
+NOTES
+--------------------------------------------------------------------------------
+- _should_rebalance correctly uses target_w (F-GP-07 first acceptance criterion
+  verified by test_drift_uses_dynamic_target_when_glide_path_active).
+- ctx.w fallback when dynamic_target_weights is None confirmed (second criterion).
+- NAV conservation for the LEAPS-trim path is correct and tested.
+- No FFI. Python-only feature.
+================================================================================
