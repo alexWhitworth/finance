@@ -12,6 +12,9 @@ import pandas as pd
 from finance.consts import (
     COV_RIDGE,
     EWMA_LAMBDA,
+    LEAPS_DELTA_APPROX,
+    LEAPS_KEY_SUFFIX,
+    LEAPS_STRIKE_RATIO,
     ROLLING_CORR_WINDOW_WEEKS,
     TRADING_DAYS_PER_YEAR,
     VOL_INDEX_TICKERS,
@@ -250,6 +253,30 @@ def build_volatility_model(
     )
 
 
+def _underlying(ticker: str) -> str:
+    """Return the base ticker, stripping the LEAPS suffix if present."""
+    return ticker.removesuffix(LEAPS_KEY_SUFFIX) if ticker.endswith(LEAPS_KEY_SUFFIX) else ticker
+
+
+def _delta_adjust_weights(weights: pd.Series) -> pd.Series:
+    """Convert capital weights to delta-adjusted equity-equivalent weights.
+
+    LEAPS positions are leveraged: each unit of capital controls 1/strike_ratio
+    shares, each with delta LEAPS_DELTA_APPROX. Non-LEAPS weights are unchanged.
+
+    Arguments:
+        weights: Capital weights (sum = 1.0, LEAPS keys end in LEAPS_KEY_SUFFIX).
+
+    Returns:
+        Series of delta-adjusted weights (may sum > 1 when LEAPS are present).
+    """
+    leverage = 1.0 / LEAPS_STRIKE_RATIO  # shares controlled per $ of capital
+    adjusted = weights.copy()
+    leaps_mask = weights.index.str.endswith(LEAPS_KEY_SUFFIX)
+    adjusted[leaps_mask] = weights[leaps_mask] * leverage * LEAPS_DELTA_APPROX
+    return adjusted
+
+
 def build_vol_contribution_table(
     weights: pd.Series,
     return_data: ReturnData,
@@ -276,24 +303,37 @@ def build_vol_contribution_table(
     assets = weights.index.tolist()
     returns = return_data.returns
 
+    delta_weights = _delta_adjust_weights(weights)
+
     realized_vol_series = {
-        a: compute_realized_vol(returns[a]).iloc[-1] for a in assets
+        a: compute_realized_vol(returns[_underlying(a)]).iloc[-1] for a in assets
     }
-    contributions = compute_vol_contributions(weights, vol_model.cov_matrix)
+
+    # Resolve LEAPS keys to their underlying with delta-adjusted weights, normalize for contributions.
+    resolved = delta_weights.copy()
+    resolved.index = pd.Index([_underlying(a) for a in assets])
+    resolved = resolved.groupby(level=0).sum()
+    resolved_normed = resolved / resolved.sum()
+    contributions_resolved = compute_vol_contributions(resolved_normed, vol_model.cov_matrix)
+    contributions = pd.Series(
+        {a: float(contributions_resolved[_underlying(a)]) for a in assets},
+    )
 
     rho_vti: dict[str, float] = {}
     if "VTI" in vol_model.rolling_corr.columns:
         for a in assets:
-            if a in vol_model.rolling_corr.index:
-                rho_vti[a] = float(vol_model.rolling_corr.loc[a, "VTI"])
-            else:
-                rho_vti[a] = float("nan")
+            u = _underlying(a)
+            rho_vti[a] = (
+                float(vol_model.rolling_corr.loc[u, "VTI"])
+                if u in vol_model.rolling_corr.index
+                else float("nan")
+            )
     else:
         rho_vti = {a: float("nan") for a in assets}
 
     rows = {
         "sigma_tilde": pd.Series(realized_vol_series),
-        "sigma_hat": vol_model.ewma_vols[assets],
+        "sigma_hat": pd.Series({a: float(vol_model.ewma_vols[_underlying(a)]) for a in assets}),
         "rho_VTI": pd.Series(rho_vti),
         "contrib": contributions,
     }
@@ -313,8 +353,12 @@ def forecast_portfolio_vol(
     Returns:
         Annualized portfolio volatility sigma_hat_p = sqrt(w^T Sigma_hat w).
     """
-    assets = weights.index.tolist()
-    w = weights[assets].values.astype(float)
+    delta_w = _delta_adjust_weights(weights)
+    resolved = delta_w.copy()
+    resolved.index = pd.Index([_underlying(a) for a in weights.index])
+    resolved = resolved.groupby(level=0).sum()
+    assets = resolved.index.tolist()
+    w = resolved.values.astype(float)
     sigma = vol_model.cov_matrix.loc[assets, assets].values.astype(float)
     port_var = float(w @ sigma @ w)
     return float(np.sqrt(max(port_var, 0.0)))

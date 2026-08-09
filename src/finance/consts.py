@@ -58,6 +58,7 @@ TRADING_DAYS_PER_YEAR: int = 252
 COV_RIDGE: float = 1e-8  # added to diagonal to guarantee positive definiteness
 
 LEAPS_STRIKE_RATIO: float = 0.50
+LEAPS_DELTA_APPROX: float = 0.95  # deep-ITM approximation for delta-adjusted exposure
 DEFAULT_IV: float = 0.18
 LTCG_RATE: float = 0.238
 MIN_HOLD_DAYS: int = 366  # hold at least 1 year + 1 day for LTCG treatment

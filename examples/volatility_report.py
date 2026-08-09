@@ -13,7 +13,7 @@ import pandas as pd
 from finance._portfolio_types import PortfolioConfig
 from finance.data import build_price_data, fetch_risk_free_rate
 from finance.figures import plot_vol_contributions
-from finance.leverage import RebalanceRule, WeightStrategy
+from finance.leverage import RebalanceRule, WeightStrategy, AccountType, LeapsConfig
 from finance.metrics import build_performance_report
 from finance.portfolio import run_backtest
 from finance.returns import build_return_data
@@ -25,12 +25,12 @@ from finance.volatility import (
 
 WEIGHTS = pd.Series(
     {
-        "VTI": 0.40,
-        "VXUS": 0.20,
+        "VTI_LEAPS": 0.4,
+        "VXUS": 0.25,
         "GLD": 0.10,
         "MUB": 0.10,
         "KMLM": 0.10,
-        "VGIT": 0.10,
+        "VGIT": 0.05,
     }
 )
 
@@ -84,7 +84,11 @@ if __name__ == "__main__":
         monthly_contribution=0.0,
         rebalance_rule=RebalanceRule.QUARTERLY,
         weight_strategy=WeightStrategy.USER_SPECIFIED,
-        leaps_config=None,
+        leaps_config=LeapsConfig(
+            iv=0.1,
+            ltcg_rate=0.238,
+            account_type=AccountType.TAX_SHELTERED,
+        ),
     )
     result = run_backtest(return_data, price_data, config)
     report = build_performance_report(result, price_data, return_data, vol_model)
