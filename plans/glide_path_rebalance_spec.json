@@ -676,7 +676,7 @@
       "description": "Modify _apply_gtt_reentry to use compute_glide_target_weights when glide_path_config is present. At a Defensive->Long GTT transition: (1) compute m_current = total / state.hurdle_contributed; (2) dynamic_targets = compute_glide_target_weights(m_current, config, glide_path_config); (3) seed LEAPS with dynamic_targets[leaps_key] * total; (4) allocate each base asset (including VTI) at dynamic_targets[a] * total. VTI receives its current dynamic target allocation from total NAV — treated identically to any other base asset. Non-glide-path and non-GTT paths unchanged.",
       "phase": "4",
       "priority": 2,
-      "status": "not_started",
+      "status": "complete",
       "layer": "python",
       "dependencies": ["F-GP-03", "F-GP-06"],
       "linked_schemas": ["S-GP-PORTFOLIO-STATE"],
