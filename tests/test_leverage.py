@@ -1496,6 +1496,30 @@ def test_bs_charm_boundary_above_floor() -> None:
     assert math.isfinite(ch)
 
 
+def test_bs_charm_with_dividend_yield_finite_difference() -> None:
+    """Charm with dividend_yield=DEFAULT_DIVIDEND_YIELD matches FD of delta w.r.t. time.
+
+    Verifies the q*exp(-qT)*N(d1) term that is hidden when q=0. Uses central
+    finite differences on bs_call_delta to confirm dDelta/dt within 1e-7/day.
+    """
+    from finance.leverage import DEFAULT_DIVIDEND_YIELD
+
+    S, K, iv, r, q = 100.0, 100.0, 0.20, 0.03, DEFAULT_DIVIDEND_YIELD
+    eps = 1e-5  # years; small enough for accuracy, large enough to avoid float noise
+
+    for T in [0.25, 0.5, 1.0, 2.0]:
+        charm_analytic = bs_call_charm(S, K, T, iv, risk_free_rate=r, dividend_yield=q)
+        # charm = dDelta/dt = -dDelta/dT (since T_remaining decreases as calendar time grows)
+        fd_dDelta_dT = (
+            bs_call_delta(S, K, T + eps, iv, r, q) - bs_call_delta(S, K, T - eps, iv, r, q)
+        ) / (2.0 * eps)
+        fd_charm_per_day = -fd_dDelta_dT / 365.0
+        assert abs(charm_analytic - fd_charm_per_day) < 1e-7, (
+            f"T={T}: analytic={charm_analytic:.10f} FD={fd_charm_per_day:.10f} "
+            f"err={abs(charm_analytic - fd_charm_per_day):.2e}"
+        )
+
+
 @given(
     spot=st.floats(min_value=10.0, max_value=500.0, allow_nan=False, allow_infinity=False),
     strike=st.floats(min_value=10.0, max_value=500.0, allow_nan=False, allow_infinity=False),

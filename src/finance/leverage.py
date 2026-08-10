@@ -499,8 +499,9 @@ def bs_call_charm(
     Charm measures the rate of change of delta with respect to time (dDelta/dt).
     Negative values mean delta erodes as time passes.
 
-    charm_annual = -e^{-qT} * N'(d1) * [2*(r-q)*T - d2*sigma*sqrt(T)]
-                   / (2 * T * sigma * sqrt(T))
+    charm_annual = q * e^{-qT} * N(d1)
+                   - e^{-qT} * N'(d1) * [2*(r-q)*T - d2*sigma*sqrt(T)]
+                     / (2 * T * sigma * sqrt(T))
     charm_day = charm_annual / 365
 
     Arguments:
@@ -520,7 +521,8 @@ def bs_call_charm(
     d2 = d1 - iv * math.sqrt(t_years)
     numerator = 2.0 * (r - q) * t_years - d2 * iv * math.sqrt(t_years)
     charm_annual = (
-        -math.exp(-q * t_years)
+        q * math.exp(-q * t_years) * stats.norm.cdf(d1)
+        - math.exp(-q * t_years)
         * stats.norm.pdf(d1)
         * numerator
         / (2.0 * t_years * iv * math.sqrt(t_years))
