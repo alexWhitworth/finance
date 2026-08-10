@@ -1348,7 +1348,7 @@ def test_get_live_contracts_expiry_invariant(n: int, days_offset: int) -> None:
 
 
 def test_bs_gamma_atm_reference_value() -> None:
-    """ATM call: gamma ≈ 0.019848 within 1e-5 (S=K=100, T=1, σ=0.20, r=q=0).
+    """ATM call: gamma ≈ 0.019848 within 1e-5 (S=K=100, T=1, sigma=0.20, r=q=0).
 
     Analytic: N'(d1) / (S*sigma*sqrt(T)) = N'(0.1) / 20 ≈ 0.39695/20 ≈ 0.019848.
     """
@@ -1413,7 +1413,7 @@ def test_bs_gamma_property_always_positive(
 
 
 def test_bs_vega_atm_reference_value() -> None:
-    """ATM call: vega ≈ 0.3969 within 1e-4 per unit IV (S=K=100, T=1, σ=0.20, r=q=0).
+    """ATM call: vega ≈ 0.3969 within 1e-4 per unit IV (S=K=100, T=1, sigma=0.20, r=q=0).
 
     Note: vega per unit IV = S * N'(d1) * sqrt(T). For ATM T=1: 100 * N'(0.1) * 1 ≈ 39.695.
     Spec quotes 0.7954 which is likely the per-1%-of-vol convention (÷100 * 2 from
@@ -1489,7 +1489,7 @@ def test_bs_theta_atm_is_negative() -> None:
 
 
 def test_bs_theta_atm_reference_value() -> None:
-    """ATM call theta ≈ -0.010875 per day (S=K=100, T=1, σ=0.20, r=q=0)."""
+    """ATM call theta ≈ -0.010875 per day (S=K=100, T=1, sigma=0.20, r=q=0)."""
     th = bs_call_theta(spot=100.0, strike=100.0, time_to_expiry=1.0, iv=0.20)
     assert th == pytest.approx(-0.010875, abs=1e-5)
 
@@ -1536,7 +1536,7 @@ def test_bs_theta_property_negative_for_long_call(
 
 
 def test_bs_charm_atm_reference_value() -> None:
-    """ATM call charm ≈ -5.438e-5 per day (S=K=100, T=1, σ=0.20, r=q=0)."""
+    """ATM call charm ≈ -5.438e-5 per day (S=K=100, T=1, sigma=0.20, r=q=0)."""
     ch = bs_call_charm(spot=100.0, strike=100.0, time_to_expiry=1.0, iv=0.20)
     assert ch == pytest.approx(-5.438e-5, abs=1e-6)
 
@@ -1570,18 +1570,19 @@ def test_bs_charm_with_dividend_yield_finite_difference() -> None:
     """
     from finance.leverage import DEFAULT_DIVIDEND_YIELD
 
-    S, K, iv, r, q = 100.0, 100.0, 0.20, 0.03, DEFAULT_DIVIDEND_YIELD
+    spot, strike, iv, r, q = 100.0, 100.0, 0.20, 0.03, DEFAULT_DIVIDEND_YIELD
     eps = 1e-5  # years; small enough for accuracy, large enough to avoid float noise
 
-    for T in [0.25, 0.5, 1.0, 2.0]:
-        charm_analytic = bs_call_charm(S, K, T, iv, risk_free_rate=r, dividend_yield=q)
+    for t in [0.25, 0.5, 1.0, 2.0]:
+        charm_analytic = bs_call_charm(spot, strike, t, iv, risk_free_rate=r, dividend_yield=q)
         # charm = dDelta/dt = -dDelta/dT (since T_remaining decreases as calendar time grows)
-        fd_dDelta_dT = (
-            bs_call_delta(S, K, T + eps, iv, r, q) - bs_call_delta(S, K, T - eps, iv, r, q)
+        fd_ddelta_dt = (
+            bs_call_delta(spot, strike, t + eps, iv, r, q)
+            - bs_call_delta(spot, strike, t - eps, iv, r, q)
         ) / (2.0 * eps)
-        fd_charm_per_day = -fd_dDelta_dT / 365.0
+        fd_charm_per_day = -fd_ddelta_dt / 365.0
         assert abs(charm_analytic - fd_charm_per_day) < 1e-7, (
-            f"T={T}: analytic={charm_analytic:.10f} FD={fd_charm_per_day:.10f} "
+            f"t={t}: analytic={charm_analytic:.10f} FD={fd_charm_per_day:.10f} "
             f"err={abs(charm_analytic - fd_charm_per_day):.2e}"
         )
 
