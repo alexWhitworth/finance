@@ -733,7 +733,7 @@
       "description": "Add bs_call_gamma, bs_call_vega, bs_call_theta, bs_call_charm as pure functions in leverage.py, using existing _bs_d1 helper and scalar-float signature pattern.",
       "phase": "2a",
       "priority": 3,
-      "status": "not_started",
+      "status": "pending_judge",
       "layer": "python",
       "dependencies": ["F-001", "F-002"],
       "linked_schemas": [],

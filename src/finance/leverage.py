@@ -376,6 +376,158 @@ def bs_call_vanna(
     return float(-math.exp(-dividend_yield * t_years) * stats.norm.pdf(d1) * (d2 / iv))
 
 
+def bs_call_gamma(
+    spot: float,
+    strike: float,
+    time_to_expiry: float,
+    iv: float,
+    risk_free_rate: float = 0.0,
+    dividend_yield: float = 0.0,
+) -> float:
+    """Compute Black-Scholes gamma of a European call option.
+
+    Gamma measures the rate of change of delta with respect to spot price.
+
+    gamma = N'(d1) * e^{-qT} / (S * sigma * sqrt(T))
+
+    Always positive for long calls.
+
+    Arguments:
+        spot: Current asset price.
+        strike: Strike price.
+        time_to_expiry: Time to expiry in years. Floored at TIME_FLOOR.
+        iv: Implied volatility (annualized).
+        risk_free_rate: Continuously compounded risk-free rate. Default 0.0.
+        dividend_yield: Continuously compounded dividend yield (q). Default 0.0.
+
+    Returns:
+        Gamma (d²V/dS²). Always positive for long calls.
+    """
+    t_years = max(time_to_expiry, TIME_FLOOR)
+    d1 = _bs_d1(spot, strike, t_years, iv, risk_free_rate, dividend_yield)
+    return float(
+        stats.norm.pdf(d1) * math.exp(-dividend_yield * t_years)
+        / (spot * iv * math.sqrt(t_years))
+    )
+
+
+def bs_call_vega(
+    spot: float,
+    strike: float,
+    time_to_expiry: float,
+    iv: float,
+    risk_free_rate: float = 0.0,
+    dividend_yield: float = 0.0,
+) -> float:
+    """Compute Black-Scholes vega of a European call option per unit of IV move.
+
+    Vega measures the sensitivity of the option price to changes in implied
+    volatility. A 1-unit change in iv (e.g. 0.20 → 1.20) changes the price by
+    this amount; divide by 100 to get the per-1%-vol-point sensitivity.
+
+    vega = S * e^{-qT} * N'(d1) * sqrt(T)
+
+    Arguments:
+        spot: Current asset price.
+        strike: Strike price.
+        time_to_expiry: Time to expiry in years. Floored at TIME_FLOOR.
+        iv: Implied volatility (annualized).
+        risk_free_rate: Continuously compounded risk-free rate. Default 0.0.
+        dividend_yield: Continuously compounded dividend yield (q). Default 0.0.
+
+    Returns:
+        Vega per unit of IV move (not per 1%-vol-point). Always positive for long calls.
+    """
+    t_years = max(time_to_expiry, TIME_FLOOR)
+    d1 = _bs_d1(spot, strike, t_years, iv, risk_free_rate, dividend_yield)
+    return float(
+        spot * math.exp(-dividend_yield * t_years) * stats.norm.pdf(d1) * math.sqrt(t_years)
+    )
+
+
+def bs_call_theta(
+    spot: float,
+    strike: float,
+    time_to_expiry: float,
+    iv: float,
+    risk_free_rate: float = 0.0,
+    dividend_yield: float = 0.0,
+) -> float:
+    """Compute Black-Scholes theta of a European call option per calendar day.
+
+    Theta measures the time decay of the option price. The annualized formula is
+    divided by 365 to yield dollars per calendar day (negative for long calls).
+
+    theta_annual = -S * sigma * e^{-qT} * N'(d1) / (2*sqrt(T))
+                   + q * S * e^{-qT} * N(d1)
+                   - r * K * e^{-rT} * N(d2)
+    theta_day = theta_annual / 365
+
+    Arguments:
+        spot: Current asset price.
+        strike: Strike price.
+        time_to_expiry: Time to expiry in years. Floored at TIME_FLOOR.
+        iv: Implied volatility (annualized).
+        risk_free_rate: Continuously compounded risk-free rate. Default 0.0.
+        dividend_yield: Continuously compounded dividend yield (q). Default 0.0.
+
+    Returns:
+        Theta in dollars per calendar day. Negative for long calls with T > TIME_FLOOR.
+    """
+    t_years = max(time_to_expiry, TIME_FLOOR)
+    r, q = risk_free_rate, dividend_yield
+    d1 = _bs_d1(spot, strike, t_years, iv, r, q)
+    d2 = d1 - iv * math.sqrt(t_years)
+    theta_annual = (
+        -spot * iv * math.exp(-q * t_years) * stats.norm.pdf(d1) / (2.0 * math.sqrt(t_years))
+        + q * spot * math.exp(-q * t_years) * stats.norm.cdf(d1)
+        - r * strike * math.exp(-r * t_years) * stats.norm.cdf(d2)
+    )
+    return float(theta_annual / 365.0)
+
+
+def bs_call_charm(
+    spot: float,
+    strike: float,
+    time_to_expiry: float,
+    iv: float,
+    risk_free_rate: float = 0.0,
+    dividend_yield: float = 0.0,
+) -> float:
+    """Compute Black-Scholes charm (delta decay) of a European call option per calendar day.
+
+    Charm measures the rate of change of delta with respect to time (dDelta/dt).
+    Negative values mean delta erodes as time passes.
+
+    charm_annual = -e^{-qT} * N'(d1) * [2*(r-q)*T - d2*sigma*sqrt(T)]
+                   / (2 * T * sigma * sqrt(T))
+    charm_day = charm_annual / 365
+
+    Arguments:
+        spot: Current asset price.
+        strike: Strike price.
+        time_to_expiry: Time to expiry in years. Floored at TIME_FLOOR.
+        iv: Implied volatility (annualized).
+        risk_free_rate: Continuously compounded risk-free rate. Default 0.0.
+        dividend_yield: Continuously compounded dividend yield (q). Default 0.0.
+
+    Returns:
+        Charm (dDelta/dt) per calendar day.
+    """
+    t_years = max(time_to_expiry, TIME_FLOOR)
+    r, q = risk_free_rate, dividend_yield
+    d1 = _bs_d1(spot, strike, t_years, iv, r, q)
+    d2 = d1 - iv * math.sqrt(t_years)
+    numerator = 2.0 * (r - q) * t_years - d2 * iv * math.sqrt(t_years)
+    charm_annual = (
+        -math.exp(-q * t_years)
+        * stats.norm.pdf(d1)
+        * numerator
+        / (2.0 * t_years * iv * math.sqrt(t_years))
+    )
+    return float(charm_annual / 365.0)
+
+
 # ---------------------------------------------------------------------------
 # LEAPS contract lifecycle — pure functions
 # ---------------------------------------------------------------------------
