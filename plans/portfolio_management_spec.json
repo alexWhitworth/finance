@@ -607,7 +607,7 @@
       "description": "Add final_state: PortfolioState as a required field on BacktestResult in _portfolio_types.py. Required field — no default. Non-breaking because BacktestResult is only constructed inside run_backtest.",
       "phase": "1a",
       "priority": 2,
-      "status": "pending_judge",
+      "status": "complete",
       "layer": "python",
       "dependencies": ["F-001", "F-002"],
       "linked_schemas": ["DS-011"],
@@ -649,7 +649,7 @@
       "description": "Pass loop-end state into BacktestResult(...) in run_backtest in portfolio.py.",
       "phase": "1b",
       "priority": 2,
-      "status": "pending_judge",
+      "status": "complete",
       "layer": "python",
       "dependencies": ["F-003"],
       "linked_schemas": ["DS-011"],
@@ -689,7 +689,7 @@
       "description": "Implement as_live_portfolio(result, gtt_active) in portfolio_manager.py. Converts BacktestResult.final_state to LivePortfolio using get_live_contracts().",
       "phase": "1c",
       "priority": 2,
-      "status": "pending_judge",
+      "status": "complete",
       "layer": "python",
       "dependencies": ["F-001", "F-003", "F-004"],
       "linked_schemas": ["DS-001", "DS-011"],
@@ -945,7 +945,7 @@
         "Holdings with zero value asset"
       ],
       "clarification_needed": false,
-      "clarification_notes": null
+      "clarification_notes": "F-005 B1 (judge round 2): once compute_nav_breakdown is implemented, add an integration test to tests/test_portfolio_manager_integration.py verifying compute_nav_breakdown(lp, leaps_mtm=...).total_nav ≈ result.nav_series.iloc[-1] within 1e-6 (I11). The current integration test module docstring claims I11 coverage but does not satisfy it."
     },
     {
       "id": "F-011",

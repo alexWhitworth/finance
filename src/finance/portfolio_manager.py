@@ -83,6 +83,9 @@ def as_live_portfolio(
             final_state populated (requires F-003/F-004).
         gtt_active: Whether the GTT overlay was active. When True, gtt_regime
             is set from final_state.prev_regime. When False, gtt_regime is None.
+            Pass True only when the backtest was configured with a gtt_signal;
+            on a non-GTT backtest, prev_regime is always 1 (Long) and the
+            returned gtt_regime is semantically meaningless.
 
     Returns:
         LivePortfolio reflecting the portfolio state at the last backtest date.
