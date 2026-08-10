@@ -8,14 +8,16 @@ via DITM VTI LEAPS and a macro-economic based market timing signal.
 From various tests and analyses when building this library, the following guidance applies to most
 investors:
 
-1. Prefer `RebalanceRule.DRIFT` to `GttConfig`. GTT (described below) does a great job with
-macro-economic market drawdowns (eg. GFC), but not monetary driven ones (eg. 2022).
-    - **NOTE:** I expect Glide path rebalancing, once the feature is built, will be even better.
+1. Prefer `RebalanceRule.DRIFT` with or without a `GlidepathConfig`.
+    - without `GlidepathConfig` has better risk adjusted returns (Sharpe, Sortino). Preferred
+    for stationary investment framework.
+    - With `GlidepathConfig` has better terminal NAV and late-stage wealth preservation. Preferred
+    for dynamic lifetime de-leveraging (multi-decade wealth generation)
 2. Use LEAPS leverage. But solely in `AccountType.TAX_SHELTERED` accounts. There is major tax
 drag if in `AccountType.TAXABLE`.
-3. Have a diverse, multi-asset portfolio as described in the below Motivation.
-    - `GttConfig` works well for equity only portfolios. But a multi-asset portfolio is better
-    for most investors.
+3. GTT (described below) should be discarded. GTT does a great job with macro-economic market 
+drawdowns (eg. GFC), but not monetary driven ones (eg. 2022). As a result, `GttConfig` is dominated
+by a multi-asset portfolio.
 
 ## Motivation
 

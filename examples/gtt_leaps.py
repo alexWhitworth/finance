@@ -1,5 +1,5 @@
 """End-to-end GTT vs. buy-and-hold comparison for the 6-asset diversified portfolio
-with LEAPS overlay.
+with LEAPS overlay and all rebalance rules (quarterly, drift, glidepath).
 
 Fetches prices with data splicing for assets without long price history (eg VTI -> VTSMX),
 runs rebalanced backtests for both GTT-enabled and GTT-disabled configurations,
@@ -7,7 +7,7 @@ then prints a side-by-side-by-side performance comparison and saves a NAV growth
 to outputs/figures/gtt_comparison_nav.png.
 
 Usage:
-    uv run examples/basic_gtt.py 2>&1 | tee outputs/gtt_example.log
+    uv run examples/gtt_leaps.py 2>&1 | tee outputs/gtt_example.log
 
 Notes:
     - Requires FRED_API_KEY in the environment (or .env) for UNRATE data.
@@ -192,7 +192,7 @@ if __name__ == "__main__":
         [
             ("LEAPS QTR", base_qtr_report),
             ("LEAPS DRIFT", base_drift_report),
-
+            ("LEAPS GLIDE", base_glide_report),
             ("GTT LEAPS DRIFT", gtt_report),
             ("GTT LEAPS GLIDE", gtt_glide_report),
         ]
