@@ -39,7 +39,6 @@ from finance._portfolio_types import (
 )
 from finance.consts import (
     DEFAULT_IV,
-    DRIFT_BAND_RELATIVE,
     GTT_EQUITY_TICKERS,
     GTT_RISK_FREE_KEY,
     LEAPS_KEY_SUFFIX,
@@ -58,6 +57,7 @@ from finance.leverage import (
     price_leaps_contract,
     run_leaps_simulation,
 )
+from finance.rebalance import should_rebalance
 from finance.returns import ReturnData
 
 
@@ -90,40 +90,8 @@ def _get_rebalance_dates(
     return []  # pragma: no cover
 
 
-def _should_rebalance(
-    current_weights: pd.Series,
-    target_weights: pd.Series,
-    rule: RebalanceRule,
-    band: float = DRIFT_BAND_RELATIVE,
-) -> bool:
-    """Return True if rebalancing should be triggered under the given rule.
-
-    QUARTERLY: always returns False — schedule is handled by _get_rebalance_dates().
-    DRIFT: returns True if any asset's relative weight deviation exceeds band.
-
-    Relative deviation for asset i: |w_i - t_i| / t_i > band.
-    Only assets present in both current_weights and target_weights are checked.
-    Assets with a target weight of zero are skipped (division by zero guard).
-
-    Arguments:
-        current_weights: Realized portfolio weights at the check date.
-        target_weights: Target weights from PortfolioConfig (need not be normalized).
-        rule: RebalanceRule controlling the check logic.
-        band: Relative drift threshold. Default DRIFT_BAND_RELATIVE (0.10 = ±10%).
-
-    Returns:
-        True if rebalancing is triggered, False otherwise.
-    """
-    if rule == RebalanceRule.QUARTERLY:
-        return False
-    common = current_weights.index.intersection(target_weights.index)
-    for a in common:
-        t = float(target_weights[a])
-        if t == 0.0:
-            continue
-        if abs(float(current_weights[a]) - t) / t > band:
-            return True
-    return False
+# Backward-compatible private alias retained for any existing test references.
+_should_rebalance = should_rebalance
 
 
 def glide_path_leaps_weight(
@@ -1038,7 +1006,7 @@ def _apply_rebalance(
                 share = float(ctx.w[k]) / ctx.leaps_fraction if ctx.leaps_fraction > 0 else 0.0
                 weights_now[k] = leaps_value * share / total_val
             current_weights = pd.Series(weights_now)
-            if _should_rebalance(current_weights, target_w, RebalanceRule.DRIFT):
+            if should_rebalance(current_weights, target_w, RebalanceRule.DRIFT):
                 # Recompute base target weights from target_w for redistribution.
                 base_target_from_target_w = {
                     a: float(target_w[a])

@@ -563,7 +563,7 @@
       "description": "Create finance/rebalance.py. Move _should_rebalance from _backtest_steps.py, rename to should_rebalance. Update call site in _backtest_steps.py. Pure refactor — no behavior change.",
       "phase": "0b",
       "priority": 1,
-      "status": "not_started",
+      "status": "pending_judge",
       "layer": "python",
       "dependencies": [],
       "linked_schemas": [],
