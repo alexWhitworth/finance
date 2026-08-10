@@ -689,7 +689,7 @@
       "description": "Implement as_live_portfolio(result, gtt_active) in portfolio_manager.py. Converts BacktestResult.final_state to LivePortfolio using get_live_contracts().",
       "phase": "1c",
       "priority": 2,
-      "status": "not_started",
+      "status": "pending_judge",
       "layer": "python",
       "dependencies": ["F-001", "F-003", "F-004"],
       "linked_schemas": ["DS-001", "DS-011"],
