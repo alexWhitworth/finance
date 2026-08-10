@@ -25,7 +25,6 @@ from finance.leverage import (
     LeapsTaxSummary,
     TerminalNav,
     _live_contracts,
-    get_live_contracts,
     bs_call_charm,
     bs_call_delta,
     bs_call_gamma,
@@ -37,6 +36,7 @@ from finance.leverage import (
     compute_leaps_tax_summary,
     compute_terminal_nav,
     create_leaps_contract,
+    get_live_contracts,
     partial_close_leaps,
     price_leaps_contract,
     roll_contract,
@@ -1300,7 +1300,7 @@ def test_get_live_contracts_returns_only_unexpired() -> None:
     ledger = LeapsLedger(contracts=(early, late), roll_events=(), account_type=AccountType.TAXABLE)
     query = pd.Timestamp("2022-06-01")
     live = get_live_contracts(ledger, query)
-    assert all(c.expiry_date > query for c in live), "All returned contracts must have expiry > query"
+    assert all(c.expiry_date > query for c in live), "returned contract has expiry <= query"
     assert late in live
     assert early not in live
 

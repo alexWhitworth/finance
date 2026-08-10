@@ -1,13 +1,11 @@
 """Tests for finance.rebalance — should_rebalance public API (F-002 / AC-002)."""
 
 import pandas as pd
-import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
 from finance.leverage import RebalanceRule
 from finance.rebalance import should_rebalance
-
 
 # ---------------------------------------------------------------------------
 # QUARTERLY rule — always False (I8)
