@@ -309,7 +309,7 @@ def build_vol_contribution_table(
         a: compute_realized_vol(returns[_underlying(a)]).iloc[-1] for a in assets
     }
 
-    # Resolve LEAPS keys to their underlying with delta-adjusted weights, normalize for contributions.
+    # Resolve LEAPS keys to underlying with delta-adjusted weights, normalize for contributions.
     resolved = delta_weights.copy()
     resolved.index = pd.Index([_underlying(a) for a in assets])
     resolved = resolved.groupby(level=0).sum()
@@ -324,7 +324,7 @@ def build_vol_contribution_table(
         for a in assets:
             u = _underlying(a)
             rho_vti[a] = (
-                float(vol_model.rolling_corr.loc[u, "VTI"])
+                float(vol_model.rolling_corr.at[u, "VTI"])  # type: ignore[arg-type]
                 if u in vol_model.rolling_corr.index
                 else float("nan")
             )

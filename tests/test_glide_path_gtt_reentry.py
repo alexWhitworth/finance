@@ -1,10 +1,10 @@
-"""Tests for F-GP-08: _apply_gtt_reentry uses compute_glide_target_weights when glide_path_config is present."""
+"""Tests for F-GP-08: _apply_gtt_reentry uses compute_glide_target_weights when
+glide_path_config is present."""
+
 
 import numpy as np
 import pandas as pd
 import pytest
-
-from dataclasses import replace
 
 from finance._backtest_steps import (
     _apply_gtt_reentry,
@@ -222,13 +222,16 @@ def _make_state(
     """
     if use_sleeve:
         # Defensive state: all capital parked in sleeve + pool
-        holdings = {a: 0.0 for a in ctx.base_assets}
+        holdings = dict.fromkeys(ctx.base_assets, 0.0)
         sleeve = total * 0.7
         pool = total * 0.3
         leaps_val = 0.0
     else:
         # Just-entered-defensive on the same day (holdings still non-zero, leaps_value=0)
-        holdings = {a: total * float(ctx.base_target_w[a]) * (1.0 - ctx.leaps_fraction) for a in ctx.base_assets}
+        holdings = {
+            a: total * float(ctx.base_target_w[a]) * (1.0 - ctx.leaps_fraction)
+            for a in ctx.base_assets
+        }
         sleeve = 0.0
         pool = total * ctx.leaps_fraction  # LEAPS capital in pool
         leaps_val = 0.0
@@ -307,7 +310,9 @@ def test_gtt_reentry_glide_path_vti_allocation_positive_at_m2() -> None:
     expected_targets = compute_glide_target_weights(2.0, ctx.config, _GP_CONFIG)
     expected_vti = float(expected_targets["VTI"]) * total
 
-    assert expected_vti > 0.0, "VTI target at m=2.0 must be positive (glide path allocates freed weight)"
+    assert expected_vti > 0.0, (
+        "VTI target at m=2.0 must be positive (glide path allocates freed weight)"
+    )
 
     inputs = _reentry_inputs()
     new_state = _apply_gtt_reentry(state, inputs, ctx)

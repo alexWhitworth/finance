@@ -1129,7 +1129,8 @@ def _apply_gtt_reentry(
     Notes:
         Invariant A2: sum(new_holdings.values()) + new_leaps_value == total within 1e-9.
         Invariant A4 (non-glide-path): new_leaps_value == total * ctx.leaps_fraction within 1e-6.
-        Invariant A4 (glide-path): new_leaps_value == dynamic_targets[leaps_key] * total within 1e-6.
+        Invariant A4 (glide-path): new_leaps_value == dynamic_targets[leaps_key] * total
+        within 1e-6.
     """
     if not (ctx.gtt_active and state.prev_regime == 0 and inputs.regime_t == 1):
         return state

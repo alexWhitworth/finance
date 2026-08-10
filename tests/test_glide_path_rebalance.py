@@ -315,17 +315,22 @@ def test_leaps_topped_up_when_below_dynamic_target() -> None:
         new_state.leaps_value,
         target_leaps_val,
         atol=1e-6,
-        err_msg=f"LEAPS not topped up: before={leaps_val_low:.2f}, after={new_state.leaps_value:.2f}, target={target_leaps_val:.2f}",
+        err_msg=(
+            f"LEAPS not topped up: before={leaps_val_low:.2f}, "
+            f"after={new_state.leaps_value:.2f}, target={target_leaps_val:.2f}"
+        ),
     )
     assert new_state.leaps_value > leaps_val_low, (
-        f"Expected LEAPS top-up; got leaps_value={new_state.leaps_value:.2f} not > {leaps_val_low:.2f}"
+        f"Expected LEAPS top-up; got leaps_value={new_state.leaps_value:.2f} "
+        f"not > {leaps_val_low:.2f}"
     )
 
     # Base holdings must have shrunk (capital redirected to LEAPS top-up).
     new_total_holdings = sum(new_state.holdings.values())
     old_total_holdings = sum(state_low.holdings.values())
     assert new_total_holdings < old_total_holdings - 1e-6, (
-        f"Expected base holdings to shrink; got {new_total_holdings:.2f} vs {old_total_holdings:.2f}"
+        f"Expected base holdings to shrink; "
+        f"got {new_total_holdings:.2f} vs {old_total_holdings:.2f}"
     )
 
     # NAV must be conserved.

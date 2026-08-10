@@ -1,7 +1,7 @@
 # finance
 
-A Python library for backtesting multi-asset portfolios. Includes optional synthetic leverage 
-via DITM VTI LEAPS and a macro-economic based market timing signal. 
+A Python library for backtesting multi-asset portfolios. Includes optional synthetic leverage
+via DITM VTI LEAPS and a macro-economic based market timing signal.
 
 ## tl;dr (for most investors):
 

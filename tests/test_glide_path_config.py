@@ -220,5 +220,5 @@ def test_portfolio_config_glide_path_vti_nonzero_raises() -> None:
         "KMLM": 0.05,
         "VGIT": 0.05,
     }
-    with pytest.raises(ValueError, match="value 0.0"):
+    with pytest.raises(ValueError, match=r"value 0\.0"):
         _make_config(weights=weights)

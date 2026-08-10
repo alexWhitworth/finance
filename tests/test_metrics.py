@@ -661,7 +661,7 @@ def test_build_performance_report_leaps_key_in_vol_table() -> None:
     leaps_weights = {"VTI_LEAPS": 0.4, "VXUS": 0.35, "GLD": 0.25}
     port_returns = pd.Series(rng.normal(0.0004, 0.01, n), index=idx)
     nav = _nav_from_returns(port_returns)
-    weights_df = pd.DataFrame({t: 1.0 / 3 for t in ("VTI", "VXUS", "GLD")}, index=idx)
+    weights_df = pd.DataFrame(dict.fromkeys(("VTI", "VXUS", "GLD"), 1.0 / 3), index=idx)
     config = PortfolioConfig(
         target_weights=leaps_weights,
         initial_nav=1_000_000.0,
