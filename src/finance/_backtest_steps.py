@@ -53,7 +53,7 @@ from finance.leverage import (
     LeapsLedger,
     LeapsPartialCloseEvent,
     RebalanceRule,
-    _live_contracts,
+    get_live_contracts,
     close_leaps_contract,
     price_leaps_contract,
     run_leaps_simulation,
@@ -707,7 +707,7 @@ def _apply_gtt_force_close(
     new_closes: list[LeapsGttCloseEvent] = []
     pool_delta = 0.0
 
-    for c in _live_contracts(state.leaps_ledger, prev_ts):
+    for c in get_live_contracts(state.leaps_ledger, prev_ts):
         scale = state.leaps_scale.get(c, 1.0)
         c_eff = replace(c, n_contracts=c.n_contracts * scale) if scale != 1.0 else c
         evt = close_leaps_contract(
@@ -837,7 +837,7 @@ def _compute_leaps_mtm(
     day_iv = ctx.iv
     if inputs.mtm_iv_value is not None and pd.notna(inputs.mtm_iv_value):
         day_iv = max(float(inputs.mtm_iv_value), ctx.iv)
-    live = _live_contracts(state.leaps_ledger, inputs.date_ts)
+    live = get_live_contracts(state.leaps_ledger, inputs.date_ts)
     leaps_value: float = sum(
         price_leaps_contract(c, spot, inputs.date_ts, day_iv, rfr)
         * state.leaps_scale.get(c, 1.0)
@@ -1061,7 +1061,7 @@ def _apply_rebalance(
                 if leaps_value > target_leaps_now and leaps_value > 0:
                     close_scale = target_leaps_now / leaps_value
                     net_proceeds = leaps_value - target_leaps_now
-                    for c in _live_contracts(state.leaps_ledger, inputs.date_ts):  # type: ignore[arg-type]
+                    for c in get_live_contracts(state.leaps_ledger, inputs.date_ts):  # type: ignore[arg-type]
                         leaps_scale[c] = leaps_scale.get(c, 1.0) * close_scale
                     if ctx.base_assets:
                         for a in ctx.base_assets:
@@ -1180,7 +1180,7 @@ def _apply_gtt_reentry(
         spot = inputs.spot if inputs.spot is not None else 0.0
         new_leaps_value = sum(
             price_leaps_contract(c, spot, inputs.date_ts, creation_iv, inputs.rfr)
-            for c in _live_contracts(new_ledger, inputs.date_ts)
+            for c in get_live_contracts(new_ledger, inputs.date_ts)
         )
 
     new_leaps_scale: dict[LeapsContract, float] = {}

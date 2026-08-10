@@ -740,7 +740,7 @@ def close_leaps_contract(
     )
 
 
-def _live_contracts(ledger: LeapsLedger, current_date: pd.Timestamp) -> list[LeapsContract]:
+def get_live_contracts(ledger: LeapsLedger, current_date: pd.Timestamp) -> list[LeapsContract]:
     """Return the set of live contracts at current_date.
 
     Excludes rolled-out originals, GTT-force-closed contracts, replaced
@@ -789,6 +789,10 @@ def _live_contracts(ledger: LeapsLedger, current_date: pd.Timestamp) -> list[Lea
     return live
 
 
+# Backward-compatible private alias retained for existing callers in _backtest_steps.py.
+_live_contracts = get_live_contracts
+
+
 def compute_leaps_nav_contribution(
     ledger: LeapsLedger,
     current_date: pd.Timestamp,
@@ -814,7 +818,7 @@ def compute_leaps_nav_contribution(
     """
     if not ledger.contracts:
         return 0.0
-    live = _live_contracts(ledger, current_date)
+    live = get_live_contracts(ledger, current_date)
     if not live:
         return 0.0
     total_mtm = sum(
@@ -848,7 +852,7 @@ def compute_leaps_mtm(
     Returns:
         Total MTM value in dollars of all live contracts. 0.0 if none are live.
     """
-    live = _live_contracts(ledger, current_date)
+    live = get_live_contracts(ledger, current_date)
     return float(
         sum(price_leaps_contract(c, current_spot, current_date, iv, risk_free_rate) for c in live)
     )
@@ -936,7 +940,7 @@ def compute_terminal_nav(
         TerminalNav with pre_tax_nav, post_tax_nav, terminal_tax, open_gain,
         ltcg_rate, and account_type.
     """
-    live = _live_contracts(ledger, final_date)
+    live = get_live_contracts(ledger, final_date)
     if not live:
         return TerminalNav(
             pre_tax_nav=final_nav,

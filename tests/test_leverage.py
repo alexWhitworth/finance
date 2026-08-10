@@ -25,6 +25,7 @@ from finance.leverage import (
     LeapsTaxSummary,
     TerminalNav,
     _live_contracts,
+    get_live_contracts,
     bs_call_charm,
     bs_call_delta,
     bs_call_gamma,
@@ -1274,6 +1275,71 @@ def test_live_contracts_future_event_invariance(
         f"Future gtt event at {future_event_date} changed live set at {query_date}: "
         f"base={live_base}, with_future_gtt={live_future_gtt}"
     )
+
+
+# ---------------------------------------------------------------------------
+# get_live_contracts (F-001 / AC-001)
+# ---------------------------------------------------------------------------
+
+
+def test_get_live_contracts_public_api() -> None:
+    """get_live_contracts is importable from finance.leverage and matches _live_contracts."""
+    from finance.leverage import get_live_contracts as glc
+
+    c = _make_contract(purchase_date=pd.Timestamp("2022-01-03"), spot=200.0, capital=10_000.0)
+    ledger = LeapsLedger(contracts=(c,), roll_events=(), account_type=AccountType.TAXABLE)
+    query = pd.Timestamp("2022-06-01")
+    assert glc(ledger, query) == _live_contracts(ledger, query)
+
+
+def test_get_live_contracts_returns_only_unexpired() -> None:
+    """Contracts with expiry_date <= current_date are excluded; only expiry > date are returned."""
+    early = _make_contract(purchase_date=pd.Timestamp("2018-01-02"), spot=150.0, capital=5_000.0)
+    late = _make_contract(purchase_date=pd.Timestamp("2022-01-03"), spot=200.0, capital=10_000.0)
+    # early expires 2020-01-02 (2 years), late expires 2024-01-03
+    ledger = LeapsLedger(contracts=(early, late), roll_events=(), account_type=AccountType.TAXABLE)
+    query = pd.Timestamp("2022-06-01")
+    live = get_live_contracts(ledger, query)
+    assert all(c.expiry_date > query for c in live), "All returned contracts must have expiry > query"
+    assert late in live
+    assert early not in live
+
+
+def test_get_live_contracts_empty_ledger() -> None:
+    """Empty ledger returns an empty list."""
+    ledger = LeapsLedger(contracts=(), roll_events=(), account_type=AccountType.TAXABLE)
+    assert get_live_contracts(ledger, pd.Timestamp("2022-01-01")) == []
+
+
+def test_get_live_contracts_all_expired() -> None:
+    """All contracts expired returns empty list."""
+    c = _make_contract(purchase_date=pd.Timestamp("2018-01-02"), spot=150.0, capital=5_000.0)
+    # expiry ~2020-01-02; query well past that
+    ledger = LeapsLedger(contracts=(c,), roll_events=(), account_type=AccountType.TAXABLE)
+    assert get_live_contracts(ledger, pd.Timestamp("2023-01-01")) == []
+
+
+@given(
+    n=st.integers(min_value=0, max_value=5),
+    days_offset=st.integers(min_value=1, max_value=500),
+)
+@settings(max_examples=50)
+def test_get_live_contracts_expiry_invariant(n: int, days_offset: int) -> None:
+    """Property: all returned contracts always have expiry_date > current_date."""
+    base_date = pd.Timestamp("2020-01-02")
+    contracts = tuple(
+        _make_contract(
+            purchase_date=base_date + pd.Timedelta(days=i * 30),
+            spot=200.0,
+            capital=10_000.0,
+        )
+        for i in range(n)
+    )
+    ledger = LeapsLedger(contracts=contracts, roll_events=(), account_type=AccountType.TAXABLE)
+    query = base_date + pd.Timedelta(days=days_offset)
+    live = get_live_contracts(ledger, query)
+    for c in live:
+        assert c.expiry_date > query, f"Contract expiry {c.expiry_date} not > query {query}"
 
 
 # ---------------------------------------------------------------------------

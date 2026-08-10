@@ -519,7 +519,7 @@
       "description": "Move _live_contracts from _backtest_steps.py to leverage.py, rename to get_live_contracts. Update all call sites in _backtest_steps.py to import from leverage. Pure refactor — no behavior change.",
       "phase": "0a",
       "priority": 1,
-      "status": "not_started",
+      "status": "pending_judge",
       "layer": "python",
       "dependencies": [],
       "linked_schemas": [],
