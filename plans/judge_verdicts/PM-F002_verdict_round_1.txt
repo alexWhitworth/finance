@@ -1,0 +1,103 @@
+PM-F002 JUDGE VERDICT — Round 1
+=================================
+Date: 2026-08-10
+Feature: PM-F002 — Phase 0b: Create finance/rebalance.py with should_rebalance
+Spec file: plans/portfolio_management_spec.json
+Reviewer: Judge Agent (lightweight — no mutmut/hypothesis execution)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+VERDICT: CONDITIONAL_PASS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+SCORECARDS
+----------
+Acceptance Criteria:     3/3 MET
+Test Coverage (total):   98.56% (rebalance.py: 100%)
+Mutation Testing:        SKIPPED (per review scope)
+Ruff Lint:               2 BLOCKING (I001 + F401 in tests/test_rebalance.py)
+
+BUILD
+-----
+  uv pip install -e .  → SUCCESS (finance==1.2.1)
+  uv run pytest        → 752 passed, 1 skipped — PASS
+
+ACCEPTANCE CRITERIA
+-------------------
+AC-1  uv run pytest passes unchanged after relocation (non-regression I13)
+      STATUS: MET — 752 pass. rebalance.py at 100% coverage.
+
+AC-2  should_rebalance importable from finance.rebalance
+      STATUS: MET — uv run python -c "from finance.rebalance import should_rebalance" → OK
+              Function defined at rebalance.py:12 with correct signature
+              `(current_weights, target_weights, rule, band) -> bool`
+
+AC-3  _backtest_steps.py no longer defines _should_rebalance
+      STATUS: MET — grep confirms no `def _should_rebalance` in _backtest_steps.py
+              Backward-compat alias at _backtest_steps.py:94 (`_should_rebalance = should_rebalance`)
+              Test test_backtest_steps_no_longer_defines_should_rebalance asserts identity
+              of alias → rebalance.should_rebalance.
+
+EDGE CASES
+----------
+EC-1  DRIFT rule with weights exactly at band boundary
+      STATUS: PARTIAL — two tests cover below-band (0.549 and 0.54) and above-band (0.56).
+              The "exactly at boundary" case (relative deviation == band, strict inequality)
+              is covered by test_drift_does_not_trigger_below_exact_band using 0.549
+              (deviation=0.098 < 0.10) after the 0.55 IEEE-754 edge was encountered and
+              corrected. True exact-boundary test (deviation == band to floating-point
+              precision) is absent but the coverage is functionally adequate.
+
+EC-2  empty weights series
+      STATUS: MET — test_drift_empty_weights_returns_false covers both Series empty.
+
+TEST QUALITY
+------------
+  test_quarterly_rule_returns_false_when_not_rebal_date    — I8 invariant, explicit
+  test_quarterly_rule_returns_false_even_at_extreme_drift  — worst-case drift still False
+  test_quarterly_rule_never_triggers_property              — Hypothesis property (QUARTERLY)
+  test_drift_triggers_when_exactly_above_band              — value above band triggers
+  test_drift_does_not_trigger_below_exact_band             — below-band no trigger
+  test_drift_does_not_trigger_below_band                   — second below-band check (0.54)
+  test_drift_zero_target_weight_skipped                    — division-by-zero guard
+  test_drift_only_common_assets_checked                    — asymmetric index sets
+  test_drift_empty_weights_returns_false                   — EC-2
+  test_should_rebalance_importable_from_finance_rebalance  — import check
+  test_backtest_steps_no_longer_defines_should_rebalance   — alias identity check
+
+  All assertions are value-level (not tautological). PASS.
+
+FINDINGS
+--------
+BLOCKING
+  B-1  I001 in tests/test_rebalance.py:3 — import block unsorted (hypothesis imports
+       split from stdlib). Ruff auto-fixable.
+       File: tests/test_rebalance.py, line 3
+       Fix: run `uv run ruff check --fix tests/test_rebalance.py` and commit.
+
+  B-2  F401 in tests/test_rebalance.py:4 — `pytest` imported but unused (no pytest.approx,
+       no pytest.raises, etc. in this test file).
+       File: tests/test_rebalance.py, line 4
+       Fix: remove `import pytest` from test_rebalance.py.
+
+ADVISORY
+  A-1  I001 in src/finance/_backtest_steps.py — import block unsorted after inserting
+       `from finance.rebalance import should_rebalance` out of alphabetical order relative
+       to `from finance.returns import ReturnData`. Ruff auto-fixable.
+       File: src/finance/_backtest_steps.py, line 26 (import block)
+       Fix: run `uv run ruff check --fix src/finance/_backtest_steps.py` and commit.
+       Note: this is ADVISORY not BLOCKING because _backtest_steps.py is a pre-existing
+       file and the sort violation is minor and auto-fixable, but it should be cleaned up
+       before F-003 lands to keep ruff clean.
+
+  A-2  test_drift_does_not_trigger_below_band (0.54) is redundant given
+       test_drift_does_not_trigger_below_exact_band (0.549). Both are fine to keep for
+       belt-and-suspenders, but no new information is added.
+
+REQUIRED ACTIONS (Actor)
+------------------------
+  1. Fix import sort + unused pytest in tests/test_rebalance.py:
+       uv run ruff check --fix tests/test_rebalance.py
+       Manually remove `import pytest` if ruff does not remove it automatically.
+  2. Fix import sort in src/finance/_backtest_steps.py:
+       uv run ruff check --fix src/finance/_backtest_steps.py
+  3. Re-run `uv run pytest && uv run ruff check .` to confirm clean baseline; commit.
