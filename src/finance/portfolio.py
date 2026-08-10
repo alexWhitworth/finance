@@ -136,4 +136,5 @@ def run_backtest(
         return_series=return_series,
         leaps_ledger=leaps_ledger,
         config=config,
+        final_state=state,
     )

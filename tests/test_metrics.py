@@ -4,6 +4,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from finance._portfolio_types import PortfolioState
 from finance.data import PriceData
 from finance.leverage import (
     AccountType,
@@ -81,12 +82,26 @@ def _make_backtest_result(n: int = 504) -> BacktestResult:
         rebalance_rule=RebalanceRule.QUARTERLY,
         weight_strategy=WeightStrategy.USER_SPECIFIED,
     )
+    dummy_state = PortfolioState(
+        holdings={},
+        defensive_sleeve=0.0,
+        leaps_pool=0.0,
+        leaps_value=0.0,
+        prev_total_nav=float(nav.iloc[-1]),
+        prev_regime=1,
+        prev_date_ts=idx[-1],
+        leaps_ledger=None,
+        leaps_scale={},
+        all_window_ledgers=(),
+        all_gtt_closes=(),
+    )
     return BacktestResult(
         nav_series=nav,
         weight_history=weights_df,
         return_series=port_returns,
         leaps_ledger=None,
         config=config,
+        final_state=dummy_state,
     )
 
 
@@ -621,12 +636,26 @@ def _make_backtest_result_with_leaps(n: int = 504) -> tuple[BacktestResult, Pric
         monthly_contribution_to_leaps=5_000.0,
         config=LeapsConfig(account_type=AccountType.TAXABLE),
     )
+    dummy_state = PortfolioState(
+        holdings={},
+        defensive_sleeve=0.0,
+        leaps_pool=0.0,
+        leaps_value=0.0,
+        prev_total_nav=float(nav.iloc[-1]),
+        prev_regime=1,
+        prev_date_ts=idx[-1],
+        leaps_ledger=None,
+        leaps_scale={},
+        all_window_ledgers=(),
+        all_gtt_closes=(),
+    )
     br = BacktestResult(
         nav_series=nav,
         weight_history=weights_df,
         return_series=port_returns,
         leaps_ledger=ledger,
         config=config,
+        final_state=dummy_state,
     )
     return br, pd_obj_leaps
 
@@ -669,12 +698,26 @@ def test_build_performance_report_leaps_key_in_vol_table() -> None:
         rebalance_rule=RebalanceRule.QUARTERLY,
         weight_strategy=WeightStrategy.USER_SPECIFIED,
     )
+    dummy_state = PortfolioState(
+        holdings={},
+        defensive_sleeve=0.0,
+        leaps_pool=0.0,
+        leaps_value=0.0,
+        prev_total_nav=float(nav.iloc[-1]),
+        prev_regime=1,
+        prev_date_ts=idx[-1],
+        leaps_ledger=None,
+        leaps_scale={},
+        all_window_ledgers=(),
+        all_gtt_closes=(),
+    )
     br = BacktestResult(
         nav_series=nav,
         weight_history=weights_df,
         return_series=port_returns,
         leaps_ledger=None,
         config=config,
+        final_state=dummy_state,
     )
     pd_obj = _make_price_data(n + 1)
     rd = _make_return_data(n)

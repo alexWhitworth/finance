@@ -279,6 +279,9 @@ class BacktestResult:
         return_series: DatetimeIndex, daily market return (excludes contributions).
         leaps_ledger: Full LEAPS history, or None if no LEAPS overlay was used.
         config: PortfolioConfig that produced this result.
+        final_state: PortfolioState snapshot at the last backtest date. Enables
+            the as_live_portfolio() bridge to convert a completed backtest into a
+            LivePortfolio without re-running the simulation.
     """
 
     nav_series: pd.Series
@@ -286,6 +289,7 @@ class BacktestResult:
     return_series: pd.Series
     leaps_ledger: LeapsLedger | None
     config: PortfolioConfig
+    final_state: PortfolioState
 
 
 @dataclass(frozen=True)

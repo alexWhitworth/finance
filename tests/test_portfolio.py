@@ -5,7 +5,7 @@ import pandas as pd
 import pytest
 
 from finance._backtest_steps import _get_rebalance_dates, _should_rebalance
-from finance._portfolio_types import BacktestResult, PortfolioConfig
+from finance._portfolio_types import BacktestResult, PortfolioConfig, PortfolioState
 from finance.consts import DRIFT_BAND_RELATIVE
 from finance.data import PriceData
 from finance.leverage import AccountType, LeapsConfig, RebalanceRule, WeightStrategy
@@ -370,6 +370,49 @@ def test_run_backtest_config_stored() -> None:
     cfg = _config()
     result = run_backtest(rd, pd_obj, cfg)
     assert result.config is cfg
+
+
+# ---------------------------------------------------------------------------
+# F-003 — BacktestResult.final_state
+# ---------------------------------------------------------------------------
+
+
+def test_run_backtest_final_state_is_portfolio_state() -> None:
+    """BacktestResult.final_state is a PortfolioState instance."""
+    rd, pd_obj = _make_rd_and_pd(252)
+    result = run_backtest(rd, pd_obj, _config())
+    assert isinstance(result.final_state, PortfolioState)
+
+
+def test_run_backtest_final_state_single_date() -> None:
+    """BacktestResult.final_state is populated for a single-date backtest."""
+    rd, pd_obj = _make_rd_and_pd(1)
+    result = run_backtest(rd, pd_obj, _config())
+    assert isinstance(result.final_state, PortfolioState)
+
+
+# ---------------------------------------------------------------------------
+# F-004 — final_state.prev_date_ts == nav_series.index[-1]
+# ---------------------------------------------------------------------------
+
+
+def test_run_backtest_final_state_date_matches_nav_end() -> None:
+    """final_state.prev_date_ts equals the last date in nav_series."""
+    rd, pd_obj = _make_rd_and_pd(252)
+    result = run_backtest(rd, pd_obj, _config())
+    assert result.final_state.prev_date_ts == pd.Timestamp(result.nav_series.index[-1])
+
+
+def test_run_backtest_final_state_date_matches_nav_end_with_leaps() -> None:
+    """final_state.prev_date_ts equals the last date in nav_series — LEAPS path."""
+    rd, pd_obj = _make_rd_and_pd(252)
+    cfg = _config(
+        weights=dict(_LEAPS_WEIGHTS),
+        leaps_config=LeapsConfig(account_type=AccountType.TAXABLE),
+        contribution=5_000.0,
+    )
+    result = run_backtest(rd, pd_obj, cfg)
+    assert result.final_state.prev_date_ts == pd.Timestamp(result.nav_series.index[-1])
 
 
 # ---------------------------------------------------------------------------
