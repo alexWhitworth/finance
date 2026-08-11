@@ -18,7 +18,14 @@ from finance.leverage import (
     WeightStrategy,
 )
 from finance.portfolio import run_backtest
-from finance.portfolio_manager import LivePortfolio, as_live_portfolio
+from finance.portfolio_manager import (
+    HoldingView,
+    LivePortfolio,
+    NavBreakdown,
+    as_live_portfolio,
+    compute_holdings_view,
+    compute_nav_breakdown,
+)
 from finance.returns import ReturnData, build_return_data
 
 # ---------------------------------------------------------------------------
@@ -419,3 +426,272 @@ def test_live_portfolio_bad_sum_always_raises(bad_sum: float) -> None:
             leaps_contracts=(),
             gtt_regime=None,
         )
+
+
+# ---------------------------------------------------------------------------
+# F-010: compute_nav_breakdown
+# ---------------------------------------------------------------------------
+
+
+def _make_portfolio(
+    holdings: dict[str, float],
+    defensive_sleeve: float = 0.0,
+    leaps_pool: float = 0.0,
+) -> LivePortfolio:
+    """Build a minimal LivePortfolio with the given holdings."""
+    total = sum(holdings.values()) or 1.0
+    tw = {k: v / total for k, v in holdings.items()} if holdings else {"VTI": 1.0}
+    return LivePortfolio(
+        as_of_date=_AS_OF,
+        holdings=holdings,
+        target_weights=tw,
+        leaps_contracts=(),
+        gtt_regime=None,
+        defensive_sleeve=defensive_sleeve,
+        leaps_pool=leaps_pool,
+    )
+
+
+def test_nav_breakdown_total_nav_identity_no_extras() -> None:
+    """total_nav == base_nav when no LEAPS, defensive sleeve, or pool (I1)."""
+    holdings = {"VTI": 60_000.0, "VXUS": 40_000.0}
+    lp = _make_portfolio(holdings)
+    nb = compute_nav_breakdown(lp)
+    assert abs(nb.total_nav - (nb.base_nav + nb.leaps_nav + nb.defensive_sleeve + nb.leaps_pool)) < 1e-9
+    assert abs(nb.total_nav - 100_000.0) < 1e-9
+
+
+def test_nav_breakdown_leaps_mtm_included() -> None:
+    """total_nav includes leaps_mtm (I1)."""
+    holdings = {"VTI": 50_000.0}
+    lp = _make_portfolio(holdings)
+    nb = compute_nav_breakdown(lp, leaps_mtm=10_000.0)
+    assert abs(nb.total_nav - 60_000.0) < 1e-9
+    assert abs(nb.leaps_nav - 10_000.0) < 1e-9
+
+
+def test_nav_breakdown_defensive_sleeve_included() -> None:
+    """total_nav includes defensive_sleeve (I1)."""
+    holdings = {"VTI": 40_000.0}
+    lp = _make_portfolio(holdings, defensive_sleeve=20_000.0)
+    nb = compute_nav_breakdown(lp)
+    assert abs(nb.total_nav - 60_000.0) < 1e-9
+    assert abs(nb.defensive_sleeve - 20_000.0) < 1e-9
+
+
+def test_nav_breakdown_leaps_pool_included() -> None:
+    """total_nav includes leaps_pool (I1)."""
+    holdings = {"VTI": 40_000.0}
+    lp = _make_portfolio(holdings, leaps_pool=5_000.0)
+    nb = compute_nav_breakdown(lp)
+    assert abs(nb.total_nav - 45_000.0) < 1e-9
+
+
+def test_nav_breakdown_all_components() -> None:
+    """total_nav is exact sum of all four components (I1) — boundary test."""
+    holdings = {"VTI": 30_000.0, "VXUS": 20_000.0}
+    lp = _make_portfolio(holdings, defensive_sleeve=10_000.0, leaps_pool=5_000.0)
+    nb = compute_nav_breakdown(lp, leaps_mtm=8_000.0)
+    expected_total = 30_000.0 + 20_000.0 + 8_000.0 + 10_000.0 + 5_000.0
+    assert abs(nb.total_nav - expected_total) < 1e-9
+    assert abs(nb.total_nav - (nb.base_nav + nb.leaps_nav + nb.defensive_sleeve + nb.leaps_pool)) < 1e-9
+
+
+def test_nav_breakdown_is_frozen() -> None:
+    """NavBreakdown is frozen — attribute assignment raises."""
+    lp = _make_portfolio({"VTI": 10_000.0})
+    nb = compute_nav_breakdown(lp)
+    with pytest.raises((AttributeError, TypeError)):
+        nb.total_nav = 0.0  # type: ignore[misc]
+
+
+def test_nav_breakdown_zero_holdings() -> None:
+    """Portfolio with zero holdings: all-zero NavBreakdown except leaps_mtm."""
+    lp = LivePortfolio(
+        as_of_date=_AS_OF,
+        holdings={},
+        target_weights={"VTI": 1.0},
+        leaps_contracts=(),
+        gtt_regime=None,
+    )
+    nb = compute_nav_breakdown(lp, leaps_mtm=5_000.0)
+    assert nb.base_nav == 0.0
+    assert abs(nb.total_nav - 5_000.0) < 1e-9
+
+
+# ---------------------------------------------------------------------------
+# F-010: compute_holdings_view
+# ---------------------------------------------------------------------------
+
+
+def test_holdings_view_actual_weight_sum_le_one() -> None:
+    """sum(h.actual_weight) <= 1.0 + 1e-9 for base-only portfolio (I2)."""
+    holdings = {"VTI": 50_000.0, "VXUS": 30_000.0, "GLD": 20_000.0}
+    lp = _make_portfolio(holdings)
+    nb = compute_nav_breakdown(lp)
+    views = compute_holdings_view(lp, nb)
+    total_w = sum(h.actual_weight for h in views)
+    assert total_w <= 1.0 + 1e-9, f"actual_weight sum = {total_w}"
+
+
+def test_holdings_view_actual_weight_lt_one_with_defensive_sleeve() -> None:
+    """actual_weight sum < 1.0 when defensive_sleeve > 0 (I2, base assets only)."""
+    holdings = {"VTI": 40_000.0, "VXUS": 20_000.0}
+    lp = _make_portfolio(holdings, defensive_sleeve=10_000.0)
+    nb = compute_nav_breakdown(lp)
+    views = compute_holdings_view(lp, nb)
+    total_w = sum(h.actual_weight for h in views)
+    assert total_w < 1.0 - 1e-9, f"expected total_w < 1.0; got {total_w}"
+
+
+def test_holdings_view_weight_drift_computation() -> None:
+    """weight_drift = actual_weight - target_weight (signed)."""
+    holdings = {"VTI": 80_000.0, "VXUS": 20_000.0}
+    lp = LivePortfolio(
+        as_of_date=_AS_OF,
+        holdings=holdings,
+        target_weights={"VTI": 0.6, "VXUS": 0.4},
+        leaps_contracts=(),
+        gtt_regime=None,
+    )
+    nb = compute_nav_breakdown(lp)
+    views = {h.ticker: h for h in compute_holdings_view(lp, nb)}
+    # VTI is overweight: actual=0.8, target=0.6 → drift=+0.2
+    assert abs(views["VTI"].weight_drift - 0.2) < 1e-9
+    # VXUS is underweight: actual=0.2, target=0.4 → drift=-0.2
+    assert abs(views["VXUS"].weight_drift + 0.2) < 1e-9
+
+
+def test_holdings_view_relative_drift_none_when_target_zero() -> None:
+    """relative_drift is None when target_weight == 0."""
+    holdings = {"VTI": 50_000.0, "VXUS": 50_000.0}
+    lp = LivePortfolio(
+        as_of_date=_AS_OF,
+        holdings=holdings,
+        target_weights={"VTI": 1.0, "VXUS": 0.0},
+        leaps_contracts=(),
+        gtt_regime=None,
+    )
+    nb = compute_nav_breakdown(lp)
+    views = {h.ticker: h for h in compute_holdings_view(lp, nb)}
+    assert views["VXUS"].relative_drift is None
+
+
+def test_holdings_view_relative_drift_computed_correctly() -> None:
+    """relative_drift = weight_drift / target_weight when target_weight != 0."""
+    holdings = {"VTI": 80_000.0, "VXUS": 20_000.0}
+    lp = LivePortfolio(
+        as_of_date=_AS_OF,
+        holdings=holdings,
+        target_weights={"VTI": 0.6, "VXUS": 0.4},
+        leaps_contracts=(),
+        gtt_regime=None,
+    )
+    nb = compute_nav_breakdown(lp)
+    views = {h.ticker: h for h in compute_holdings_view(lp, nb)}
+    # VTI: drift=0.2, target=0.6 → relative = 0.2/0.6 ≈ 0.3333
+    assert abs(views["VTI"].relative_drift - (0.2 / 0.6)) < 1e-9  # type: ignore[operator]
+    # VXUS: drift=-0.2, target=0.4 → relative = -0.2/0.4 = -0.5
+    assert abs(views["VXUS"].relative_drift + 0.5) < 1e-9  # type: ignore[operator]
+
+
+def test_holdings_view_ticker_absent_from_target_weights() -> None:
+    """Ticker in holdings but absent from target_weights gets target_weight=0.0."""
+    holdings = {"VTI": 70_000.0, "EXTRA": 30_000.0}
+    lp = LivePortfolio(
+        as_of_date=_AS_OF,
+        holdings=holdings,
+        target_weights={"VTI": 1.0},
+        leaps_contracts=(),
+        gtt_regime=None,
+    )
+    nb = compute_nav_breakdown(lp)
+    views = {h.ticker: h for h in compute_holdings_view(lp, nb)}
+    assert views["EXTRA"].target_weight == 0.0
+    assert views["EXTRA"].relative_drift is None
+
+
+def test_holdings_view_zero_value_asset() -> None:
+    """Zero-value asset produces actual_weight=0.0 without division error."""
+    holdings = {"VTI": 100_000.0, "GLD": 0.0}
+    lp = LivePortfolio(
+        as_of_date=_AS_OF,
+        holdings=holdings,
+        target_weights={"VTI": 0.9, "GLD": 0.1},
+        leaps_contracts=(),
+        gtt_regime=None,
+    )
+    nb = compute_nav_breakdown(lp)
+    views = {h.ticker: h for h in compute_holdings_view(lp, nb)}
+    assert views["GLD"].actual_weight == 0.0
+    assert views["GLD"].dollar_value == 0.0
+
+
+def test_holdings_view_returns_tuple_of_holding_views() -> None:
+    """Return type is tuple[HoldingView, ...]."""
+    holdings = {"VTI": 50_000.0, "VXUS": 50_000.0}
+    lp = _make_portfolio(holdings)
+    nb = compute_nav_breakdown(lp)
+    views = compute_holdings_view(lp, nb)
+    assert isinstance(views, tuple)
+    assert all(isinstance(h, HoldingView) for h in views)
+
+
+def test_holdings_view_is_frozen() -> None:
+    """HoldingView is frozen — attribute assignment raises."""
+    holdings = {"VTI": 50_000.0}
+    lp = _make_portfolio(holdings)
+    nb = compute_nav_breakdown(lp)
+    views = compute_holdings_view(lp, nb)
+    with pytest.raises((AttributeError, TypeError)):
+        views[0].actual_weight = 0.0  # type: ignore[misc]
+
+
+# ---------------------------------------------------------------------------
+# Property-based: I1 and I2 invariants
+# ---------------------------------------------------------------------------
+
+
+@given(
+    base_vti=st.floats(min_value=1.0, max_value=1_000_000.0),
+    base_vxus=st.floats(min_value=1.0, max_value=1_000_000.0),
+    leaps_mtm=st.floats(min_value=0.0, max_value=500_000.0),
+    defensive=st.floats(min_value=0.0, max_value=500_000.0),
+    pool=st.floats(min_value=0.0, max_value=500_000.0),
+)
+@settings(max_examples=100)
+def test_nav_breakdown_total_nav_identity_property(
+    base_vti: float,
+    base_vxus: float,
+    leaps_mtm: float,
+    defensive: float,
+    pool: float,
+) -> None:
+    """Property I1: total_nav == base_nav + leaps_nav + defensive_sleeve + leaps_pool."""
+    holdings = {"VTI": base_vti, "VXUS": base_vxus}
+    lp = _make_portfolio(holdings, defensive_sleeve=defensive, leaps_pool=pool)
+    nb = compute_nav_breakdown(lp, leaps_mtm=leaps_mtm)
+    identity = nb.base_nav + nb.leaps_nav + nb.defensive_sleeve + nb.leaps_pool
+    assert abs(nb.total_nav - identity) < 1e-9, f"I1 violated: {nb.total_nav} != {identity}"
+
+
+@given(
+    base_vti=st.floats(min_value=1.0, max_value=1_000_000.0),
+    base_vxus=st.floats(min_value=1.0, max_value=1_000_000.0),
+    defensive=st.floats(min_value=0.0, max_value=500_000.0),
+    pool=st.floats(min_value=0.0, max_value=500_000.0),
+)
+@settings(max_examples=100)
+def test_holdings_view_weight_sum_le_one_property(
+    base_vti: float,
+    base_vxus: float,
+    defensive: float,
+    pool: float,
+) -> None:
+    """Property I2: sum(actual_weight) <= 1.0 + 1e-9 for any base-only portfolio."""
+    holdings = {"VTI": base_vti, "VXUS": base_vxus}
+    lp = _make_portfolio(holdings, defensive_sleeve=defensive, leaps_pool=pool)
+    nb = compute_nav_breakdown(lp)
+    views = compute_holdings_view(lp, nb)
+    total_w = sum(h.actual_weight for h in views)
+    assert total_w <= 1.0 + 1e-9, f"I2 violated: sum(actual_weight) = {total_w}"

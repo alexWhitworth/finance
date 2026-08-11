@@ -1,8 +1,8 @@
 """Live portfolio management — bridge from backtest result to live portfolio state.
 
-Provides the LivePortfolio dataclass and the as_live_portfolio() bridge function
-that converts a completed BacktestResult into a LivePortfolio for live management.
-All functions are pure (no I/O).
+Provides the LivePortfolio, NavBreakdown, and HoldingView dataclasses, and the
+pure functions as_live_portfolio(), compute_nav_breakdown(), and
+compute_holdings_view(). All functions are pure (no I/O).
 """
 
 from __future__ import annotations
@@ -65,6 +65,107 @@ class LivePortfolio:
                     f"contract.expiry_date ({contract.expiry_date.date()}) must be "
                     f"> as_of_date ({self.as_of_date.date()})"
                 )
+
+
+@dataclass(frozen=True)
+class NavBreakdown:
+    """NAV decomposition for a LivePortfolio.
+
+    Attributes:
+        base_nav: Sum of base asset holdings.
+        leaps_nav: Mark-to-market value of all active LEAPS contracts (caller-supplied).
+        defensive_sleeve: GTT-swept capital.
+        leaps_pool: Parked force-closed LEAPS proceeds.
+        total_nav: base_nav + leaps_nav + defensive_sleeve + leaps_pool.
+    """
+
+    base_nav: float
+    leaps_nav: float
+    defensive_sleeve: float
+    leaps_pool: float
+    total_nav: float
+
+
+@dataclass(frozen=True)
+class HoldingView:
+    """Single asset row in a portfolio weight drift analysis.
+
+    Attributes:
+        ticker: Asset identifier.
+        dollar_value: Current dollar value.
+        actual_weight: dollar_value / total_nav.
+        target_weight: From LivePortfolio.target_weights (0.0 if absent).
+        weight_drift: actual_weight - target_weight (signed).
+        relative_drift: weight_drift / target_weight; None when target_weight == 0.
+    """
+
+    ticker: str
+    dollar_value: float
+    actual_weight: float
+    target_weight: float
+    weight_drift: float
+    relative_drift: float | None
+
+
+def compute_nav_breakdown(
+    portfolio: LivePortfolio,
+    leaps_mtm: float = 0.0,
+) -> NavBreakdown:
+    """Decompose LivePortfolio NAV into base, LEAPS, defensive, and pool components.
+
+    Arguments:
+        portfolio: LivePortfolio whose holdings to decompose.
+        leaps_mtm: Current mark-to-market value of all active LEAPS contracts
+            (caller-supplied; not computed here). Defaults to 0.0.
+
+    Returns:
+        NavBreakdown with total_nav == base_nav + leaps_nav + defensive_sleeve
+        + leaps_pool within 1e-9 (I1).
+    """
+    base_nav = sum(portfolio.holdings.values())
+    total_nav = base_nav + leaps_mtm + portfolio.defensive_sleeve + portfolio.leaps_pool
+    return NavBreakdown(
+        base_nav=base_nav,
+        leaps_nav=leaps_mtm,
+        defensive_sleeve=portfolio.defensive_sleeve,
+        leaps_pool=portfolio.leaps_pool,
+        total_nav=total_nav,
+    )
+
+
+def compute_holdings_view(
+    portfolio: LivePortfolio,
+    nav: NavBreakdown,
+) -> tuple[HoldingView, ...]:
+    """Compute per-asset weight drift against target_weights.
+
+    Arguments:
+        portfolio: LivePortfolio with base asset holdings and target weights.
+        nav: NavBreakdown providing total_nav for weight normalization.
+
+    Returns:
+        Tuple of HoldingView — one per ticker in portfolio.holdings. The sum of
+        actual_weight values is <= 1.0 + 1e-9 (I2) since holdings cover only base
+        assets; defensive_sleeve and leaps components are excluded.
+    """
+    total = nav.total_nav
+    views = []
+    for ticker, value in portfolio.holdings.items():
+        actual_w = value / total if total > 0.0 else 0.0
+        target_w = portfolio.target_weights.get(ticker, 0.0)
+        drift = actual_w - target_w
+        rel = drift / target_w if target_w != 0.0 else None
+        views.append(
+            HoldingView(
+                ticker=ticker,
+                dollar_value=value,
+                actual_weight=actual_w,
+                target_weight=target_w,
+                weight_drift=drift,
+                relative_drift=rel,
+            )
+        )
+    return tuple(views)
 
 
 def as_live_portfolio(

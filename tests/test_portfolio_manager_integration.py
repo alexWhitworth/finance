@@ -14,7 +14,7 @@ from finance._portfolio_types import PortfolioConfig
 from finance.data import PriceData
 from finance.leverage import AccountType, LeapsConfig, RebalanceRule, WeightStrategy
 from finance.portfolio import run_backtest
-from finance.portfolio_manager import as_live_portfolio
+from finance.portfolio_manager import as_live_portfolio, compute_nav_breakdown
 from finance.returns import ReturnData, build_return_data
 
 # ---------------------------------------------------------------------------
@@ -162,6 +162,36 @@ def test_integration_leaps_scale_within_bounds() -> None:
     lp = as_live_portfolio(result)
     for _contract, scale in lp.leaps_contracts:
         assert 0.0 < scale <= 1.0, f"scale {scale} out of bounds"
+
+
+def test_integration_nav_breakdown_total_nav_matches_nav_series_no_leaps() -> None:
+    """I11: compute_nav_breakdown(lp).total_nav ≈ result.nav_series.iloc[-1] within 1e-6 (no LEAPS)."""
+    rd, pd_obj = _make_rd_and_pd(756)
+    result = run_backtest(rd, pd_obj, _config())
+    lp = as_live_portfolio(result)
+    nb = compute_nav_breakdown(lp, leaps_mtm=0.0)
+    expected = float(result.nav_series.iloc[-1])
+    assert abs(nb.total_nav - expected) < 1e-6, (
+        f"I11 violation: nav_breakdown.total_nav={nb.total_nav} "
+        f"vs nav_series[-1]={expected}"
+    )
+
+
+def test_integration_nav_breakdown_total_nav_matches_nav_series_with_leaps() -> None:
+    """I11: compute_nav_breakdown(lp, leaps_mtm=leaps_value).total_nav ≈ nav_series[-1] with LEAPS."""
+    rd, pd_obj = _make_rd_and_pd(756)
+    leaps_cfg = LeapsConfig(account_type=AccountType.TAXABLE)
+    cfg = _config(weights=dict(_LEAPS_WEIGHTS), leaps_config=leaps_cfg)
+    result = run_backtest(rd, pd_obj, cfg)
+    lp = as_live_portfolio(result)
+    # leaps_value from final_state is the last MTM valuation used in the backtest
+    leaps_mtm = result.final_state.leaps_value
+    nb = compute_nav_breakdown(lp, leaps_mtm=leaps_mtm)
+    expected = float(result.nav_series.iloc[-1])
+    assert abs(nb.total_nav - expected) < 1e-6, (
+        f"I11 violation: nav_breakdown.total_nav={nb.total_nav} "
+        f"vs nav_series[-1]={expected}"
+    )
 
 
 @pytest.mark.slow
