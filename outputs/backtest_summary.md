@@ -62,7 +62,7 @@ $$m(t) = \frac{\text{NAV}(t)}{\text{Contributed}_{\text{hurdle}}(t)}$$
   - Where $\lambda = \frac{\ln(2)}{\text{half life multiple}}$.
 
 * **Freed Weight Redistribution (`vti_alpha`):**
-  * Freed LEAPS weight ($w_{\text{freed}} = w_0 - w_{\text{LEAPS}}(m)$) is routed symmetrically:
+  * Freed LEAPS weight, $w_{\text{freed}} = w_0 - w_{\text{LEAPS}}(m)$, is routed symmetrically:
     * A. $\text{Target Weight}_{\text{VTI 1x}} = w_{\text{freed}} \times \text{vti alpha}$
     * B. The remaining $(1 - \text{vti alpha})$ expands the multi-asset base proportionally.
 
