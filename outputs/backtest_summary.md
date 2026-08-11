@@ -57,14 +57,14 @@ $$\text{Contributed}_{\text{hurdle}}(t) = \text{Contributed}_{\text{hurdle}}(t-1
 $$m(t) = \frac{\text{NAV}(t)}{\text{Contributed}_{\text{hurdle}}(t)}$$
 
 * **Index Variable ($m$):** De-leveraging only begins once $m(t) > 1.0$ (i.e., after clearing the 13-week T-bill risk-free return hurdle on actual cash contributions).
-* **Target Weight Schedule:**
+* **Target Weight Schedule:** 
   $$w_{\text{LEAPS}}(m) = \text{floor} + (w_0 - \text{floor}) \times \exp\left(-\lambda \times \max(m - 1.0, 0)\right)$$
-  Where $\lambda = \frac{\ln(2)}{\text{half\_life\_multiple}}$.
+  - Where $\lambda = \frac{\ln(2)}{\text{half life multiple}}$.
 
 * **Freed Weight Redistribution (`vti_alpha`):**
-  Freed LEAPS weight ($w_{\text{freed}} = w_0 - w_{\text{LEAPS}}(m)$) is routed symmetrically:
-  $$\text{Target Weight}_{\text{VTI\_1x}} = w_{\text{freed}} \times \text{vti\_alpha}$$
-  The remaining $(1 - \text{vti\_alpha})$ expands the multi-asset base proportionally.
+  - Freed LEAPS weight ($w_{\text{freed}} = w_0 - w_{\text{LEAPS}}(m)$) is routed symmetrically:
+  - $\text{Target Weight}_{\text{VTI_1x}} = w_{\text{freed}} \times \text{vti_alpha}$
+  - The remaining $(1 - \text{vti_alpha})$ expands the multi-asset base proportionally.
 
 * **Primary Configuration Profile (`GlidepathConfig`):**
   * `half_life_multiple = 1.0` (Active weight halves when NAV doubles hurdle capital)
