@@ -63,8 +63,8 @@ $$m(t) = \frac{\text{NAV}(t)}{\text{Contributed}_{\text{hurdle}}(t)}$$
 
 * **Freed Weight Redistribution (`vti_alpha`):**
   - Freed LEAPS weight ($w_{\text{freed}} = w_0 - w_{\text{LEAPS}}(m)$) is routed symmetrically:
-    - $\text{Target Weight}_{\text{VTI_1x}} = w_{\text{freed}} \times \text{vti_alpha}$
-    - The remaining $(1 - \text{vti_alpha})$ expands the multi-asset base proportionally.
+    - A. $\text{Target Weight}_{\text{VTI_1x}} = w_{\text{freed}} \times \text{vti_alpha}$
+    - B. The remaining $(1 - \text{vti_alpha})$ expands the multi-asset base proportionally.
 
 * **Primary Configuration Profile (`GlidepathConfig`):**
   * `half_life_multiple = 1.0` (Active weight halves when NAV doubles hurdle capital)
@@ -83,7 +83,6 @@ $$m(t) = \frac{\text{NAV}(t)}{\text{Contributed}_{\text{hurdle}}(t)}$$
 | **`LEAPS DRIFT`** | 15.25% | 16.44% | 37.85% | **0.8357** | **0.7818** | $101.1M |
 | **`LEAPS GLIDE`** *(hl=1.0, fl=0.025, α=0.65)* | **16.54%** | 21.98% | 74.92% | 0.7234 | 0.6628 | **$209.0M** |
 | **`GTT LEAPS DRIFT`** | 13.97% | 15.06% | 30.77% | 0.8217 | 0.8671 | $67.3M |
-| **`GTT LEAPS GLIDE`** | -20.78% | 29.58% | 91.38% | -0.6810 | -0.5451 | $0.8M |
 
 ---
 
@@ -101,11 +100,12 @@ $$m(t) = \frac{\text{NAV}(t)}{\text{Contributed}_{\text{hurdle}}(t)}$$
 #### 3. Strategic Selection Framework: `LEAPS DRIFT` vs. `LEAPS GLIDE`
 
 * **`LEAPS DRIFT` (The Optimal Risk-Adjusted Engine):**
-  * Achieves institutional-grade efficiency (**Sharpe 0.8357 / Sortino 0.7818**).
-  * Caps full-period Max Drawdown below $38\%$ (beating 100% VTI's 55.2% and 80/20's 46.8% Max DD).
-  * Stationarity ensures complete insulation from early sequence-of-returns risk.
+  * Achieves institutional-grade risk-adjusted efficiency (**Sharpe 0.8357 / Sortino 0.7818**).
+  * Caps full-period Max Drawdown below $38\%$, dramatically beating alternatives.
+  * Fixed rebalancing policy ensures insulation from early sequence-of-returns risk.
 
 * **`LEAPS GLIDE` (The Maximum Terminal Wealth Compounder):**
-  * Generates massive terminal wealth (**$209.0M** vs. $101.1M for DRIFT) by using options as a temporary booster stage.
+  * Generates massive terminal wealth (**$209.0M** vs. $101.1M for DRIFT) by using options as a temporary booster stage. 
+    - **Beware:** this occured in a backtest that captures the longest/largest VTI bull market in history. Past performance != future performance.
   * Systematically converts high-volatility option delta into unleveraged $1\text{x}\ VTI$ and multi-asset capital as $m(t)$ expands, eliminating option theta/vega drag late in life.
   * **Trade-off:** High early-sequence drawdown risk ($\sim 74\%$ Max DD during 2000–2003 / 2007–2009) before $m(t)$ has accumulated a capital surplus.
