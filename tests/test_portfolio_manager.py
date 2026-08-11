@@ -21,7 +21,6 @@ from finance.portfolio import run_backtest
 from finance.portfolio_manager import (
     HoldingView,
     LivePortfolio,
-    NavBreakdown,
     as_live_portfolio,
     compute_holdings_view,
     compute_nav_breakdown,
@@ -457,7 +456,8 @@ def test_nav_breakdown_total_nav_identity_no_extras() -> None:
     holdings = {"VTI": 60_000.0, "VXUS": 40_000.0}
     lp = _make_portfolio(holdings)
     nb = compute_nav_breakdown(lp)
-    assert abs(nb.total_nav - (nb.base_nav + nb.leaps_nav + nb.defensive_sleeve + nb.leaps_pool)) < 1e-9
+    identity = nb.base_nav + nb.leaps_nav + nb.defensive_sleeve + nb.leaps_pool
+    assert abs(nb.total_nav - identity) < 1e-9
     assert abs(nb.total_nav - 100_000.0) < 1e-9
 
 
@@ -493,8 +493,9 @@ def test_nav_breakdown_all_components() -> None:
     lp = _make_portfolio(holdings, defensive_sleeve=10_000.0, leaps_pool=5_000.0)
     nb = compute_nav_breakdown(lp, leaps_mtm=8_000.0)
     expected_total = 30_000.0 + 20_000.0 + 8_000.0 + 10_000.0 + 5_000.0
+    identity = nb.base_nav + nb.leaps_nav + nb.defensive_sleeve + nb.leaps_pool
     assert abs(nb.total_nav - expected_total) < 1e-9
-    assert abs(nb.total_nav - (nb.base_nav + nb.leaps_nav + nb.defensive_sleeve + nb.leaps_pool)) < 1e-9
+    assert abs(nb.total_nav - identity) < 1e-9
 
 
 def test_nav_breakdown_is_frozen() -> None:

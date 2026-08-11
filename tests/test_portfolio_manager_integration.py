@@ -165,7 +165,7 @@ def test_integration_leaps_scale_within_bounds() -> None:
 
 
 def test_integration_nav_breakdown_total_nav_matches_nav_series_no_leaps() -> None:
-    """I11: compute_nav_breakdown(lp).total_nav ≈ result.nav_series.iloc[-1] within 1e-6 (no LEAPS)."""
+    """I11: compute_nav_breakdown(lp).total_nav ≈ nav_series[-1] within 1e-6 (no LEAPS)."""
     rd, pd_obj = _make_rd_and_pd(756)
     result = run_backtest(rd, pd_obj, _config())
     lp = as_live_portfolio(result)
@@ -178,7 +178,7 @@ def test_integration_nav_breakdown_total_nav_matches_nav_series_no_leaps() -> No
 
 
 def test_integration_nav_breakdown_total_nav_matches_nav_series_with_leaps() -> None:
-    """I11: compute_nav_breakdown(lp, leaps_mtm=leaps_value).total_nav ≈ nav_series[-1] with LEAPS."""
+    """I11: compute_nav_breakdown(lp, leaps_mtm=leaps_value).total_nav ≈ nav_series[-1]."""
     rd, pd_obj = _make_rd_and_pd(756)
     leaps_cfg = LeapsConfig(account_type=AccountType.TAXABLE)
     cfg = _config(weights=dict(_LEAPS_WEIGHTS), leaps_config=leaps_cfg)

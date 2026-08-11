@@ -8,7 +8,7 @@ synthetic leverage via DITM VTI LEAPS and a macro-economic based market timing s
 From extensive back tests and analyses when building this library, the following guidance
 applies to most investors. When paired with the multi-asset portfolios defined in `examples/`,
 the result is handily beating standard institutional frameworks (eg. 60/40, 80/20, 
-all-weather, etc):
+All-Weather, etc):
 
 1. `RebalanceRule.DRIFT` with or without a `GlidepathConfig`, dominates.
     - No glide path: better risk adjusted returns (Sharpe, Sortino) across all regimes.
@@ -82,7 +82,7 @@ uv run mypy src/               # type-check
 ```
 
 - **98.5% line coverage · ruff clean · mypy strict clean**
-- **Note:** No `mutmut` or `hypothesis` tests. Contributions welcomed!
+- **Note:** No `mutmut` tests; limited `hypothesis`. Contributions welcomed!
 
 ## Usage
 
