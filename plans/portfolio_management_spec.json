@@ -777,7 +777,7 @@
       "description": "Define ContractGreeks and PortfolioGreeks frozen dataclasses in finance/greeks.py. Implement compute_contract_greeks(contract, spot, iv, as_of_date, risk_free_rate, leaps_scale).",
       "phase": "3a",
       "priority": 4,
-      "status": "not_started",
+      "status": "pending_judge",
       "layer": "python",
       "dependencies": ["F-006"],
       "linked_schemas": ["DS-008", "DS-009"],
