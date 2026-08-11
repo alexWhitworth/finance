@@ -40,7 +40,7 @@ class ContractGreeks:
         price: BS call price per share.
         delta: dV/dS. In (0, 1) for calls.
         gamma: d²V/dS². Always positive for long calls.
-        vega: dV/dσ per unit IV move.
+        vega: dV/d(sigma) per unit IV move.
         theta: dV/dt in dollars per calendar day (negative for long calls).
         vanna: dDelta/dVol.
         charm: dDelta/dt. Delta decay per calendar day.
@@ -193,17 +193,16 @@ def compute_portfolio_greeks(
         for contract, scale in portfolio.leaps_contracts
     )
 
-    position_scale_fn = (
-        lambda cg: cg.contract.n_contracts * CONTRACT_MULTIPLIER * cg.leaps_scale
-    )
+    def _position_scale(cg: ContractGreeks) -> float:
+        return cg.contract.n_contracts * CONTRACT_MULTIPLIER * cg.leaps_scale
 
     return PortfolioGreeks(
         as_of_date=portfolio.as_of_date,
         contracts=contract_greeks,
         net_delta=sum(cg.position_delta for cg in contract_greeks),
         net_vega=sum(cg.position_vega for cg in contract_greeks),
-        net_gamma=sum(cg.gamma * position_scale_fn(cg) for cg in contract_greeks),
+        net_gamma=sum(cg.gamma * _position_scale(cg) for cg in contract_greeks),
         net_theta=sum(cg.position_theta for cg in contract_greeks),
-        net_vanna=sum(cg.vanna * position_scale_fn(cg) for cg in contract_greeks),
-        net_charm=sum(cg.charm * position_scale_fn(cg) for cg in contract_greeks),
+        net_vanna=sum(cg.vanna * _position_scale(cg) for cg in contract_greeks),
+        net_charm=sum(cg.charm * _position_scale(cg) for cg in contract_greeks),
     )

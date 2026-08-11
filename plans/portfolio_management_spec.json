@@ -822,7 +822,7 @@
       "description": "Implement compute_portfolio_greeks(portfolio, spot, iv, risk_free_rate) in finance/greeks.py. Returns all-zero PortfolioGreeks with empty contracts tuple when portfolio.leaps_contracts is empty.",
       "phase": "3c",
       "priority": 4,
-      "status": "not_started",
+      "status": "pending_judge",
       "layer": "python",
       "dependencies": ["F-007"],
       "linked_schemas": ["DS-001", "DS-009"],

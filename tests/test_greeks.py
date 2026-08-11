@@ -1,17 +1,16 @@
-"""Tests for finance/greeks.py — F-007: ContractGreeks, compute_contract_greeks."""
+"""Tests for finance/greeks.py — F-007/F-008: ContractGreeks, PortfolioGreeks, compute functions."""
 
 import math
 
 import numpy as np
 import pandas as pd
-import pytest
 from hypothesis import assume, given, settings
 from hypothesis import strategies as st
-from scipy.stats import norm
 
-from finance.consts import CONTRACT_MULTIPLIER, DEFAULT_IV, TIME_FLOOR
-from finance.greeks import ContractGreeks, PortfolioGreeks, compute_contract_greeks
+from finance.consts import CONTRACT_MULTIPLIER, TIME_FLOOR
+from finance.greeks import compute_contract_greeks, compute_portfolio_greeks
 from finance.leverage import AccountType, LeapsContract, bs_call_price
+from finance.portfolio_manager import LivePortfolio
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -225,8 +224,8 @@ def test_dividend_yield_forwarded() -> None:
 #
 # Strategy notes:
 #   - iv_min=0.10 avoids float64 underflow at extreme moneyness / low-vol combos
-#   - moneyness bounded at 0.4–2.5× spot to stay in the "valid LEAPS" regime
-#     (strike < 0.4×spot or > 2.5×spot saturates CDF to 0 or 1 in float64)
+#   - moneyness bounded at 0.4-2.5x spot to stay in the "valid LEAPS" regime
+#     (strike < 0.4x spot or > 2.5x spot saturates CDF to 0 or 1 in float64)
 # ---------------------------------------------------------------------------
 
 _valid_spot = st.floats(min_value=50.0, max_value=500.0, allow_nan=False, allow_infinity=False)
@@ -234,7 +233,7 @@ _valid_iv = st.floats(min_value=0.10, max_value=1.0, allow_nan=False, allow_infi
 _valid_rfr = st.floats(min_value=0.0, max_value=0.15, allow_nan=False, allow_infinity=False)
 _valid_scale = st.floats(min_value=0.01, max_value=1.0, allow_nan=False, allow_infinity=False)
 _valid_n = st.floats(min_value=0.1, max_value=100.0, allow_nan=False, allow_infinity=False)
-# Strike as a moneyness fraction of spot (0.4–2.5×), then multiplied in the test
+# Strike as a moneyness fraction of spot (0.4-2.5x), then multiplied in the test
 _valid_moneyness = st.floats(min_value=0.4, max_value=2.5, allow_nan=False, allow_infinity=False)
 
 
@@ -247,7 +246,7 @@ def _d1(spot: float, strike: float, t: float, iv: float, r: float) -> float:
 def test_property_delta_in_unit_interval(
     spot: float, iv: float, rfr: float, mono: float, scale: float
 ) -> None:
-    """I4: delta ∈ (0, 1) for valid-regime inputs (strike within 40%–250% of spot).
+    """I4: delta ∈ (0, 1) for valid-regime inputs (strike within 40%-250% of spot).
 
     Note: Filters inputs where float64 N(d1) saturates to exactly 0 or 1.
     This is a float64 limitation, not a formula error.
@@ -317,3 +316,185 @@ def test_property_position_delta_formula(
     cg = compute_contract_greeks(contract, spot, iv, _AS_OF, risk_free_rate=rfr, leaps_scale=scale)
     expected = cg.delta * n * CONTRACT_MULTIPLIER * scale
     np.testing.assert_allclose(cg.position_delta, expected, rtol=1e-12)
+
+
+# ===========================================================================
+# F-008: compute_portfolio_greeks unit tests
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# Helpers for LivePortfolio construction
+# ---------------------------------------------------------------------------
+
+
+def _make_live_portfolio(
+    leaps_contracts: tuple[tuple[LeapsContract, float], ...] = (),
+) -> LivePortfolio:
+    """Build a minimal LivePortfolio with controllable leaps_contracts."""
+    return LivePortfolio(
+        as_of_date=_AS_OF,
+        holdings={"VTI": 10_000.0},
+        target_weights={"VTI": 1.0},
+        leaps_contracts=leaps_contracts,
+        gtt_regime=None,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Empty portfolio → all-zero PortfolioGreeks
+# ---------------------------------------------------------------------------
+
+
+def test_empty_portfolio_all_zero_net_fields() -> None:
+    """Empty leaps_contracts → PortfolioGreeks with all net_ fields = 0.0."""
+    portfolio = _make_live_portfolio(leaps_contracts=())
+    pg = compute_portfolio_greeks(portfolio, spot=200.0, iv=0.20)
+
+    assert pg.net_delta == 0.0
+    assert pg.net_vega == 0.0
+    assert pg.net_gamma == 0.0
+    assert pg.net_theta == 0.0
+    assert pg.net_vanna == 0.0
+    assert pg.net_charm == 0.0
+    assert pg.contracts == ()
+    assert pg.as_of_date == _AS_OF
+
+
+def test_empty_portfolio_contracts_tuple_empty() -> None:
+    """Empty leaps_contracts → contracts tuple is empty."""
+    portfolio = _make_live_portfolio()
+    pg = compute_portfolio_greeks(portfolio, spot=200.0, iv=0.20)
+    assert len(pg.contracts) == 0
+
+
+# ---------------------------------------------------------------------------
+# Single contract portfolio
+# ---------------------------------------------------------------------------
+
+
+def test_single_contract_net_delta_equals_position_delta() -> None:
+    """Single contract: net_delta == contracts[0].position_delta."""
+    contract = _make_contract(strike=100.0, n_contracts=1.0)
+    portfolio = _make_live_portfolio(leaps_contracts=((contract, 1.0),))
+    pg = compute_portfolio_greeks(portfolio, spot=200.0, iv=0.20, risk_free_rate=0.04)
+
+    assert len(pg.contracts) == 1
+    np.testing.assert_allclose(pg.net_delta, pg.contracts[0].position_delta, rtol=1e-12)
+    np.testing.assert_allclose(pg.net_vega, pg.contracts[0].position_vega, rtol=1e-12)
+    np.testing.assert_allclose(pg.net_theta, pg.contracts[0].position_theta, rtol=1e-12)
+
+
+def test_single_contract_as_of_date() -> None:
+    """as_of_date on PortfolioGreeks matches portfolio.as_of_date."""
+    contract = _make_contract(strike=100.0)
+    portfolio = _make_live_portfolio(leaps_contracts=((contract, 1.0),))
+    pg = compute_portfolio_greeks(portfolio, spot=200.0, iv=0.20)
+    assert pg.as_of_date == _AS_OF
+
+
+# ---------------------------------------------------------------------------
+# Multiple contracts: net_ == sum of per-contract position values (I12 oracle)
+# ---------------------------------------------------------------------------
+
+
+def test_multi_contract_net_delta_is_sum() -> None:
+    """net_delta == sum(cg.position_delta) for any number of contracts."""
+    c1 = _make_contract(strike=100.0, n_contracts=2.0)
+    c2 = _make_contract(strike=150.0, n_contracts=3.0)
+    portfolio = _make_live_portfolio(leaps_contracts=((c1, 1.0), (c2, 0.75)))
+    pg = compute_portfolio_greeks(portfolio, spot=200.0, iv=0.20)
+
+    expected_delta = sum(cg.position_delta for cg in pg.contracts)
+    np.testing.assert_allclose(pg.net_delta, expected_delta, rtol=1e-12)
+
+
+def test_multi_contract_net_vega_is_sum() -> None:
+    """net_vega == sum(cg.position_vega) for multiple contracts."""
+    c1 = _make_contract(strike=100.0, n_contracts=1.0)
+    c2 = _make_contract(strike=120.0, n_contracts=2.0)
+    portfolio = _make_live_portfolio(leaps_contracts=((c1, 1.0), (c2, 1.0)))
+    pg = compute_portfolio_greeks(portfolio, spot=200.0, iv=0.20)
+
+    expected_vega = sum(cg.position_vega for cg in pg.contracts)
+    np.testing.assert_allclose(pg.net_vega, expected_vega, rtol=1e-12)
+
+
+def test_multi_contract_net_gamma_scaled() -> None:
+    """net_gamma == sum(gamma * n_contracts * CONTRACT_MULTIPLIER * leaps_scale)."""
+    c1 = _make_contract(strike=100.0, n_contracts=2.0)
+    c2 = _make_contract(strike=130.0, n_contracts=1.5)
+    portfolio = _make_live_portfolio(leaps_contracts=((c1, 0.8), (c2, 0.5)))
+    pg = compute_portfolio_greeks(portfolio, spot=200.0, iv=0.20)
+
+    expected_gamma = sum(
+        cg.gamma * cg.contract.n_contracts * CONTRACT_MULTIPLIER * cg.leaps_scale
+        for cg in pg.contracts
+    )
+    np.testing.assert_allclose(pg.net_gamma, expected_gamma, rtol=1e-12)
+
+
+def test_multi_contract_net_theta_is_sum() -> None:
+    """net_theta == sum(cg.position_theta)."""
+    c1 = _make_contract(strike=100.0, n_contracts=1.0)
+    c2 = _make_contract(strike=150.0, n_contracts=1.0)
+    portfolio = _make_live_portfolio(leaps_contracts=((c1, 1.0), (c2, 1.0)))
+    pg = compute_portfolio_greeks(portfolio, spot=200.0, iv=0.20)
+
+    expected_theta = sum(cg.position_theta for cg in pg.contracts)
+    np.testing.assert_allclose(pg.net_theta, expected_theta, rtol=1e-12)
+
+
+def test_different_leaps_scales() -> None:
+    """Multiple contracts with different leaps_scale values: net fields are correct."""
+    c1 = _make_contract(strike=100.0, n_contracts=5.0)
+    c2 = _make_contract(strike=100.0, n_contracts=5.0)
+    portfolio = _make_live_portfolio(leaps_contracts=((c1, 1.0), (c2, 0.3)))
+    pg = compute_portfolio_greeks(portfolio, spot=200.0, iv=0.20)
+
+    assert len(pg.contracts) == 2
+    assert pg.contracts[0].leaps_scale == 1.0
+    assert pg.contracts[1].leaps_scale == 0.3
+    # Position delta for half-scale should be ~0.3x of full-scale (same contract params)
+    np.testing.assert_allclose(
+        pg.contracts[1].position_delta,
+        pg.contracts[0].position_delta * 0.3,
+        rtol=1e-9,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Property-based: net_delta == sum(position_deltas) (I12 partial check)
+# ---------------------------------------------------------------------------
+
+
+@given(
+    spot=_valid_spot,
+    iv=_valid_iv,
+    mono1=_valid_moneyness,
+    mono2=_valid_moneyness,
+    n1=st.floats(min_value=0.5, max_value=20.0, allow_nan=False, allow_infinity=False),
+    n2=st.floats(min_value=0.5, max_value=20.0, allow_nan=False, allow_infinity=False),
+    scale1=_valid_scale,
+    scale2=_valid_scale,
+)
+@settings(max_examples=150)
+def test_property_net_delta_equals_sum(
+    spot: float,
+    iv: float,
+    mono1: float,
+    mono2: float,
+    n1: float,
+    n2: float,
+    scale1: float,
+    scale2: float,
+) -> None:
+    """Property: net_delta == sum(cg.position_delta for cg in contracts)."""
+    s1 = round(spot * mono1, 2)
+    s2 = round(spot * mono2, 2)
+    assume(s1 > 1.0 and s2 > 1.0)
+    c1 = _make_contract(strike=s1, n_contracts=n1)
+    c2 = _make_contract(strike=s2, n_contracts=n2)
+    portfolio = _make_live_portfolio(leaps_contracts=((c1, scale1), (c2, scale2)))
+    pg = compute_portfolio_greeks(portfolio, spot=spot, iv=iv)
+    expected = sum(cg.position_delta for cg in pg.contracts)
+    np.testing.assert_allclose(pg.net_delta, expected, rtol=1e-12)
