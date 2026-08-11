@@ -63,8 +63,8 @@ $$m(t) = \frac{\text{NAV}(t)}{\text{Contributed}_{\text{hurdle}}(t)}$$
 
 * **Freed Weight Redistribution (`vti_alpha`):**
   * Freed LEAPS weight ($w_{\text{freed}} = w_0 - w_{\text{LEAPS}}(m)$) is routed symmetrically:
-    * A. $\text{Target Weight}_{\text{VTI_1x}} = w_{\text{freed}} \times \text{vti_alpha}$
-    * B. The remaining $(1 - \text{vti_alpha})$ expands the multi-asset base proportionally.
+    * A. $\text{Target Weight}_{\text{VTI 1x}} = w_{\text{freed}} \times \text{vti alpha}$
+    * B. The remaining $(1 - \text{vti alpha})$ expands the multi-asset base proportionally.
 
 * **Primary Configuration Profile (`GlidepathConfig`):**
   * `half_life_multiple = 1.0` (Active weight halves when NAV doubles hurdle capital)
