@@ -1,23 +1,24 @@
 # finance
 
-A Python library for backtesting multi-asset portfolios. Includes optional synthetic leverage
-via DITM VTI LEAPS and a macro-economic based market timing signal.
+A Python library for backtesting and managing multi-asset portfolios. It includes optional
+synthetic leverage via DITM VTI LEAPS and a macro-economic based market timing signal.
 
 ## tl;dr (for most investors):
 
-From various tests and analyses when building this library, the following guidance applies to most
-investors:
+From extensive back tests and analyses when building this library, the following guidance
+applies to most investors. When paired with the multi-asset portfolios defined in `examples/`,
+the result is handily beating standard institutional frameworks (eg. 60/40, 80/20, 
+all-weather, etc):
 
-1. Prefer `RebalanceRule.DRIFT` with or without a `GlidepathConfig`.
-    - without `GlidepathConfig` has better risk adjusted returns (Sharpe, Sortino). Preferred
-    for stationary investment framework.
-    - With `GlidepathConfig` has better terminal NAV and late-stage wealth preservation. Preferred
+1. `RebalanceRule.DRIFT` with or without a `GlidepathConfig`, dominates.
+    - No glide path: better risk adjusted returns (Sharpe, Sortino) across all regimes.
+    - `GlidepathConfig` has better terminal NAV and late-stage wealth preservation. Preferred
     for dynamic lifetime de-leveraging (multi-decade wealth generation)
-2. Use LEAPS leverage. But solely in `AccountType.TAX_SHELTERED` accounts. There is major tax
+2. Use LEAPS leverage! But solely in `AccountType.TAX_SHELTERED` accounts. There is major tax
 drag if in `AccountType.TAXABLE`.
 3. GTT (described below) should be discarded. GTT does a great job with macro-economic market 
-drawdowns (eg. GFC), but not monetary driven ones (eg. 2022). As a result, `GttConfig` is dominated
-by a multi-asset portfolio.
+drawdowns (eg. GFC), but not monetary driven ones (eg. 2022). As a result, `GttConfig` is
+dominated by a multi-asset portfolio with leveraged equity.
 
 ## Motivation
 

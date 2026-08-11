@@ -1,4 +1,8 @@
-# GTT Market Timing Signal — EDA Findings
+---
+title: GTT Market Timing Signal — Initial Findings
+author: Alex Whitworth
+date: August, 2026
+---
 
 **Analysis window:** 1967–2026 (Sections 1–3); 1993–2026 (Sections 4–5, limited by VIX availability)  
 **Benchmark:** ^GSPC  

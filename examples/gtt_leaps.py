@@ -142,30 +142,31 @@ if __name__ == "__main__":
         ),
     )
 
-    gtt_leaps_glide = PortfolioConfig(
-        target_weights=WEIGHTS,
-        initial_nav=INITIAL_NAV,
-        monthly_contribution=MONTHLY_CONTRIBUTION,
-        rebalance_rule=RebalanceRule.DRIFT,
-        weight_strategy=WeightStrategy.USER_SPECIFIED,
-        leaps_config=LeapsConfig(
-            iv=FLOOR_IV,
-            ltcg_rate=LTCG_RATE,
-            account_type=AccountType.TAX_SHELTERED,
-        ),
-        gtt_config=GttConfig(
-            vix_p90_threshold=VIX_P90_THRESHOLD,
-            defensive_weights=DEFENSIVE_WEIGHTS,
-        ),
-        glide_path_config=GLIDE_PATH_CONFIG,
-    )
+    # code has a bug. See Issue #1
+    # gtt_leaps_glide = PortfolioConfig(
+    #    target_weights=WEIGHTS,
+    #    initial_nav=INITIAL_NAV,
+    #    monthly_contribution=MONTHLY_CONTRIBUTION,
+    #    rebalance_rule=RebalanceRule.DRIFT,
+    #    weight_strategy=WeightStrategy.USER_SPECIFIED,
+    #    leaps_config=LeapsConfig(
+    #        iv=FLOOR_IV,
+    #        ltcg_rate=LTCG_RATE,
+    #        account_type=AccountType.TAX_SHELTERED,
+    #    ),
+    #    gtt_config=GttConfig(
+    #        vix_p90_threshold=VIX_P90_THRESHOLD,
+    #        defensive_weights=DEFENSIVE_WEIGHTS,
+    #    ),
+    #    glide_path_config=GLIDE_PATH_CONFIG,
+    # )
 
     print("=== Running Backtests ===")
     base_qtr_result = run_backtest(return_data, price_data, base_leaps_qtr)
     base_drift_result = run_backtest(return_data, price_data, base_leaps_drift)
     gtt_result = run_backtest(return_data, price_data, gtt_leaps_drift, gtt_signal=gtt_signal)
     base_glide_result = run_backtest(return_data, price_data, base_leaps_glide)
-    gtt_glide_result = run_backtest(return_data, price_data, gtt_leaps_glide, gtt_signal=gtt_signal)
+    # gtt_glide_result = run_backtest(return_data, price_data, gtt_leaps_glide, gtt_signal=gtt_signal)
 
     print("=== Building Volatility Model ===")
     vol_model = build_volatility_model(return_data)
@@ -183,9 +184,9 @@ if __name__ == "__main__":
     base_glide_report = build_performance_report(
         base_glide_result, price_data, return_data, vol_model
     )
-    gtt_glide_report = build_performance_report(
-        gtt_glide_result, price_data, return_data, vol_model
-    )
+    #gtt_glide_report = build_performance_report(
+    #    gtt_glide_result, price_data, return_data, vol_model
+    #)
 
     print("=== Performance Comparison ===")
     print(compare_performance_table(
@@ -194,7 +195,7 @@ if __name__ == "__main__":
             ("LEAPS DRIFT", base_drift_report),
             ("LEAPS GLIDE", base_glide_report),
             ("GTT LEAPS DRIFT", gtt_report),
-            ("GTT LEAPS GLIDE", gtt_glide_report),
+            #("GTT LEAPS GLIDE", gtt_glide_report),
         ]
     ))
 
@@ -206,7 +207,7 @@ if __name__ == "__main__":
             "LEAPS Drift": base_drift_result,
             "LEAPS Glide": base_glide_result,
             "GTT LEAPS Drift": gtt_result,
-            "GTT LEAPS Glide": gtt_glide_result,
+            #("GTT LEAPS Glide", gtt_glide_result),
         },
         output_path=output_path,
         position_mask=gtt_signal.position_mask,
