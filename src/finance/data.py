@@ -314,7 +314,12 @@ def build_price_data(
         prices = prices.loc[spliced_col.index[0]:]
 
     # Trim leading NaNs (tickers with later inception), then fill small holiday gaps
-    prices = prices.loc[prices.dropna().index[0]:]
+    first_complete = prices.dropna().index
+    if first_complete.empty:
+        raise ValueError(
+            "Price data is entirely NaN after splicing — all tickers may have failed to download."
+        )
+    prices = prices.loc[first_complete[0]:]
     prices = _forward_fill_prices(prices)
 
     # Fetch MUB dividends for TEY adjustment

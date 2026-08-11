@@ -232,6 +232,22 @@ def test_build_price_data_vol_prices_empty_when_not_requested() -> None:
     assert pd_obj.vol_prices.empty
 
 
+def test_build_price_data_all_nan_raises() -> None:
+    """Raises ValueError if all prices are NaN (e.g. yfinance API outage)."""
+    start, end = "2021-06-01", "2022-12-31"
+
+    def fake_fetch_all_nan(tickers: tuple[str, ...], s: str, e: str) -> pd.DataFrame:
+        idx = pd.bdate_range(s, e)
+        return pd.DataFrame(float("nan"), index=idx, columns=list(tickers))
+
+    with (
+        patch("finance.data.fetch_prices", side_effect=fake_fetch_all_nan),
+        patch("finance.data.fetch_dividends", return_value=pd.Series(dtype=float)),
+    ):
+        with pytest.raises(ValueError, match="entirely NaN"):
+            build_price_data(start, end, use_splice=False)
+
+
 def test_build_price_data_custom_tickers() -> None:
     """Custom ticker list is respected."""
     start, end = "2021-06-01", "2022-12-31"
