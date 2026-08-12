@@ -1,8 +1,10 @@
 """Live portfolio management — bridge from backtest result to live portfolio state.
 
-Provides the LivePortfolio, NavBreakdown, and HoldingView dataclasses, and the
-pure functions as_live_portfolio(), compute_nav_breakdown(), and
-compute_holdings_view(). All functions are pure (no I/O).
+Provides the LivePortfolio, NavBreakdown, HoldingView, TradeOrder, RebalancePlan,
+VolatilityReport, and GttStatus dataclasses, and the pure functions
+as_live_portfolio(), compute_nav_breakdown(), compute_holdings_view(),
+compute_rebalance_plan(), and compute_volatility_report(), plus the I/O
+boundary compute_gtt_status(). All functions except compute_gtt_status are pure.
 """
 
 from __future__ import annotations
@@ -11,8 +13,20 @@ from dataclasses import dataclass
 
 import pandas as pd
 
+import yfinance as yf
+
 from finance._portfolio_types import BacktestResult
-from finance.leverage import LeapsContract, get_live_contracts
+from finance.consts import DRIFT_BAND_RELATIVE
+from finance.gtt import GttSignalData, fetch_gtt_signal_data
+from finance.leverage import LeapsContract, RebalanceRule, get_live_contracts
+from finance.rebalance import should_rebalance
+from finance.returns import ReturnData
+from finance.volatility import (
+    VolatilityModel,
+    build_vol_contribution_table,
+    build_volatility_model,
+    forecast_portfolio_vol,
+)
 
 
 @dataclass(frozen=True)
@@ -166,6 +180,368 @@ def compute_holdings_view(
             )
         )
     return tuple(views)
+
+
+@dataclass(frozen=True)
+class TradeOrder:
+    """Single buy/sell instruction from a rebalance simulation.
+
+    Attributes:
+        ticker: Asset to trade.
+        current_value: Dollar value before rebalance.
+        target_value: Dollar value after rebalance.
+        trade_amount: target_value - current_value. Positive = buy, negative = sell.
+        current_weight: Realized weight before rebalance.
+        target_weight: Target weight from LivePortfolio.
+    """
+
+    ticker: str
+    current_value: float
+    target_value: float
+    trade_amount: float
+    current_weight: float
+    target_weight: float
+
+
+@dataclass(frozen=True)
+class RebalancePlan:
+    """Simulated rebalance outcome for a LivePortfolio. Pure: does not mutate portfolio.
+
+    Attributes:
+        as_of_date: Date of the simulation.
+        would_trigger: Whether the rebalance rule fires at this date.
+        trigger_reason: One of: quarterly_scheduled | drift_threshold | not_triggered.
+        trades: Per-asset buy/sell instructions. Empty tuple if not triggered.
+        leaps_trim: Dollar reduction to LEAPS (positive = LEAPS partially closed).
+            Non-zero only when DRIFT rule fires and LEAPS overweight.
+        holdings_view: Per-asset drift breakdown before rebalance.
+    """
+
+    as_of_date: pd.Timestamp
+    would_trigger: bool
+    trigger_reason: str
+    trades: tuple[TradeOrder, ...]
+    leaps_trim: float
+    holdings_view: tuple[HoldingView, ...]
+
+
+def compute_rebalance_plan(
+    portfolio: LivePortfolio,
+    nav: NavBreakdown,
+    rebalance_rule: RebalanceRule,
+    is_rebal_date: bool,
+    is_month_end: bool,
+) -> RebalancePlan:
+    """Simulate rebalance trades without executing them.
+
+    Determines whether the rebalance rule fires, then computes trade orders to
+    bring each base asset from its current realized weight to its target weight.
+    Assumes Long regime — callers must guard on portfolio.gtt_regime before
+    calling when defensive allocation may be active (R-001).
+
+    Trade conservation invariant (I3): sum(t.trade_amount) ≈ 0.0 within 1e-6
+    when trades are non-empty. Each asset is reallocated from its current dollar
+    value to target_weight * base_nav; since sum(target_weights) == 1.0 and
+    the base_nav is fixed, the sum of target_values equals the sum of current
+    values, so trades cancel exactly.
+
+    For the DRIFT rule, leaps_trim is the dollar overshoot of the LEAPS sleeve
+    relative to its target fraction of total_nav. Non-zero only when DRIFT fires
+    and the LEAPS sleeve is overweight.
+
+    Arguments:
+        portfolio: LivePortfolio providing holdings, target_weights, and
+            leaps_contracts.
+        nav: NavBreakdown from compute_nav_breakdown(), providing base_nav and
+            total_nav.
+        rebalance_rule: RebalanceRule.QUARTERLY or RebalanceRule.DRIFT.
+        is_rebal_date: True when the caller has determined the date is a
+            scheduled quarterly rebalance date. Ignored for DRIFT rule.
+        is_month_end: True when the caller has determined the date is a
+            month-end. Used by the DRIFT rule's check cadence.
+
+    Returns:
+        RebalancePlan with would_trigger, trigger_reason, trades, leaps_trim,
+        and holdings_view populated.
+
+    Notes:
+        LEAPS weight in the drift check is computed as leaps_nav / total_nav,
+        and the target LEAPS fraction is the sum of target_weights for any key
+        ending with '_LEAPS'. leaps_trim reports the dollar overshoot only;
+        no scale update is simulated (R-007).
+    """
+    from finance.consts import LEAPS_KEY_SUFFIX
+
+    holdings_view = compute_holdings_view(portfolio, nav)
+    base_nav = nav.base_nav
+    total_nav = nav.total_nav
+
+    # Determine trigger
+    would_trigger = False
+    trigger_reason = "not_triggered"
+
+    if rebalance_rule == RebalanceRule.QUARTERLY:
+        if is_rebal_date:
+            would_trigger = True
+            trigger_reason = "quarterly_scheduled"
+    else:  # DRIFT
+        if is_month_end:
+            # Build current and target weight Series over base + LEAPS
+            weights_now: dict[str, float] = {
+                h.ticker: h.actual_weight for h in holdings_view
+            }
+            if total_nav > 0.0:
+                leaps_weight = nav.leaps_nav / total_nav
+            else:
+                leaps_weight = 0.0
+            # Add a synthetic LEAPS key if LEAPS present
+            leaps_keys = [
+                k for k in portfolio.target_weights if k.endswith(LEAPS_KEY_SUFFIX)
+            ]
+            for k in leaps_keys:
+                weights_now[k] = (
+                    leaps_weight * (portfolio.target_weights[k] / sum(
+                        portfolio.target_weights[lk] for lk in leaps_keys
+                    ))
+                    if leaps_keys and sum(portfolio.target_weights[lk] for lk in leaps_keys) > 0
+                    else 0.0
+                )
+            current_w = pd.Series(weights_now)
+            target_w = pd.Series(portfolio.target_weights)
+            if should_rebalance(current_w, target_w, RebalanceRule.DRIFT, DRIFT_BAND_RELATIVE):
+                would_trigger = True
+                trigger_reason = "drift_threshold"
+
+    if not would_trigger:
+        return RebalancePlan(
+            as_of_date=portfolio.as_of_date,
+            would_trigger=False,
+            trigger_reason="not_triggered",
+            trades=(),
+            leaps_trim=0.0,
+            holdings_view=holdings_view,
+        )
+
+    # Build trade orders: reallocate base_nav by target_weights (base assets only)
+    base_target_keys = [
+        k for k in portfolio.target_weights if not k.endswith(LEAPS_KEY_SUFFIX)
+    ]
+    leaps_target_fraction = sum(
+        v for k, v in portfolio.target_weights.items() if k.endswith(LEAPS_KEY_SUFFIX)
+    )
+    # Base target weights normalized over base assets only
+    base_target_sum = sum(portfolio.target_weights[k] for k in base_target_keys)
+    if base_target_sum > 0.0:
+        base_target_norm = {k: portfolio.target_weights[k] / base_target_sum for k in base_target_keys}
+    else:
+        n = len(base_target_keys)
+        base_target_norm = {k: 1.0 / n for k in base_target_keys} if n > 0 else {}
+
+    holding_map = {h.ticker: h for h in holdings_view}
+    orders = []
+    for ticker in base_target_keys:
+        cur_val = holding_map[ticker].dollar_value if ticker in holding_map else 0.0
+        tgt_weight = portfolio.target_weights.get(ticker, 0.0)
+        tgt_val = base_nav * base_target_norm.get(ticker, 0.0)
+        cur_weight = cur_val / total_nav if total_nav > 0.0 else 0.0
+        orders.append(
+            TradeOrder(
+                ticker=ticker,
+                current_value=cur_val,
+                target_value=tgt_val,
+                trade_amount=tgt_val - cur_val,
+                current_weight=cur_weight,
+                target_weight=tgt_weight,
+            )
+        )
+
+    # leaps_trim: DRIFT-only, when LEAPS sleeve is overweight
+    leaps_trim = 0.0
+    if rebalance_rule == RebalanceRule.DRIFT and trigger_reason == "drift_threshold":
+        leaps_nav = nav.leaps_nav
+        target_leaps_nav = total_nav * leaps_target_fraction
+        if leaps_nav > target_leaps_nav:
+            leaps_trim = leaps_nav - target_leaps_nav
+
+    return RebalancePlan(
+        as_of_date=portfolio.as_of_date,
+        would_trigger=True,
+        trigger_reason=trigger_reason,
+        trades=tuple(orders),
+        leaps_trim=leaps_trim,
+        holdings_view=holdings_view,
+    )
+
+
+@dataclass(frozen=True)
+class VolatilityReport:
+    """Portfolio volatility analysis snapshot.
+
+    Attributes:
+        as_of_date: Snapshot date.
+        vol_model: Full VolatilityModel (ewma_vols, rolling_corr, cov_matrix).
+        portfolio_vol: Forecasted annualized portfolio volatility (sigma_hat_p).
+        contribution_table: DataFrame from build_vol_contribution_table().
+            Columns: sigma_tilde, sigma_hat, rho_VTI, contrib.
+        weights_used: Realized weights used in contribution computation.
+    """
+
+    as_of_date: pd.Timestamp
+    vol_model: VolatilityModel
+    portfolio_vol: float
+    contribution_table: pd.DataFrame
+    weights_used: pd.Series
+
+
+def compute_volatility_report(
+    portfolio: LivePortfolio,
+    return_data: ReturnData,
+) -> VolatilityReport:
+    """Run the full vol stack on current portfolio weights.
+
+    Calls build_volatility_model() and build_vol_contribution_table() from
+    volatility.py. Weights are derived from realized holdings normalized to
+    sum to 1.0 over base assets only (LEAPS excluded from weights_used).
+
+    Arguments:
+        portfolio: LivePortfolio whose holdings determine realized weights.
+        return_data: ReturnData providing daily returns for the vol model.
+            Must cover portfolio.as_of_date.
+
+    Returns:
+        VolatilityReport with portfolio_vol > 0 for any non-trivial portfolio.
+
+    Raises:
+        ValueError: If return_data does not cover portfolio.as_of_date
+            (propagated from build_volatility_model).
+    """
+    vol_model = build_volatility_model(return_data, as_of_date=portfolio.as_of_date)
+
+    # Build realized weights from holdings (base assets only)
+    base_nav = sum(portfolio.holdings.values())
+    if base_nav > 0.0:
+        weights_dict = {t: v / base_nav for t, v in portfolio.holdings.items()}
+    else:
+        n = len(portfolio.holdings)
+        weights_dict = {t: 1.0 / n for t in portfolio.holdings} if n > 0 else {}
+    weights_used = pd.Series(weights_dict)
+
+    portfolio_vol = forecast_portfolio_vol(weights_used, vol_model)
+    contribution_table = build_vol_contribution_table(weights_used, return_data, vol_model)
+
+    return VolatilityReport(
+        as_of_date=portfolio.as_of_date,
+        vol_model=vol_model,
+        portfolio_vol=portfolio_vol,
+        contribution_table=contribution_table,
+        weights_used=weights_used,
+    )
+
+
+@dataclass(frozen=True)
+class GttStatus:
+    """Current GTT signal state.
+
+    Attributes:
+        as_of_date: Date of evaluation.
+        regime: 1=Long, 0=Defensive.
+        ue_signal: UE_12M signal value at as_of_date (0 or 1).
+        vix_signal: VIX_5D signal value at as_of_date (0 or 1).
+        vix_current: Raw VIX value at as_of_date (decimal, e.g. 0.21).
+        vix_threshold: P90 threshold used.
+        price_vs_sma200: above | below | warming_up.
+        signal_data: Full GttSignalData for audit/reproducibility.
+    """
+
+    as_of_date: pd.Timestamp
+    regime: int
+    ue_signal: int
+    vix_signal: int
+    vix_current: float
+    vix_threshold: float
+    price_vs_sma200: str
+    signal_data: GttSignalData
+
+
+def compute_gtt_status(  # pragma: no cover
+    as_of_date: pd.Timestamp,
+    vix_p90_threshold: float,
+    start_date: str,
+    equity_prices: pd.Series | None = None,
+) -> GttStatus:
+    """Fetch current GTT signal and return structured status.
+
+    Delegates to fetch_gtt_signal_data for FRED + yfinance I/O. Evaluates
+    signal values at as_of_date. price_vs_sma200 is derived from the equity
+    prices relative to the 200-day SMA at as_of_date. Not pure — I/O boundary.
+
+    Arguments:
+        as_of_date: Date of evaluation. Never inferred from system clock.
+        vix_p90_threshold: Fixed P90 VIX threshold as a decimal (e.g. 0.272).
+        start_date: ISO start date for data fetch (YYYY-MM-DD).
+        equity_prices: Optional pre-fetched VTI price series. If None, fetched
+            internally via yfinance.
+
+    Returns:
+        GttStatus with regime ∈ {0, 1} and price_vs_sma200 ∈
+        {'above', 'below', 'warming_up'}.
+    """
+    from finance.consts import GTT_SMA_WINDOW
+
+    end_date = str(as_of_date.date())
+    signal_data = fetch_gtt_signal_data(
+        start_date=start_date,
+        end_date=end_date,
+        vix_p90_threshold=vix_p90_threshold,
+        equity_prices=equity_prices,
+    )
+
+    # Extract signal values at as_of_date (forward-fill to handle non-trading days)
+    def _at(series: pd.Series, date: pd.Timestamp) -> int:
+        aligned = series.reindex([date], method="ffill")
+        val = aligned.iloc[0] if not aligned.empty else 0
+        return int(val) if not pd.isna(val) else 0
+
+    regime = _at(signal_data.position_mask, as_of_date)
+    ue_sig = _at(signal_data.ue_signal, as_of_date)
+    vix_sig = _at(signal_data.vix_signal, as_of_date)
+
+    # Fetch raw VIX at as_of_date for vix_current
+    vix_raw = yf.download(
+        "^VIX", start=start_date, end=end_date, auto_adjust=True, progress=False
+    )
+    vix_series: pd.Series = (vix_raw["Close"].squeeze() / 100.0).rename("VIX")
+    vix_aligned = vix_series.reindex([as_of_date], method="ffill")
+    vix_current = float(vix_aligned.iloc[0]) if not vix_aligned.empty else float("nan")
+
+    # price_vs_sma200 from equity prices
+    if equity_prices is None:
+        vti_raw = yf.download(
+            "VTI", start=start_date, end=end_date, auto_adjust=True, progress=False
+        )
+        equity_prices = vti_raw["Close"].squeeze().rename("VTI")
+
+    sma = equity_prices.rolling(window=GTT_SMA_WINDOW, min_periods=GTT_SMA_WINDOW).mean()
+    price_at = equity_prices.reindex([as_of_date], method="ffill")
+    sma_at = sma.reindex([as_of_date], method="ffill")
+
+    if sma_at.empty or pd.isna(sma_at.iloc[0]):
+        price_vs_sma200 = "warming_up"
+    elif float(price_at.iloc[0]) >= float(sma_at.iloc[0]):
+        price_vs_sma200 = "above"
+    else:
+        price_vs_sma200 = "below"
+
+    return GttStatus(
+        as_of_date=as_of_date,
+        regime=regime,
+        ue_signal=ue_sig,
+        vix_signal=vix_sig,
+        vix_current=vix_current,
+        vix_threshold=vix_p90_threshold,
+        price_vs_sma200=price_vs_sma200,
+        signal_data=signal_data,
+    )
 
 
 def as_live_portfolio(
