@@ -5,7 +5,7 @@ import math
 import numpy as np
 import pandas as pd
 import pytest
-from hypothesis import given, settings
+from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
 from finance.leverage import (
@@ -1600,3 +1600,211 @@ def test_bs_charm_property_finite(
     """Property: charm is always finite for valid inputs."""
     ch = bs_call_charm(spot, strike, t, iv)
     assert math.isfinite(ch)
+
+
+# ---------------------------------------------------------------------------
+# Phase 1a — roll_contract accounting property
+# ---------------------------------------------------------------------------
+
+
+_FLOAT_KWARGS = {"allow_nan": False, "allow_infinity": False, "allow_subnormal": False}
+
+
+@given(
+    spot_buy=st.floats(50.0, 500.0, **_FLOAT_KWARGS),
+    spot_sell=st.floats(50.0, 500.0, **_FLOAT_KWARGS),
+    capital=st.floats(1_000.0, 500_000.0, **_FLOAT_KWARGS),
+    account_type=st.sampled_from(list(AccountType)),
+)
+@settings(max_examples=300)
+def test_roll_contract_accounting_property(
+    spot_buy: float,
+    spot_sell: float,
+    capital: float,
+    account_type: AccountType,
+) -> None:
+    """Property: roll accounting closure holds for all valid inputs.
+
+    Invariants:
+        event.net_proceeds == price_leaps_contract(old, spot_sell, roll_date) - event.tax_paid
+        event.tax_paid >= 0
+        account_type == TAX_SHELTERED → event.tax_paid == 0
+    """
+    from hypothesis import assume
+
+    purchase = pd.Timestamp("2020-01-02")
+    c = create_leaps_contract(purchase, spot_buy, capital)
+    assume(c.n_contracts > 0)
+
+    roll_date = purchase + pd.Timedelta(days=400)
+    event = roll_contract(c, roll_date, spot_sell)
+
+    old_value = price_leaps_contract(c, spot_sell, roll_date)
+
+    # net_proceeds identity
+    assert event.net_proceeds == pytest.approx(old_value - event.tax_paid, rel=1e-9)
+    # tax non-negativity
+    assert event.tax_paid >= 0.0
+    # sheltered → zero tax
+    if account_type == AccountType.TAX_SHELTERED:
+        c_sheltered = create_leaps_contract(
+            purchase, spot_buy, capital, account_type=AccountType.TAX_SHELTERED
+        )
+        assume(c_sheltered.n_contracts > 0)
+        ev_sheltered = roll_contract(c_sheltered, roll_date, spot_sell)
+        assert ev_sheltered.tax_paid == 0.0
+
+
+# ---------------------------------------------------------------------------
+# Phase 1b — bs_call_delta finite-difference oracle
+# ---------------------------------------------------------------------------
+
+
+@given(
+    spot=st.floats(1.0, 1_000.0, **_FLOAT_KWARGS),
+    strike=st.floats(1.0, 1_000.0, **_FLOAT_KWARGS),
+    t=st.floats(min_value=0.01, max_value=5.0, **_FLOAT_KWARGS),
+    iv=st.floats(min_value=0.01, max_value=1.5, **_FLOAT_KWARGS),
+    q=st.floats(min_value=0.0, max_value=0.10, **_FLOAT_KWARGS),
+)
+@settings(max_examples=200)
+def test_bs_delta_finite_difference_oracle(
+    spot: float,
+    strike: float,
+    t: float,
+    iv: float,
+    q: float,
+) -> None:
+    """Property: analytic delta matches central finite difference within 1e-5.
+
+    Invariant: |delta_analytic - (price(S+ε) - price(S-ε)) / 2ε| < 1e-5
+    where ε = 1e-4 * spot (relative step for numerical stability).
+    """
+    from hypothesis import assume
+
+    # Skip the degenerate near-binary regime: when iv*sqrt(t) is tiny the option is
+    # nearly a step function near ATM and the FD truncation error exceeds 1e-5.
+    assume(iv * math.sqrt(t) >= 0.05)
+
+    eps = 1e-4 * spot
+    price_up = bs_call_price(spot + eps, strike, t, iv, dividend_yield=q)
+    price_dn = bs_call_price(spot - eps, strike, t, iv, dividend_yield=q)
+    fd_delta = (price_up - price_dn) / (2.0 * eps)
+    analytic_delta = bs_call_delta(spot, strike, t, iv, dividend_yield=q)
+    assert abs(analytic_delta - fd_delta) < 1e-5, (
+        f"FD error too large: analytic={analytic_delta:.8f}, FD={fd_delta:.8f}, "
+        f"err={abs(analytic_delta - fd_delta):.2e} at spot={spot}, strike={strike}, "
+        f"t={t}, iv={iv}, q={q}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Phase 1c — partial_close_leaps contract conservation
+# ---------------------------------------------------------------------------
+
+
+@given(
+    spot=st.floats(50.0, 500.0, **_FLOAT_KWARGS),
+    capital=st.floats(1_000.0, 200_000.0, **_FLOAT_KWARGS),
+    scale=st.floats(min_value=0.01, max_value=0.99, **_FLOAT_KWARGS),
+)
+@settings(max_examples=200)
+def test_partial_close_contract_conservation(
+    spot: float,
+    capital: float,
+    scale: float,
+) -> None:
+    """Property: partial close preserves total contract count.
+
+    Invariants:
+        cont.n_contracts + n_contracts_closed ≈ original.n_contracts (rel=1e-9)
+        cont.n_contracts > 0
+        n_contracts_closed > 0
+    """
+    from hypothesis import assume
+
+    purchase = pd.Timestamp("2020-01-02")
+    c = create_leaps_contract(purchase, spot, capital)
+    assume(c.n_contracts > 0)
+
+    later = purchase + pd.Timedelta(days=180)
+    current_mtm = price_leaps_contract(c, spot, later)
+    assume(current_mtm > 0)
+
+    target_value = current_mtm * scale
+    ev = partial_close_leaps(c, later, spot, target_value)
+
+    total_n = ev.continuation_contract.n_contracts + ev.n_contracts_closed
+    assert total_n == pytest.approx(c.n_contracts, rel=1e-9)
+    assert ev.continuation_contract.n_contracts > 0
+    assert ev.n_contracts_closed > 0
+
+
+# ---------------------------------------------------------------------------
+# Phase 1d — create_leaps_contract cost-basis conservation
+# ---------------------------------------------------------------------------
+
+
+@given(
+    spot=st.floats(10.0, 1_000.0, **_FLOAT_KWARGS),
+    capital=st.floats(100.0, 1_000_000.0, **_FLOAT_KWARGS),
+    iv=st.floats(min_value=0.05, max_value=1.0, **_FLOAT_KWARGS),
+)
+@settings(max_examples=200)
+def test_create_contract_cost_basis_conservation(
+    spot: float,
+    capital: float,
+    iv: float,
+) -> None:
+    """Property: cost basis equals capital when premium is above floor.
+
+    Invariant (when n_contracts > 0):
+        c.premium_paid * CONTRACT_MULTIPLIER * c.n_contracts ≈ capital (rel=1e-9)
+    """
+    from hypothesis import assume
+
+    purchase = pd.Timestamp("2020-01-02")
+    c = create_leaps_contract(purchase, spot, capital, iv=iv)
+    assume(c.n_contracts > 0)
+
+    cost_basis = c.premium_paid * CONTRACT_MULTIPLIER * c.n_contracts
+    assert cost_basis == pytest.approx(capital, rel=1e-9)
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 — run_leaps_simulation ledger referential integrity
+# ---------------------------------------------------------------------------
+
+
+@given(
+    returns=st.lists(
+        st.floats(min_value=-0.05, max_value=0.10, **_FLOAT_KWARGS),
+        min_size=21 * 6,
+        max_size=21 * 48,
+    ),
+    contribution=st.floats(1_000.0, 50_000.0, **_FLOAT_KWARGS),
+)
+@settings(max_examples=50, suppress_health_check=[HealthCheck.too_slow])
+def test_simulation_ledger_referential_integrity(
+    returns: list[float],
+    contribution: float,
+) -> None:
+    """Property: every roll event's old_contract is a member of ledger.contracts.
+
+    Invariant: {ev.old_contract for ev in ledger.roll_events} ⊆ set(ledger.contracts)
+    """
+    idx = pd.bdate_range("2015-01-02", periods=len(returns))
+    prices = pd.Series(200.0 * np.cumprod([1.0 + r for r in returns]), index=idx)
+
+    ledger = run_leaps_simulation(
+        prices,
+        monthly_contribution_to_leaps=contribution,
+        config=LeapsConfig(),
+    )
+
+    contract_set = set(ledger.contracts)
+    for event in ledger.roll_events:
+        assert event.old_contract in contract_set, (
+            f"Referential integrity violation: old_contract not in ledger.contracts "
+            f"(roll_date={event.roll_date})"
+        )
