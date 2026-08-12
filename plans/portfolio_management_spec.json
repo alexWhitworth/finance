@@ -953,7 +953,7 @@
       "description": "Implement TradeOrder and RebalancePlan dataclasses plus compute_rebalance_plan() in portfolio_manager.py. Uses should_rebalance() from rebalance.py. Assumes Long regime.",
       "phase": "4c",
       "priority": 5,
-      "status": "pending",
+      "status": "pending_judge",
       "layer": "python",
       "dependencies": ["F-002", "F-009", "F-010"],
       "linked_schemas": ["DS-004", "DS-005"],

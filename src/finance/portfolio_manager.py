@@ -12,7 +12,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import pandas as pd
-
 import yfinance as yf
 
 from finance._portfolio_types import BacktestResult
@@ -332,10 +331,12 @@ def compute_rebalance_plan(
     # Base target weights normalized over base assets only
     base_target_sum = sum(portfolio.target_weights[k] for k in base_target_keys)
     if base_target_sum > 0.0:
-        base_target_norm = {k: portfolio.target_weights[k] / base_target_sum for k in base_target_keys}
+        base_target_norm = {
+            k: portfolio.target_weights[k] / base_target_sum for k in base_target_keys
+        }
     else:
         n = len(base_target_keys)
-        base_target_norm = {k: 1.0 / n for k in base_target_keys} if n > 0 else {}
+        base_target_norm = dict.fromkeys(base_target_keys, 1.0 / n) if n > 0 else {}
 
     holding_map = {h.ticker: h for h in holdings_view}
     orders = []
@@ -352,6 +353,23 @@ def compute_rebalance_plan(
                 trade_amount=tgt_val - cur_val,
                 current_weight=cur_weight,
                 target_weight=tgt_weight,
+            )
+        )
+
+    # Zero-target sell orders for stray holdings absent from target_weights (I3).
+    base_target_set = set(base_target_keys)
+    for ticker, cur_val in portfolio.holdings.items():
+        if ticker in base_target_set or ticker.endswith(LEAPS_KEY_SUFFIX):
+            continue
+        cur_weight = cur_val / total_nav if total_nav > 0.0 else 0.0
+        orders.append(
+            TradeOrder(
+                ticker=ticker,
+                current_value=cur_val,
+                target_value=0.0,
+                trade_amount=-cur_val,
+                current_weight=cur_weight,
+                target_weight=0.0,
             )
         )
 
@@ -423,7 +441,7 @@ def compute_volatility_report(
         weights_dict = {t: v / base_nav for t, v in portfolio.holdings.items()}
     else:
         n = len(portfolio.holdings)
-        weights_dict = {t: 1.0 / n for t in portfolio.holdings} if n > 0 else {}
+        weights_dict = dict.fromkeys(portfolio.holdings, 1.0 / n) if n > 0 else {}
     weights_used = pd.Series(weights_dict)
 
     portfolio_vol = forecast_portfolio_vol(weights_used, vol_model)

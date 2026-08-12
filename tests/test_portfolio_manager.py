@@ -22,12 +22,8 @@ from finance.leverage import (
 )
 from finance.portfolio import run_backtest
 from finance.portfolio_manager import (
-    GttStatus,
     HoldingView,
     LivePortfolio,
-    RebalancePlan,
-    TradeOrder,
-    VolatilityReport,
     as_live_portfolio,
     compute_gtt_status,
     compute_holdings_view,
@@ -1261,3 +1257,111 @@ def test_rebalance_plan_drift_leaps_trim_zero_when_not_overweight() -> None:
     # leaps is overweight here too, just test the structure
     assert isinstance(plan.leaps_trim, float)
     assert plan.leaps_trim >= 0.0
+
+
+# ---------------------------------------------------------------------------
+# F-011 B1: stray holdings absent from target_weights (I3 conservation)
+# ---------------------------------------------------------------------------
+
+
+def test_rebalance_plan_stray_holding_sell_order_conserves_i3() -> None:
+    """I3 holds when holdings contains a ticker absent from target_weights (B1 fix)."""
+    # VTI=70k in target, EXTRA=30k is stray with target=0 → sell EXTRA entirely
+    lp = LivePortfolio(
+        as_of_date=_AS_OF,
+        holdings={"VTI": 70_000.0, "EXTRA": 30_000.0},
+        target_weights={"VTI": 1.0},
+        leaps_contracts=(),
+        gtt_regime=1,
+    )
+    nb = compute_nav_breakdown(lp)
+    plan = compute_rebalance_plan(lp, nb, RebalanceRule.QUARTERLY, is_rebal_date=True, is_month_end=False)
+    assert plan.would_trigger is True
+    total_trade = sum(t.trade_amount for t in plan.trades)
+    assert abs(total_trade) < 1e-6, f"I3 violated with stray holding: sum(trade_amount) = {total_trade}"
+
+
+def test_rebalance_plan_stray_holding_sell_order_fields() -> None:
+    """Stray holding produces a zero-target sell order with correct fields."""
+    lp = LivePortfolio(
+        as_of_date=_AS_OF,
+        holdings={"VTI": 70_000.0, "EXTRA": 30_000.0},
+        target_weights={"VTI": 1.0},
+        leaps_contracts=(),
+        gtt_regime=1,
+    )
+    nb = compute_nav_breakdown(lp)
+    plan = compute_rebalance_plan(lp, nb, RebalanceRule.QUARTERLY, is_rebal_date=True, is_month_end=False)
+    orders = {t.ticker: t for t in plan.trades}
+    assert "EXTRA" in orders
+    assert abs(orders["EXTRA"].target_value) < 1e-9
+    assert abs(orders["EXTRA"].trade_amount - (-30_000.0)) < 1e-6
+    assert orders["EXTRA"].target_weight == 0.0
+
+
+# ---------------------------------------------------------------------------
+# F-013 A3: vix_current decimal assertion; A4: price_vs_sma200 == 'below'
+# ---------------------------------------------------------------------------
+
+
+def _make_gtt_mock_context(
+    as_of: pd.Timestamp,
+    n: int,
+    regime: int = 1,
+    vix_raw: float = 21.0,
+    equity_prices: pd.Series | None = None,
+) -> tuple:
+    """Return (signal_data, dates, equity_prices) for GTT mock tests."""
+    dates = pd.date_range("2019-01-02", periods=n, freq="D")
+    signal_data = _make_mock_gtt_signal_data(as_of, regime=regime, vix_p90=0.272)
+    if equity_prices is None:
+        equity_prices = pd.Series(200.0, index=dates)
+    return signal_data, dates, equity_prices
+
+
+def _patch_gtt(monkeypatch: pytest.MonkeyPatch, signal_data: object, vix_close_val: float, dates: pd.DatetimeIndex) -> None:  # noqa: E501
+    """Helper: patch fetch_gtt_signal_data and yf.download in portfolio_manager."""
+    import finance.portfolio_manager as pm
+    monkeypatch.setattr(pm, "fetch_gtt_signal_data", lambda **kwargs: signal_data)
+    vix_series = pd.Series(vix_close_val, index=dates)
+    close_mock = MagicMock()
+    close_mock.squeeze.return_value = vix_series
+    df_mock = MagicMock()
+    df_mock.__getitem__ = MagicMock(return_value=close_mock)
+    monkeypatch.setattr(pm.yf, "download", lambda *a, **kw: df_mock)
+
+
+def test_gtt_status_vix_current_decimal_value(monkeypatch: pytest.MonkeyPatch) -> None:
+    """vix_current is the /100 decimal: raw 21.0 → 0.21 (A3)."""
+    as_of = pd.Timestamp("2020-06-15")
+    n = 500
+    signal_data, dates, equity_prices = _make_gtt_mock_context(as_of, n, vix_raw=21.0)
+    _patch_gtt(monkeypatch, signal_data, vix_close_val=21.0, dates=dates)
+
+    status = compute_gtt_status(
+        as_of_date=as_of,
+        vix_p90_threshold=0.272,
+        start_date="2019-01-02",
+        equity_prices=equity_prices,
+    )
+    assert abs(status.vix_current - 0.21) < 1e-6, f"Expected 0.21, got {status.vix_current}"
+
+
+def test_gtt_status_price_vs_sma200_below(monkeypatch: pytest.MonkeyPatch) -> None:
+    """price_vs_sma200 == 'below' when current price is below SMA200 (A4)."""
+    as_of = pd.Timestamp("2020-06-15")
+    n = 500
+    # Create equity prices: 499 days at 200, last day at 100 → below SMA200
+    dates = pd.date_range("2019-01-02", periods=n, freq="D")
+    prices = [200.0] * (n - 1) + [100.0]
+    equity_prices = pd.Series(prices, index=dates)
+    signal_data = _make_mock_gtt_signal_data(as_of, regime=1, vix_p90=0.272)
+    _patch_gtt(monkeypatch, signal_data, vix_close_val=21.0, dates=dates)
+
+    status = compute_gtt_status(
+        as_of_date=as_of,
+        vix_p90_threshold=0.272,
+        start_date="2019-01-02",
+        equity_prices=equity_prices,
+    )
+    assert status.price_vs_sma200 == "below"
