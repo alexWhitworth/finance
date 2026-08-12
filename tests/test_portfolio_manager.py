@@ -24,6 +24,7 @@ from finance.portfolio import run_backtest
 from finance.portfolio_manager import (
     HoldingView,
     LivePortfolio,
+    NavBreakdown,
     as_live_portfolio,
     compute_gtt_status,
     compute_holdings_view,
@@ -730,7 +731,9 @@ def _make_lp_for_rebalance(
 def test_rebalance_plan_quarterly_no_trigger_when_not_rebal_date() -> None:
     """QUARTERLY rule returns would_trigger=False when is_rebal_date=False (I8)."""
     lp, nb = _make_lp_for_rebalance()
-    plan = compute_rebalance_plan(lp, nb, RebalanceRule.QUARTERLY, is_rebal_date=False, is_month_end=True)
+    plan = compute_rebalance_plan(
+        lp, nb, RebalanceRule.QUARTERLY, is_rebal_date=False, is_month_end=True
+    )
     assert plan.would_trigger is False
     assert plan.trigger_reason == "not_triggered"
     assert plan.trades == ()
@@ -740,7 +743,9 @@ def test_rebalance_plan_quarterly_no_trigger_when_not_rebal_date() -> None:
 def test_rebalance_plan_quarterly_trigger_when_rebal_date() -> None:
     """QUARTERLY rule triggers and produces trades when is_rebal_date=True."""
     lp, nb = _make_lp_for_rebalance()
-    plan = compute_rebalance_plan(lp, nb, RebalanceRule.QUARTERLY, is_rebal_date=True, is_month_end=False)
+    plan = compute_rebalance_plan(
+        lp, nb, RebalanceRule.QUARTERLY, is_rebal_date=True, is_month_end=False
+    )
     assert plan.would_trigger is True
     assert plan.trigger_reason == "quarterly_scheduled"
     assert len(plan.trades) == 2
@@ -749,16 +754,20 @@ def test_rebalance_plan_quarterly_trigger_when_rebal_date() -> None:
 def test_rebalance_plan_trade_conservation_i3() -> None:
     """sum(t.trade_amount) ≈ 0.0 within 1e-6 when trades are non-empty (I3)."""
     lp, nb = _make_lp_for_rebalance(vti_val=80_000.0, vxus_val=20_000.0)
-    plan = compute_rebalance_plan(lp, nb, RebalanceRule.QUARTERLY, is_rebal_date=True, is_month_end=False)
+    plan = compute_rebalance_plan(
+        lp, nb, RebalanceRule.QUARTERLY, is_rebal_date=True, is_month_end=False
+    )
     total_trade = sum(t.trade_amount for t in plan.trades)
     assert abs(total_trade) < 1e-6, f"I3 violated: sum(trade_amount) = {total_trade}"
 
 
 def test_rebalance_plan_trade_values_correct() -> None:
-    """Trade orders reallocate base_nav to target_weights: sell overweight VTI, buy underweight VXUS."""
+    """Trade orders reallocate base_nav to target_weights: sell VTI, buy VXUS."""
     lp, nb = _make_lp_for_rebalance(vti_val=80_000.0, vxus_val=20_000.0)
     # base_nav = 100_000; target VTI=0.6 => 60_000; target VXUS=0.4 => 40_000
-    plan = compute_rebalance_plan(lp, nb, RebalanceRule.QUARTERLY, is_rebal_date=True, is_month_end=False)
+    plan = compute_rebalance_plan(
+        lp, nb, RebalanceRule.QUARTERLY, is_rebal_date=True, is_month_end=False
+    )
     orders = {t.ticker: t for t in plan.trades}
     assert abs(orders["VTI"].trade_amount - (-20_000.0)) < 1e-6  # sell 20k VTI
     assert abs(orders["VXUS"].trade_amount - 20_000.0) < 1e-6     # buy 20k VXUS
@@ -770,7 +779,9 @@ def test_rebalance_plan_drift_no_trigger_no_drift() -> None:
     """DRIFT rule does not trigger when weights are on target."""
     # VTI=60k, VXUS=40k → exactly at target 0.6/0.4
     lp, nb = _make_lp_for_rebalance(vti_val=60_000.0, vxus_val=40_000.0)
-    plan = compute_rebalance_plan(lp, nb, RebalanceRule.DRIFT, is_rebal_date=False, is_month_end=True)
+    plan = compute_rebalance_plan(
+        lp, nb, RebalanceRule.DRIFT, is_rebal_date=False, is_month_end=True
+    )
     assert plan.would_trigger is False
     assert plan.trigger_reason == "not_triggered"
     assert plan.trades == ()
@@ -780,7 +791,9 @@ def test_rebalance_plan_drift_triggers_with_large_drift() -> None:
     """DRIFT rule triggers when a weight drifts > 10% relative at month-end."""
     # VTI=90k, VXUS=10k → VTI actual=0.9, target=0.6 → rel drift=0.5 >> 0.10
     lp, nb = _make_lp_for_rebalance(vti_val=90_000.0, vxus_val=10_000.0)
-    plan = compute_rebalance_plan(lp, nb, RebalanceRule.DRIFT, is_rebal_date=False, is_month_end=True)
+    plan = compute_rebalance_plan(
+        lp, nb, RebalanceRule.DRIFT, is_rebal_date=False, is_month_end=True
+    )
     assert plan.would_trigger is True
     assert plan.trigger_reason == "drift_threshold"
     assert len(plan.trades) == 2
@@ -789,7 +802,9 @@ def test_rebalance_plan_drift_triggers_with_large_drift() -> None:
 def test_rebalance_plan_drift_no_trigger_not_month_end() -> None:
     """DRIFT rule never fires when is_month_end=False, even with extreme drift."""
     lp, nb = _make_lp_for_rebalance(vti_val=90_000.0, vxus_val=10_000.0)
-    plan = compute_rebalance_plan(lp, nb, RebalanceRule.DRIFT, is_rebal_date=False, is_month_end=False)
+    plan = compute_rebalance_plan(
+        lp, nb, RebalanceRule.DRIFT, is_rebal_date=False, is_month_end=False
+    )
     assert plan.would_trigger is False
     assert plan.trigger_reason == "not_triggered"
 
@@ -797,7 +812,9 @@ def test_rebalance_plan_drift_no_trigger_not_month_end() -> None:
 def test_rebalance_plan_drift_trigger_conservation_i3() -> None:
     """DRIFT-triggered plan also satisfies I3: sum(trade_amount) ≈ 0."""
     lp, nb = _make_lp_for_rebalance(vti_val=90_000.0, vxus_val=10_000.0)
-    plan = compute_rebalance_plan(lp, nb, RebalanceRule.DRIFT, is_rebal_date=False, is_month_end=True)
+    plan = compute_rebalance_plan(
+        lp, nb, RebalanceRule.DRIFT, is_rebal_date=False, is_month_end=True
+    )
     total_trade = sum(t.trade_amount for t in plan.trades)
     assert abs(total_trade) < 1e-6, f"I3 violated for DRIFT: sum(trade_amount) = {total_trade}"
 
@@ -805,14 +822,18 @@ def test_rebalance_plan_drift_trigger_conservation_i3() -> None:
 def test_rebalance_plan_leaps_trim_zero_when_quarterly() -> None:
     """leaps_trim is always 0.0 for QUARTERLY rule."""
     lp, nb = _make_lp_for_rebalance(vti_val=80_000.0, vxus_val=20_000.0, leaps_val=30_000.0)
-    plan = compute_rebalance_plan(lp, nb, RebalanceRule.QUARTERLY, is_rebal_date=True, is_month_end=False)
+    plan = compute_rebalance_plan(
+        lp, nb, RebalanceRule.QUARTERLY, is_rebal_date=True, is_month_end=False
+    )
     assert plan.leaps_trim == 0.0
 
 
 def test_rebalance_plan_not_triggered_always_has_empty_trades() -> None:
     """not_triggered plans always have empty trades tuple."""
     lp, nb = _make_lp_for_rebalance()
-    plan = compute_rebalance_plan(lp, nb, RebalanceRule.QUARTERLY, is_rebal_date=False, is_month_end=False)
+    plan = compute_rebalance_plan(
+        lp, nb, RebalanceRule.QUARTERLY, is_rebal_date=False, is_month_end=False
+    )
     assert plan.trades == ()
     assert plan.would_trigger is False
 
@@ -820,7 +841,9 @@ def test_rebalance_plan_not_triggered_always_has_empty_trades() -> None:
 def test_rebalance_plan_holdings_view_populated() -> None:
     """holdings_view is always populated regardless of trigger state."""
     lp, nb = _make_lp_for_rebalance()
-    plan = compute_rebalance_plan(lp, nb, RebalanceRule.QUARTERLY, is_rebal_date=False, is_month_end=False)
+    plan = compute_rebalance_plan(
+        lp, nb, RebalanceRule.QUARTERLY, is_rebal_date=False, is_month_end=False
+    )
     assert len(plan.holdings_view) == 2
     assert all(isinstance(h, HoldingView) for h in plan.holdings_view)
 
@@ -828,14 +851,18 @@ def test_rebalance_plan_holdings_view_populated() -> None:
 def test_rebalance_plan_as_of_date_matches_portfolio() -> None:
     """RebalancePlan.as_of_date equals portfolio.as_of_date."""
     lp, nb = _make_lp_for_rebalance()
-    plan = compute_rebalance_plan(lp, nb, RebalanceRule.QUARTERLY, is_rebal_date=True, is_month_end=False)
+    plan = compute_rebalance_plan(
+        lp, nb, RebalanceRule.QUARTERLY, is_rebal_date=True, is_month_end=False
+    )
     assert plan.as_of_date == _AS_OF
 
 
 def test_rebalance_plan_is_frozen() -> None:
     """RebalancePlan is frozen — attribute assignment raises."""
     lp, nb = _make_lp_for_rebalance()
-    plan = compute_rebalance_plan(lp, nb, RebalanceRule.QUARTERLY, is_rebal_date=False, is_month_end=False)
+    plan = compute_rebalance_plan(
+        lp, nb, RebalanceRule.QUARTERLY, is_rebal_date=False, is_month_end=False
+    )
     with pytest.raises((AttributeError, TypeError)):
         plan.would_trigger = True  # type: ignore[misc]
 
@@ -843,7 +870,9 @@ def test_rebalance_plan_is_frozen() -> None:
 def test_trade_order_is_frozen() -> None:
     """TradeOrder is frozen — attribute assignment raises."""
     lp, nb = _make_lp_for_rebalance(vti_val=80_000.0, vxus_val=20_000.0)
-    plan = compute_rebalance_plan(lp, nb, RebalanceRule.QUARTERLY, is_rebal_date=True, is_month_end=False)
+    plan = compute_rebalance_plan(
+        lp, nb, RebalanceRule.QUARTERLY, is_rebal_date=True, is_month_end=False
+    )
     assert len(plan.trades) > 0
     with pytest.raises((AttributeError, TypeError)):
         plan.trades[0].trade_amount = 0.0  # type: ignore[misc]
@@ -860,7 +889,9 @@ def test_rebalance_plan_balanced_portfolio_quarterly_conserves_i3() -> None:
         gtt_regime=1,
     )
     nb = compute_nav_breakdown(lp)
-    plan = compute_rebalance_plan(lp, nb, RebalanceRule.QUARTERLY, is_rebal_date=True, is_month_end=False)
+    plan = compute_rebalance_plan(
+        lp, nb, RebalanceRule.QUARTERLY, is_rebal_date=True, is_month_end=False
+    )
     total_trade = sum(t.trade_amount for t in plan.trades)
     assert abs(total_trade) < 1e-6, f"I3 violated: {total_trade}"
     orders = {t.ticker: t for t in plan.trades}
@@ -879,7 +910,9 @@ def test_rebalance_plan_balanced_portfolio_quarterly_conserves_i3() -> None:
 def test_rebalance_plan_quarterly_i3_property(vti: float, vxus: float) -> None:
     """Property I3: sum(trade_amount) ≈ 0.0 for QUARTERLY triggered plans."""
     lp, nb = _make_lp_for_rebalance(vti_val=vti, vxus_val=vxus)
-    plan = compute_rebalance_plan(lp, nb, RebalanceRule.QUARTERLY, is_rebal_date=True, is_month_end=False)
+    plan = compute_rebalance_plan(
+        lp, nb, RebalanceRule.QUARTERLY, is_rebal_date=True, is_month_end=False
+    )
     if plan.trades:
         total = sum(t.trade_amount for t in plan.trades)
         assert abs(total) < 1e-6, f"I3 violated: {total}"
@@ -895,7 +928,9 @@ def test_rebalance_plan_quarterly_never_triggers_on_false_i8_property(
 ) -> None:
     """Property I8: QUARTERLY rule always returns would_trigger=False when is_rebal_date=False."""
     lp, nb = _make_lp_for_rebalance(vti_val=vti, vxus_val=vxus)
-    plan = compute_rebalance_plan(lp, nb, RebalanceRule.QUARTERLY, is_rebal_date=False, is_month_end=True)
+    plan = compute_rebalance_plan(
+        lp, nb, RebalanceRule.QUARTERLY, is_rebal_date=False, is_month_end=True
+    )
     assert plan.would_trigger is False
     assert plan.trigger_reason == "not_triggered"
 
@@ -996,7 +1031,7 @@ def test_volatility_report_struct_is_frozen() -> None:
 
 def test_volatility_report_vol_model_is_volatility_model() -> None:
     """VolatilityReport.vol_model is a VolatilityModel instance."""
-    from finance.volatility import VolatilityModel as VM
+    from finance.volatility import VolatilityModel
     rd, _ = _make_rd_and_pd(504)
     lp = LivePortfolio(
         as_of_date=pd.Timestamp("2016-12-30"),
@@ -1006,7 +1041,7 @@ def test_volatility_report_vol_model_is_volatility_model() -> None:
         gtt_regime=None,
     )
     report = compute_volatility_report(lp, rd)
-    assert isinstance(report.vol_model, VM)
+    assert isinstance(report.vol_model, VolatilityModel)
 
 
 # ---------------------------------------------------------------------------
@@ -1222,9 +1257,11 @@ def test_rebalance_plan_drift_leaps_trim_nonzero_when_overweight() -> None:
         gtt_regime=1,
     )
     nb = compute_nav_breakdown(lp, leaps_mtm=60_000.0)
-    # total_nav=100k, leaps_nav=60k, target_leaps=30k → LEAPS overweight by 30k
-    # We'll drive a drift: VTI actual = 40/100 = 0.40, target = 0.70 → rel drift = -0.30/0.70 ≈ -0.43 >> 10%
-    plan = compute_rebalance_plan(lp, nb, RebalanceRule.DRIFT, is_rebal_date=False, is_month_end=True)
+    # total_nav=100k, leaps_nav=60k, target_leaps=30k → overweight by 30k
+    # VTI actual=0.40, target=0.70 → rel drift ≈ -0.43 >> 10%
+    plan = compute_rebalance_plan(
+        lp, nb, RebalanceRule.DRIFT, is_rebal_date=False, is_month_end=True
+    )
     assert plan.would_trigger is True
     assert plan.leaps_trim > 0.0
     assert abs(plan.leaps_trim - 30_000.0) < 1e-6
@@ -1232,17 +1269,8 @@ def test_rebalance_plan_drift_leaps_trim_nonzero_when_overweight() -> None:
 
 def test_rebalance_plan_drift_leaps_trim_zero_when_not_overweight() -> None:
     """leaps_trim == 0 when DRIFT fires but LEAPS sleeve is not overweight."""
-    # LEAPS at exactly target fraction
-    lp = LivePortfolio(
-        as_of_date=_AS_OF,
-        holdings={"VTI": 40_000.0},
-        target_weights={"VTI": 0.40, "VTI_LEAPS": 0.60},
-        leaps_contracts=(),
-        gtt_regime=1,
-    )
-    # leaps_mtm=60k → total=100k, leaps_weight=0.60 = target → no trim needed
-    # But VTI actual=0.40=target → no drift! Need to create drift differently.
-    # Use VTI=20k, leaps=60k → total=80k, VTI_actual=0.25, target=0.40 → large drift
+    # VTI=20k, leaps=60k → total=80k; VTI_actual=0.25, target=0.40 → drift fires
+    # target_leaps=80k*0.60=48k; leaps_nav=60k>48k → overweight (leaps_trim>0 here too)
     lp2 = LivePortfolio(
         as_of_date=_AS_OF,
         holdings={"VTI": 20_000.0},
@@ -1251,10 +1279,9 @@ def test_rebalance_plan_drift_leaps_trim_zero_when_not_overweight() -> None:
         gtt_regime=1,
     )
     nb2 = compute_nav_breakdown(lp2, leaps_mtm=60_000.0)
-    # target_leaps = 80k * 0.60 = 48k; leaps_nav=60k > 48k → overweight
-    # Just verify we get leaps_trim computed (not zero here)
-    plan = compute_rebalance_plan(lp2, nb2, RebalanceRule.DRIFT, is_rebal_date=False, is_month_end=True)
-    # leaps is overweight here too, just test the structure
+    plan = compute_rebalance_plan(
+        lp2, nb2, RebalanceRule.DRIFT, is_rebal_date=False, is_month_end=True
+    )
     assert isinstance(plan.leaps_trim, float)
     assert plan.leaps_trim >= 0.0
 
@@ -1275,10 +1302,12 @@ def test_rebalance_plan_stray_holding_sell_order_conserves_i3() -> None:
         gtt_regime=1,
     )
     nb = compute_nav_breakdown(lp)
-    plan = compute_rebalance_plan(lp, nb, RebalanceRule.QUARTERLY, is_rebal_date=True, is_month_end=False)
+    plan = compute_rebalance_plan(
+        lp, nb, RebalanceRule.QUARTERLY, is_rebal_date=True, is_month_end=False
+    )
     assert plan.would_trigger is True
     total_trade = sum(t.trade_amount for t in plan.trades)
-    assert abs(total_trade) < 1e-6, f"I3 violated with stray holding: sum(trade_amount) = {total_trade}"
+    assert abs(total_trade) < 1e-6, f"I3 violated: sum={total_trade}"
 
 
 def test_rebalance_plan_stray_holding_sell_order_fields() -> None:
@@ -1291,7 +1320,9 @@ def test_rebalance_plan_stray_holding_sell_order_fields() -> None:
         gtt_regime=1,
     )
     nb = compute_nav_breakdown(lp)
-    plan = compute_rebalance_plan(lp, nb, RebalanceRule.QUARTERLY, is_rebal_date=True, is_month_end=False)
+    plan = compute_rebalance_plan(
+        lp, nb, RebalanceRule.QUARTERLY, is_rebal_date=True, is_month_end=False
+    )
     orders = {t.ticker: t for t in plan.trades}
     assert "EXTRA" in orders
     assert abs(orders["EXTRA"].target_value) < 1e-9
