@@ -29,7 +29,8 @@ if __name__ == "__main__":
     START, END = "2000-09-01", "2026-06-30"
 
     print("=== Fetching Price Data ===")
-    price_data = build_price_data(START, END, tickers=list(WEIGHTS.keys()), use_splice=True)
+    tickers = [t for t in list(WEIGHTS.keys()) if t != "VTI_LEAPS"]
+    price_data = build_price_data(START, END, tickers=tickers, use_splice=True)
 
     print("=== Fetching Risk-Free Rate ===")
     rfr_series = fetch_risk_free_rate(START, END)
