@@ -5,12 +5,18 @@ no-lookahead invariant is enforced by slicing every series to [:as_of_date]
 at the top of compute_leaps_dca_signal before any rolling window runs.
 """
 
+from __future__ import annotations
+
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 import numpy as np
 import pandas as pd
 
 from finance.consts import ASSET_VOL_INDEX
+
+if TYPE_CHECKING:
+    from finance.data import PriceData
 
 # ---------------------------------------------------------------------------
 # Dataclass
@@ -170,7 +176,7 @@ def _percentile_rank(value: float, series: pd.Series) -> float:
 
 
 def compute_leaps_dca_signal(
-    price_data: object,
+    price_data: PriceData,
     ticker: str,
     as_of_date: pd.Timestamp,
     hold_pctile: float = 25.0,
@@ -190,7 +196,7 @@ def compute_leaps_dca_signal(
     w_macd: float = 0.30,
     use_macd_gate: bool = True,
     macd_gate_floor: float = 0.5,
-) -> "LeapsDcaSignal":
+) -> LeapsDcaSignal:
     """Compute the multi-factor DITM LEAPS DCA entry signal for a single ticker.
 
     Slices all series to [:as_of_date] before any computation to enforce the
@@ -228,9 +234,7 @@ def compute_leaps_dca_signal(
         ValueError: If w_rsi + w_stoch + w_iv + w_macd does not sum to 1.0 within 1e-6.
         ValueError: If fewer than min_lookback trading days available up to as_of_date.
     """
-    from finance.data import PriceData
-
-    pd_obj: PriceData = price_data  # type: ignore[assignment]
+    pd_obj = price_data
 
     # Validate weight sum
     weight_sum = w_rsi + w_stoch + w_iv + w_macd

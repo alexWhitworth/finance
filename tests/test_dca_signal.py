@@ -15,7 +15,6 @@ from hypothesis import strategies as st
 
 from finance.data import PriceData
 from finance.dca_signal import (
-    LeapsDcaSignal,
     _compute_macd,
     _compute_rsi,
     _compute_stochastic,
@@ -23,7 +22,6 @@ from finance.dca_signal import (
     _percentile_rank,
     compute_leaps_dca_signal,
 )
-
 
 # ---------------------------------------------------------------------------
 # Fixture helpers
@@ -105,7 +103,8 @@ def _as_of(price_data: PriceData) -> pd.Timestamp:
 def test_rsi_bounds() -> None:
     """RSI values are in [0, 100]."""
     idx = pd.bdate_range("2022-01-03", periods=100)
-    close = pd.Series(np.cumprod(1 + np.random.default_rng(1).normal(0, 0.01, 100)) * 100.0, index=idx)
+    rng = np.random.default_rng(1)
+    close = pd.Series(np.cumprod(1 + rng.normal(0, 0.01, 100)) * 100.0, index=idx)
     rsi = _compute_rsi(close)
     assert (rsi.dropna() >= 0.0).all()
     assert (rsi.dropna() <= 100.0).all()
@@ -136,7 +135,8 @@ def test_stochastic_bounds() -> None:
 def test_macd_histogram_shape() -> None:
     """MACD histogram has the same index as input close."""
     idx = pd.bdate_range("2022-01-03", periods=100)
-    close = pd.Series(np.cumprod(1 + np.random.default_rng(3).normal(0, 0.01, 100)) * 100.0, index=idx)
+    rng = np.random.default_rng(3)
+    close = pd.Series(np.cumprod(1 + rng.normal(0, 0.01, 100)) * 100.0, index=idx)
     hist = _compute_macd(close)
     assert len(hist) == len(close)
     assert hist.index.equals(close.index)
@@ -200,7 +200,7 @@ def test_raises_on_unknown_ticker() -> None:
 def test_raises_on_weights_not_summing_to_one() -> None:
     """ValueError when weights don't sum to 1.0 within 1e-6 (I19)."""
     pd_obj = _make_price_data()
-    with pytest.raises(ValueError, match="Weights must sum to 1.0"):
+    with pytest.raises(ValueError, match=r"Weights must sum to 1\.0"):
         compute_leaps_dca_signal(
             pd_obj, "VTI", _as_of(pd_obj), w_rsi=0.3, w_stoch=0.3, w_iv=0.3, w_macd=0.3
         )
@@ -404,14 +404,28 @@ def test_action_aggressive_sweep_when_high_percentile() -> None:
 def test_no_lookahead_extra_row_does_not_change_output() -> None:
     """Appending one row after as_of_date does not change signal (I18).
 
-    The T1 slice [:as_of_date] must ensure future data never influences output.
+    Builds one full PriceData object, then constructs a truncated copy by
+    slicing all DataFrames to [:as_of_date]. Both copies share identical data
+    up to as_of_date; only pd_long has one extra future row. The T1 slice
+    [:as_of_date] inside compute_leaps_dca_signal must produce identical output.
     """
-    pd_obj = _make_price_data(n_days=N_DAYS, seed=7)
-    as_of = pd_obj.prices.index[-2]  # second-to-last date
-    sig_a = compute_leaps_dca_signal(pd_obj, "VTI", as_of)
+    pd_long = _make_price_data(n_days=N_DAYS, seed=7)
+    as_of = pd_long.prices.index[-2]  # second-to-last: long has one row beyond as_of
 
-    # Re-run with the same as_of_date on the FULL price_data (extra row present)
-    sig_b = compute_leaps_dca_signal(pd_obj, "VTI", as_of)
+    # Build truncated copy by slicing every DataFrame to [:as_of]
+    pd_short = PriceData(
+        prices=pd_long.prices.loc[:as_of],
+        dividends=pd_long.dividends.loc[:as_of],
+        vol_prices=pd_long.vol_prices.loc[:as_of],
+        tickers=pd_long.tickers,
+        start_date=pd_long.start_date,
+        end_date=str(as_of.date()),
+        spliced=pd_long.spliced,
+        ohlcv=pd_long.ohlcv.loc[:as_of],
+    )
+
+    sig_a = compute_leaps_dca_signal(pd_short, "VTI", as_of)
+    sig_b = compute_leaps_dca_signal(pd_long, "VTI", as_of)
 
     assert sig_a.entry_score == pytest.approx(sig_b.entry_score, abs=1e-9)
     assert sig_a.rsi == pytest.approx(sig_b.rsi, abs=1e-9)
@@ -529,7 +543,7 @@ def test_property_weights_sum_raises(w_rsi: float, w_stoch: float, w_iv: float) 
     """I19: Weights not summing to 1.0 always raises ValueError."""
     w_macd = 1.0 - w_rsi - w_stoch - w_iv + 0.1  # deliberately off by 0.1
     pd_obj = _make_price_data(n_days=N_DAYS, seed=0)
-    with pytest.raises(ValueError, match="Weights must sum to 1.0"):
+    with pytest.raises(ValueError, match=r"Weights must sum to 1\.0"):
         compute_leaps_dca_signal(
             pd_obj, "VTI", _as_of(pd_obj),
             w_rsi=w_rsi, w_stoch=w_stoch, w_iv=w_iv, w_macd=w_macd,

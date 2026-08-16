@@ -286,13 +286,13 @@ def _fetch_ohlcv(  # pragma: no cover
     # Normalize: ensure MultiIndex is (field, ticker) → swap to (ticker, field)
     if isinstance(raw.columns, pd.MultiIndex):
         if raw.columns.names[0] != "Ticker":
-            # Already (field, ticker) — swap to (ticker, field)
-            result: pd.DataFrame = raw.stack(level=0, future_stack=True)
-            result.columns.name = "field"
+            # (field, ticker) layout — swaplevel to (ticker, field)
+            result: pd.DataFrame = raw.swaplevel(axis=1)
+            result.columns.names = ["ticker", "field"]
             return result
         # Already (ticker, field) as expected by caller
         raw.columns = pd.MultiIndex.from_tuples(
-            [(ticker, field) for field, ticker in raw.columns],
+            [(ticker, field) for ticker, field in raw.columns],
             names=["ticker", "field"],
         )
     result2: pd.DataFrame = raw
