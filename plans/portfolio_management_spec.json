@@ -1123,7 +1123,7 @@
       "description": "Define LeapsDcaSignal frozen dataclass in finance/dca_signal.py. Implement compute_leaps_dca_signal() with RSI, Stochastic %D, IV percentile, MACD factors, MACD gate, and score percentile. T1 invariant: slice price_data to [:as_of_date] before all computations.",
       "phase": "5b",
       "priority": 6,
-      "status": "not_started",
+      "status": "pending_judge",
       "layer": "python",
       "dependencies": ["F-014"],
       "linked_schemas": ["DS-010", "DS-012"],
