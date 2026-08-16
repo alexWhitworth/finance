@@ -1081,7 +1081,7 @@
       "description": "Add ohlcv: pd.DataFrame field (default empty DataFrame) to PriceData. Add fetch_ohlcv: bool = False parameter to build_price_data. Retain full yf.download OHLCV response when True. No change to existing interface.",
       "phase": "5a",
       "priority": 6,
-      "status": "not_started",
+      "status": "pending_judge",
       "layer": "python",
       "dependencies": ["F-001", "F-002"],
       "linked_schemas": ["DS-012"],

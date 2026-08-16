@@ -14,6 +14,23 @@ from finance.data import (
     splice,
 )
 
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _fake_ohlcv(tickers: tuple[str, ...], start: str, end: str) -> pd.DataFrame:
+    """Synthetic OHLCV DataFrame with (ticker, field) MultiIndex columns."""
+    idx = pd.bdate_range(start, end)
+    rng = np.random.default_rng(42)
+    close = {t: 100.0 * np.cumprod(1 + rng.normal(0.0003, 0.01, len(idx))) for t in tickers}
+    tuples = [(t, f) for t in tickers for f in ("Open", "High", "Low", "Close", "Volume")]
+    cols = pd.MultiIndex.from_tuples(tuples, names=["ticker", "field"])
+    data = np.ones((len(idx), len(tuples))) * 100.0
+    for i, (t, _) in enumerate(tuples):
+        data[:, i] = close[t]
+    return pd.DataFrame(data, index=idx, columns=cols)
+
 # KMLM splice date from SPLICE_MAP for convenience
 _KMLM_START: str = SPLICE_MAP["KMLM"][1]
 
@@ -346,3 +363,92 @@ def test_splice_applied_when_end_date_equals_splice_date() -> None:
         pd_obj = build_price_data(start, end, tickers=["VXUS"], use_splice=True)
 
     assert pd_obj.spliced is True
+
+
+# ---------------------------------------------------------------------------
+# F-014: ohlcv field and fetch_ohlcv parameter
+# ---------------------------------------------------------------------------
+
+
+def test_ohlcv_empty_when_not_requested() -> None:
+    """fetch_ohlcv=False (default) leaves ohlcv as empty DataFrame."""
+    start, end = "2021-06-01", "2022-12-31"
+
+    with (
+        patch("finance.data.fetch_prices", side_effect=lambda t, s, e: _fake_prices(t, s, e)),
+        patch("finance.data.fetch_dividends", return_value=pd.Series(dtype=float)),
+    ):
+        pd_obj = build_price_data(start, end, use_splice=False, fetch_ohlcv=False)
+
+    assert pd_obj.ohlcv.empty
+
+
+def test_ohlcv_default_is_empty() -> None:
+    """PriceData.ohlcv defaults to empty DataFrame when not supplied."""
+    idx = pd.bdate_range("2022-01-03", periods=5)
+    prices = pd.DataFrame({"VTI": [100.0] * 5}, index=idx)
+    dividends = pd.DataFrame({"VTI": [0.0] * 5}, index=idx)
+    pd_obj = PriceData(
+        prices=prices,
+        dividends=dividends,
+        vol_prices=pd.DataFrame(),
+        tickers=("VTI",),
+        start_date="2022-01-03",
+        end_date="2022-01-07",
+        spliced=False,
+    )
+    assert pd_obj.ohlcv.empty
+
+
+def test_ohlcv_populated_when_fetch_requested() -> None:
+    """fetch_ohlcv=True populates ohlcv with a non-empty DataFrame."""
+    start, end = "2021-06-01", "2022-12-31"
+    tickers: tuple[str, ...] = ("VTI",)
+    fake_ohlcv_df = _fake_ohlcv(tickers, start, end)
+
+    with (
+        patch("finance.data.fetch_prices", side_effect=lambda t, s, e: _fake_prices(t, s, e)),
+        patch("finance.data.fetch_dividends", return_value=pd.Series(dtype=float)),
+        patch("finance.data._fetch_ohlcv", return_value=fake_ohlcv_df),
+    ):
+        pd_obj = build_price_data(
+            start, end, tickers=list(tickers), use_splice=False, fetch_ohlcv=True
+        )
+
+    assert not pd_obj.ohlcv.empty
+
+
+def test_ohlcv_multiindex_structure() -> None:
+    """ohlcv has (ticker, field) MultiIndex columns when non-empty."""
+    start, end = "2021-06-01", "2022-12-31"
+    tickers: tuple[str, ...] = ("VTI", "GLD")
+    fake_ohlcv_df = _fake_ohlcv(tickers, start, end)
+
+    with (
+        patch("finance.data.fetch_prices", side_effect=lambda t, s, e: _fake_prices(t, s, e)),
+        patch("finance.data.fetch_dividends", return_value=pd.Series(dtype=float)),
+        patch("finance.data._fetch_ohlcv", return_value=fake_ohlcv_df),
+    ):
+        pd_obj = build_price_data(
+            start, end, tickers=list(tickers), use_splice=False, fetch_ohlcv=True
+        )
+
+    assert isinstance(pd_obj.ohlcv.columns, pd.MultiIndex)
+    assert pd_obj.ohlcv.columns.names[0] == "ticker"
+    top_level = pd_obj.ohlcv.columns.get_level_values(0).unique()
+    for t in tickers:
+        assert t in top_level
+
+
+def test_fetch_ohlcv_false_does_not_call_fetch_ohlcv() -> None:
+    """_fetch_ohlcv is not called when fetch_ohlcv=False."""
+    start, end = "2021-06-01", "2022-12-31"
+
+    with (
+        patch("finance.data.fetch_prices", side_effect=lambda t, s, e: _fake_prices(t, s, e)),
+        patch("finance.data.fetch_dividends", return_value=pd.Series(dtype=float)),
+        patch("finance.data._fetch_ohlcv") as mock_ohlcv,
+    ):
+        build_price_data(start, end, use_splice=False, fetch_ohlcv=False)
+
+    mock_ohlcv.assert_not_called()

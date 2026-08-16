@@ -4,7 +4,7 @@ This module is the I/O boundary for all market data. Everything in here touches
 the network; all downstream modules receive pure DataFrames.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import pandas as pd
@@ -26,6 +26,8 @@ class PriceData:
         start_date: Inclusive start date of the price history.
         end_date: Inclusive end date of the price history.
         spliced: True if any proxy series was prepended via SPLICE_MAP.
+        ohlcv: DatetimeIndex × MultiIndex(ticker, field) OHLCV DataFrame. Empty
+            DataFrame when build_price_data was called with fetch_ohlcv=False (default).
     """
 
     prices: pd.DataFrame
@@ -35,6 +37,7 @@ class PriceData:
     start_date: str
     end_date: str
     spliced: bool
+    ohlcv: pd.DataFrame = field(default_factory=pd.DataFrame)
 
 
 def fetch_prices(  # pragma: no cover
@@ -253,12 +256,55 @@ def _forward_fill_prices(prices: pd.DataFrame, max_gap: int = 5) -> pd.DataFrame
     return filled
 
 
+def _fetch_ohlcv(  # pragma: no cover
+    tickers: tuple[str, ...],
+    start_date: str,
+    end_date: str,
+) -> pd.DataFrame:
+    """Download full OHLCV data and normalize to (ticker, field) MultiIndex columns.
+
+    Arguments:
+        tickers: Ticker symbols to download.
+        start_date: Start date string in YYYY-MM-DD format.
+        end_date: End date string in YYYY-MM-DD format.
+
+    Returns:
+        DataFrame with DatetimeIndex and (ticker, field) MultiIndex columns.
+        Empty DataFrame if download returns no data.
+    """
+    raw = yf.download(
+        list(tickers),
+        start=start_date,
+        end=end_date,
+        auto_adjust=True,
+        progress=False,
+        multi_level_index=True,
+    )
+    if raw.empty:
+        return pd.DataFrame()
+
+    # Normalize: ensure MultiIndex is (field, ticker) → swap to (ticker, field)
+    if isinstance(raw.columns, pd.MultiIndex):
+        if raw.columns.names[0] != "Ticker":
+            # Already (field, ticker) — swap to (ticker, field)
+            result: pd.DataFrame = raw.stack(level=0, future_stack=True)
+            result.columns.name = "field"
+            return result
+        # Already (ticker, field) as expected by caller
+        raw.columns = pd.MultiIndex.from_tuples(
+            [(ticker, field) for field, ticker in raw.columns],
+            names=["ticker", "field"],
+        )
+    return raw
+
+
 def build_price_data(
     start_date: str,
     end_date: str,
     tickers: list[str] | None = None,
     use_splice: bool = True,
     fetch_vol_indices: bool = False,
+    fetch_ohlcv: bool = False,
 ) -> PriceData:
     """Fetch prices for the asset universe and apply proxy splices where needed.
 
@@ -274,10 +320,13 @@ def build_price_data(
             fetched as-is with no prepend.
         fetch_vol_indices: If True, also fetch volatility index series (VIX,
             GVZ, etc.) and store in PriceData.vol_prices. Defaults to False.
+        fetch_ohlcv: If True, fetch and store full OHLCV DataFrame in
+            PriceData.ohlcv with (ticker, field) MultiIndex columns. Defaults
+            to False; ohlcv will be an empty DataFrame.
 
     Returns:
-        PriceData with prices, dividends, vol_prices, tickers, dates, and
-        splice flag.
+        PriceData with prices, dividends, vol_prices, tickers, dates,
+        splice flag, and (when fetch_ohlcv=True) ohlcv.
 
     Notes:
         Dividends are fetched only for MUB (required for TEY adjustment).
@@ -342,6 +391,8 @@ def build_price_data(
     else:
         vol_prices = pd.DataFrame()
 
+    ohlcv = _fetch_ohlcv(asset_tickers, start_date, end_date) if fetch_ohlcv else pd.DataFrame()
+
     return PriceData(
         prices=prices,
         dividends=dividends,
@@ -350,4 +401,5 @@ def build_price_data(
         start_date=str(prices.index[0].date()),
         end_date=str(prices.index[-1].date()),
         spliced=bool(splice_needed),
+        ohlcv=ohlcv,
     )
