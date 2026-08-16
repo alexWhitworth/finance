@@ -12,7 +12,6 @@ import pandas as pd
 
 from finance.consts import ASSET_VOL_INDEX
 
-
 # ---------------------------------------------------------------------------
 # Dataclass
 # ---------------------------------------------------------------------------
@@ -29,12 +28,12 @@ class LeapsDcaSignal:
         as_of_date: Evaluation date.
         ticker: Underlying ticker evaluated (e.g. VTI).
         entry_score: Composite score in [0, 100]. Higher = more favorable entry.
-        score_percentile: entry_score rank within the lookback window (0–100).
+        score_percentile: entry_score rank within the lookback window (0-100).
         alpha_t: Tranche allocation fraction in [0, 1].
         dca_action: HOLD | TRANCHE | AGGRESSIVE_SWEEP.
         rsi: 14-day RSI at as_of_date.
         stoch_d: 5/3 Stochastic %D at as_of_date.
-        iv_percentile: 252-day IV percentile rank (0–100).
+        iv_percentile: 252-day IV percentile rank (0-100).
         iv_current: Raw IV (decimal) at as_of_date.
         macd_hist: MACD histogram value at as_of_date.
         macd_bearish_confirmed: True if MACD histogram negative for ≥ 3 consecutive sessions.
@@ -115,7 +114,7 @@ def _compute_macd(
     slow: int = 26,
     signal_window: int = 9,
 ) -> pd.Series:
-    """MACD histogram (MACD line − signal line).
+    """MACD histogram (MACD line - signal line).
 
     Arguments:
         close: Close price Series.
@@ -150,7 +149,7 @@ def _macd_bearish_confirmed(macd_hist: pd.Series, min_sessions: int = 3) -> bool
 
 
 def _percentile_rank(value: float, series: pd.Series) -> float:
-    """Percentile rank of value within series (0–100, inclusive).
+    """Percentile rank of value within series (0-100, inclusive).
 
     Arguments:
         value: The value to rank.
@@ -261,7 +260,8 @@ def compute_leaps_dca_signal(
 
     # Slice OHLCV for stochastic — handle MultiIndex (ticker, field) structure
     if isinstance(pd_obj.ohlcv.columns, pd.MultiIndex):
-        ohlcv_ticker = pd_obj.ohlcv[ticker].loc[:as_of_date] if ticker in pd_obj.ohlcv.columns.get_level_values(0) else pd.DataFrame()
+        top = pd_obj.ohlcv.columns.get_level_values(0)
+        ohlcv_ticker = pd_obj.ohlcv[ticker].loc[:as_of_date] if ticker in top else pd.DataFrame()
     else:
         ohlcv_ticker = pd_obj.ohlcv.loc[:as_of_date]
 
@@ -310,11 +310,15 @@ def compute_leaps_dca_signal(
     # IV current and IV percentile
     iv_series_clean = iv_series_all.dropna()
     iv_current = float(iv_series_clean.iloc[-1]) if not iv_series_clean.empty else 0.0
-    iv_window_series = iv_series_clean.iloc[-iv_window:] if len(iv_series_clean) >= iv_window else iv_series_clean
+    iv_window_series = (
+        iv_series_clean.iloc[-iv_window:] if len(iv_series_clean) >= iv_window else iv_series_clean
+    )
     iv_pct = _percentile_rank(iv_current, iv_window_series)
 
     # MACD histogram
-    macd_hist_series = _compute_macd(close, fast=macd_fast, slow=macd_slow, signal_window=macd_signal_window)
+    macd_hist_series = _compute_macd(
+        close, fast=macd_fast, slow=macd_slow, signal_window=macd_signal_window
+    )
     macd_hist_val = float(macd_hist_series.iloc[-1])
 
     # MACD bearish confirmed

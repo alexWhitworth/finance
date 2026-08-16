@@ -26,7 +26,7 @@ class PriceData:
         start_date: Inclusive start date of the price history.
         end_date: Inclusive end date of the price history.
         spliced: True if any proxy series was prepended via SPLICE_MAP.
-        ohlcv: DatetimeIndex × MultiIndex(ticker, field) OHLCV DataFrame. Empty
+        ohlcv: DatetimeIndex x MultiIndex(ticker, field) OHLCV DataFrame. Empty
             DataFrame when build_price_data was called with fetch_ohlcv=False (default).
     """
 
@@ -295,7 +295,8 @@ def _fetch_ohlcv(  # pragma: no cover
             [(ticker, field) for field, ticker in raw.columns],
             names=["ticker", "field"],
         )
-    return raw
+    result2: pd.DataFrame = raw
+    return result2
 
 
 def build_price_data(
