@@ -13,12 +13,18 @@ All-Weather, etc):
 1. `RebalanceRule.DRIFT` with or without a `GlidepathConfig`, dominates.
     - No glide path: better risk adjusted returns (Sharpe, Sortino) across all regimes.
     - `GlidepathConfig` has better terminal NAV and late-stage wealth preservation. Preferred
-    for dynamic lifetime de-leveraging (multi-decade wealth generation)
+    for dynamic lifetime de-leveraging (multi-decade wealth generation), but suffers from
+    sequence-of-returns risk
 2. Use LEAPS leverage! But solely in `AccountType.TAX_SHELTERED` accounts. There is major tax
 drag if in `AccountType.TAXABLE`.
 3. GTT (described below) should be discarded. GTT does a great job with macro-economic market 
 drawdowns (eg. GFC), but not monetary driven ones (eg. 2022). As a result, `GttConfig` is
 dominated by a multi-asset portfolio with leveraged equity.
+    - **WHY?** Timing the market requires being correct twice -- both exit and entry timing. 
+    GTT does a decent, but imperfect, job. Secondly, properly constructed multi-asset portfolios
+    do a _better job._ 
+    - The core aim of diversification is finding **multiple uncorrelated assets.** If achieved,
+    this outperforms market timing, especially imperfect market timing.
 
 ## Motivation
 
@@ -53,9 +59,12 @@ hike)
 roll with LTCG preservation, and taxable vs. tax-sheltered scenarios
 - **Rebalancing** — Three options currently supported (extensible to risk parity):
     1. Quarterly: to exact user-specified weights
-    2. Monthly: allowing threshold-drift vs user-specified weights
-    3. Glide-path: deleverage the portfolio overtime, using exponential decay proportional to
-    wealth accumulation over time. (_see [glide_path_rebalance](./plans/glide_path_rebalance_spec.json)
+    2. Monthly DRIFT: rebalances on threshold-drift vs user-specified weights, allowing
+    assets to sit within a target range vs a fixed point target weight: `10% +/- 2% vs 10%`.
+    3. Glide-path: deleverage the portfolio overtime, by converting realized gains the base
+    multi-asset, lower risk, unlevered portfolio. 
+        - Technically: uses exponential decay proportional to wealth accumulation over time. 
+        - (_see [glide_path_rebalance](./plans/glide_path_rebalance_spec.json)
     for details_)
 - **Portfolio Volatility Forecasting/Attribution:** EWMA vol (λ=0.95), 36-month rolling weekly
 correlations, per-asset contribution table summing to 1
