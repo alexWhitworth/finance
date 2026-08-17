@@ -41,6 +41,8 @@ The core baseline allocation targets **105% total global equity delta** alongsid
 | **`VGIT`** | **5.0%** | Intermediate US Treasuries (Flight-to-Quality & Liquidity Reserve) |
 | **`MUB`** | **5.0%** | National Municipal Bonds (Tax-Free Yield Buffer) |
 
+- *Note:* the "vanilla portfolio" in the the performance table is the asset mix specified in `examples/basic_backtest.py`
+
 ---
 
 ### Rebalancing Paradigms & Config Parameters
@@ -79,10 +81,11 @@ $$m(t) = \frac{\text{NAV}(t)}{\text{Contributed}_{\text{hurdle}}(t)}$$
 
 | Strategy Variant | Ann. Return (CAGR) | Ann. Volatility | Max Drawdown | Sharpe Ratio | Sortino Ratio | Terminal NAV |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: |
-| **`LEAPS QTR`** | 12.87% | 20.72% | 45.19% | 0.6011 | 0.5021 | $60.2M |
-| **`LEAPS DRIFT`** | 15.25% | 16.44% | 37.85% | **0.8357** | **0.7818** | $101.1M |
-| **`LEAPS GLIDE`** *(hl=1.0, fl=0.025, α=0.65)* | **16.54%** | 21.98% | 74.92% | 0.7234 | 0.6628 | **$209.0M** |
-| **`GTT LEAPS DRIFT`** | 13.97% | 15.06% | 30.77% | 0.8217 | 0.8671 | $67.3M |
+| **Vanilla Portfolio** | 7.36% | 10.1% | 26.5% | 0.57 | 0.51 | $17.0M |
+| **`LEAPS QTR`** | 12.87% | 20.72% | 45.19% | 0.60 | 0.50 | $60.2M |
+| **`LEAPS DRIFT`** | 15.25% | 16.44% | 37.85% | **0.834** | **0.782** | $101.1M |
+| **`LEAPS GLIDE`** *(hl=1.0, fl=0.025, α=0.65)* | **16.54%** | 21.98% | 74.92% | 0.72 | 0.66 | **$209.0M** |
+| **`GTT LEAPS DRIFT`** | 13.97% | 15.06% | 30.77% | 0.82 | 0.87 | $67.3M |
 
 ---
 
