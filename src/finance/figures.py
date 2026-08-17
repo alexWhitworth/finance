@@ -8,6 +8,7 @@ pass ``output_path=None`` to suppress saving.
 from __future__ import annotations
 
 import io
+import math
 import os
 from pathlib import Path
 
@@ -89,6 +90,53 @@ def _gtt_defensive_rects(position_mask: pd.Series, y_lo: float, y_hi: float) -> 
     })
 
 
+def _nav_log_breaks(y_lo: float, y_hi: float) -> list[float]:
+    """Generate round-number ($M) tick positions spanning [y_lo, y_hi] on a log scale.
+
+    Uses a 1-2-5-per-decade sequence (e.g. 1, 2, 5, 10, 20, 50) so ticks land on
+    clean dollar amounts anchored to the actual NAV range, instead of plotnine's
+    default log-scale ticks which rarely align with the data.
+
+    Arguments:
+        y_lo: Lower bound of the NAV range, in millions.
+        y_hi: Upper bound of the NAV range, in millions.
+
+    Returns:
+        Sorted list of tick positions (in millions) covering the range.
+    """
+    if y_lo <= 0.0 or y_hi <= y_lo:
+        return [y_hi]
+    lo_exp = math.floor(math.log10(y_lo))
+    hi_exp = math.ceil(math.log10(y_hi))
+    candidates = sorted(m * 10.0**e for e in range(lo_exp, hi_exp + 1) for m in (1, 2, 5))
+    breaks = [b for b in candidates if y_lo * 0.9 <= b <= y_hi * 1.1]
+    return breaks if breaks else [y_lo, y_hi]
+
+
+def _format_nav_millions(breaks: list[float]) -> list[str]:
+    """Format $-millions tick positions as human-readable dollar labels.
+
+    Arguments:
+        breaks: Tick positions in millions of dollars.
+
+    Returns:
+        Labels like "$500K", "$1M", "$2.5M" matching each break.
+    """
+    labels = []
+    for b in breaks:
+        if b < 1.0:
+            labels.append(f"${b * 1000:,.0f}K")
+        elif b >= 1000.0:
+            billions = b / 1000.0
+            fmt = f"${int(billions):,}B" if billions == int(billions) else f"${billions:,.1f}B"
+            labels.append(fmt)
+        elif b == int(b):
+            labels.append(f"${int(b):,}M")
+        else:
+            labels.append(f"${b:,.1f}M")
+    return labels
+
+
 def _compute_drawdown_series(nav: pd.Series) -> pd.Series:
     """Return the drawdown series for *nav* (negative fractions).
 
@@ -164,17 +212,20 @@ def plot_nav_growth(
     if position_mask is not None:
         subtitle += "  |  Yellow = GTT defensive"
 
+    y_breaks = _nav_log_breaks(y_lo, y_hi)
+    y_labels = _format_nav_millions(y_breaks)
+
     plot = (
         base
         + p9.geom_line(
             data=data, mapping=p9.aes(x="date", y="nav_millions", color="portfolio"), size=0.8
         )
         + p9.scale_x_datetime(date_labels="%Y", date_minor_breaks="1 year")
-        + p9.scale_y_log10()
+        + p9.scale_y_log10(breaks=y_breaks, labels=y_labels, minor_breaks=[])
         + p9.labs(
             title=f"Portfolio NAV Growth\n{subtitle}",
             x="Date",
-            y="NAV ($ millions)",
+            y="NAV",
             color="Portfolio",
         )
         + p9.theme_grey()
@@ -384,17 +435,20 @@ def plot_leaps_tax_drag(
         subtitle_parts.append("Yellow = GTT defensive")
     subtitle = "  |  ".join(subtitle_parts)
 
+    y_breaks = _nav_log_breaks(y_lo, y_hi)
+    y_labels = _format_nav_millions(y_breaks)
+
     plot = (
         base
         + p9.geom_line(
             data=data, mapping=p9.aes(x="date", y="nav_millions", color="account"), size=0.8
         )
         + p9.scale_x_datetime(date_labels="%Y", date_minor_breaks="1 year")
-        + p9.scale_y_log10()
+        + p9.scale_y_log10(breaks=y_breaks, labels=y_labels, minor_breaks=[])
         + p9.labs(
             title=f"LEAPS Tax Drag: Taxable vs. Tax-Sheltered\n{drag_label}  {subtitle}",
             x="Date",
-            y="NAV ($ millions)",
+            y="NAV",
             color="Account Type",
         )
         + p9.theme_grey()
@@ -456,6 +510,9 @@ def format_performance_table(report: PerformanceReport) -> str:
         "-" * 100,
         f"  Forward Vol Forecast : {report.forward_vol_forecast:.4f}",
     ]
+
+    if report.final_nav is not None:
+        lines.append(f"  Terminal NAV         : ${report.final_nav:>15,.2f}")
 
     if report.terminal_nav is not None:
         tn = report.terminal_nav
@@ -522,6 +579,8 @@ def compare_performance_table(reports: list[tuple[str, PerformanceReport]]) -> s
         lines.append(
             f"  [{label}] Forward Vol Forecast : {report.forward_vol_forecast:.4f}"
         )
+        if report.final_nav is not None:
+            lines.append(f"  [{label}] Terminal NAV : ${report.final_nav:>15,.2f}")
         if report.terminal_nav is not None:
             tn = report.terminal_nav
             ts = report.tax_summary

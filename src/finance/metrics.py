@@ -66,6 +66,8 @@ class PerformanceReport:
         vol_contribution_table: DataFrame with columns
             [sigma_tilde, sigma_hat, rho_VTI, contrib], indexed by asset.
         forward_vol_forecast: Annualized one-step-ahead portfolio vol sigma_hat_p.
+        final_nav: Portfolio NAV at the last backtest date (None for
+            sub-period slices, e.g. crisis windows, that have no terminal state).
         terminal_nav: Pre/post-tax terminal NAV (None when no LEAPS overlay).
         tax_summary: LEAPS tax drag summary (None when no LEAPS overlay).
     """
@@ -74,6 +76,7 @@ class PerformanceReport:
     crisis_periods: tuple[PerformanceMetrics, ...]
     vol_contribution_table: pd.DataFrame
     forward_vol_forecast: float
+    final_nav: float | None = None
     terminal_nav: TerminalNav | None = None
     tax_summary: LeapsTaxSummary | None = None
 
@@ -339,8 +342,8 @@ def build_performance_report(
 
     Returns:
         PerformanceReport with full_period, crisis_periods, vol table,
-        forward_vol_forecast, and terminal_nav / tax_summary populated when
-        a LEAPS ledger is present (None otherwise).
+        forward_vol_forecast, and final_nav always populated; terminal_nav /
+        tax_summary populated only when a LEAPS ledger is present (None otherwise).
     """
     port_returns = backtest_result.return_series
     nav = backtest_result.nav_series
@@ -387,6 +390,7 @@ def build_performance_report(
         crisis_periods=tuple(crisis_metrics),
         vol_contribution_table=vol_table,
         forward_vol_forecast=fwd_vol,
+        final_nav=float(nav.iloc[-1]),
         terminal_nav=t_nav,
         tax_summary=t_summary,
     )
