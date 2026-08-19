@@ -7,7 +7,7 @@ then prints a side-by-side-by-side performance comparison and saves a NAV growth
 to outputs/figures/gtt_comparison_nav.png.
 
 Usage:
-    uv run examples/gtt_leaps.py 2>&1 | tee outputs/gtt_example.log
+    uv run examples/backtesting/gtt_leaps.py 2>&1 | tee outputs/gtt_example.log
 
 Notes:
     - Requires FRED_API_KEY in the environment (or .env) for UNRATE data.

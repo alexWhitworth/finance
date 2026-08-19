@@ -724,7 +724,7 @@ class TestWhipsawMultiRegime:
 _FIXTURE_PATH = "data/backtest_fixture.parquet"
 _UNRATE_PATH = "data/unrate_fixture.parquet"
 
-# Config mirrors examples/gtt_leaps.py: 6-asset portfolio with VTI_LEAPS
+# Config mirrors examples/backtesting/gtt_leaps.py: 6-asset portfolio with VTI_LEAPS
 _REAL_WEIGHTS = {
     "VTI": 0.0,
     "VXUS": 0.15,
