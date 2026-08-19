@@ -1173,7 +1173,7 @@
       "description": "Update finance/__init__.py with all new re-exports. Add docstrings on all new public functions and types. Ensure uv run mypy src/ strict clean.",
       "phase": "6a",
       "priority": 7,
-      "status": "not_started",
+      "status": "pending_judge",
       "layer": "python",
       "dependencies": ["F-005", "F-006", "F-007", "F-008", "F-010", "F-011", "F-012", "F-013", "F-015"],
       "linked_schemas": [],
