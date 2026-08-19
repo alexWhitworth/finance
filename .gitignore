@@ -16,6 +16,7 @@ outputs/figures/*
 !outputs/figures/leaps_tax_drag.png
 !outputs/figures/gtt_leaps_comparison_nav.png
 analyses/
+docs/
 
 scripts/*
 
