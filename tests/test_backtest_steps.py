@@ -85,9 +85,9 @@ def test_gtt_signal_without_gtt_config_raises() -> None:
     config = _make_config()  # gtt_config=None
     signal = _make_gtt_signal(dates)
 
-    with pytest.raises(ValueError, match=re.escape(
-        "gtt_signal and config.gtt_config must both be set"
-    )):
+    with pytest.raises(
+        ValueError, match=re.escape("gtt_signal and config.gtt_config must both be set")
+    ):
         _build_context(rd, pd_, config, signal)
 
 
@@ -359,17 +359,21 @@ def test_extract_all_fields_match_series() -> None:
     )
     assert inputs.regime_t == int(ctx.mask_aligned.loc[date])  # type: ignore[index]
     assert inputs.def_gross_return == pytest.approx(
-        float(ctx.def_gross.loc[date]), abs=1e-12  # type: ignore[index]
+        float(ctx.def_gross.loc[date]),
+        abs=1e-12,  # type: ignore[index]
     )
     assert inputs.spot is None
     assert inputs.raw_vix_value == pytest.approx(
-        float(ctx.raw_vix.loc[date]), abs=1e-12  # type: ignore[index]
+        float(ctx.raw_vix.loc[date]),
+        abs=1e-12,  # type: ignore[index]
     )
     assert inputs.mtm_iv_value == pytest.approx(
-        float(ctx.mtm_iv_series.loc[date]), abs=1e-12  # type: ignore[index]
+        float(ctx.mtm_iv_series.loc[date]),
+        abs=1e-12,  # type: ignore[index]
     )
     assert inputs.rfr == pytest.approx(
-        float(ctx.rfr_series.loc[date]), abs=1e-12  # type: ignore[index]
+        float(ctx.rfr_series.loc[date]),
+        abs=1e-12,  # type: ignore[index]
     )
     assert isinstance(inputs.is_month_end, bool)
     assert inputs.is_month_end == (date in ctx.month_end_dates)
@@ -509,9 +513,7 @@ def test_gtt_open_accounting_invariant() -> None:
     sleeve=st.floats(0, 1e4),
 )
 @settings(max_examples=500)
-def test_gtt_open_accounting_invariant_hypothesis(
-    vti: float, vxus: float, sleeve: float
-) -> None:
+def test_gtt_open_accounting_invariant_hypothesis(vti: float, vxus: float, sleeve: float) -> None:
     """Total capital is conserved for all non-negative holding/sleeve combinations."""
     state = _make_portfolio_state({"VTI": vti, "VXUS": vxus}, sleeve=sleeve)
     ctx = _make_gtt_open_ctx(gtt_active=True)
@@ -582,25 +584,41 @@ def test_force_close_fires_a3_invariant() -> None:
     assert abs((new_state.leaps_pool - state.leaps_pool) - evt.net_proceeds) < 1e-9
 
 
-def test_force_close_scale_applied_to_n_contracts() -> None:
-    """leaps_scale={contract: 0.5} halves n_contracts in the close event."""
+def test_force_close_scale_applied_to_financials_not_contract_identity() -> None:
+    """leaps_scale={contract: 0.5} halves the close event's financial fields,
+    but .contract retains the *original* (unscaled) identity.
+
+    get_live_contracts() matches gtt_close_events against ledger.contracts by
+    dataclass equality to decide what's still "live". If .contract stored the
+    scaled continuation instead, a contract previously trimmed by any
+    rebalance (QUARTERLY or DRIFT) would never match and would leak through
+    as falsely live after this force-close.
+    """
     contract = make_contract(n=2.0)
     ledger = make_ledger(contract)
-    state = _make_portfolio_state(
-        {"VTI": 85_000.0},
-        leaps_ledger=ledger,
-        leaps_scale={contract: 0.5},
-        prev_date_ts=_F008_T0,
-    )
     ctx = _make_gtt_force_close_ctx(spot=210.0)
     inputs = _make_day_inputs(
         date_ts=_F008_T1, regime_t=0, spot=210.0, raw_vix_value=0.25, mtm_iv_value=0.22
     )
 
-    new_state = _apply_gtt_force_close(state, inputs, ctx)
+    state_full = _make_portfolio_state(
+        {"VTI": 85_000.0},
+        leaps_ledger=ledger,
+        prev_date_ts=_F008_T0,
+    )
+    state_half = _make_portfolio_state(
+        {"VTI": 85_000.0},
+        leaps_ledger=ledger,
+        leaps_scale={contract: 0.5},
+        prev_date_ts=_F008_T0,
+    )
 
-    assert len(new_state.all_gtt_closes) == 1
-    assert abs(new_state.all_gtt_closes[0].contract.n_contracts - 2.0 * 0.5) < 1e-12
+    full_evt = _apply_gtt_force_close(state_full, inputs, ctx).all_gtt_closes[0]
+    half_evt = _apply_gtt_force_close(state_half, inputs, ctx).all_gtt_closes[0]
+
+    assert half_evt.mtm_value == pytest.approx(full_evt.mtm_value * 0.5, rel=1e-12)
+    assert half_evt.contract == contract
+    assert half_evt.contract.n_contracts == 2.0
 
 
 def test_force_close_tax_sheltered_tax_paid_zero() -> None:
@@ -609,9 +627,7 @@ def test_force_close_tax_sheltered_tax_paid_zero() -> None:
     ledger = LeapsLedger(
         contracts=(contract,), roll_events=(), account_type=AccountType.TAX_SHELTERED
     )
-    state = _make_portfolio_state(
-        {"VTI": 85_000.0}, leaps_ledger=ledger, prev_date_ts=_F008_T0
-    )
+    state = _make_portfolio_state({"VTI": 85_000.0}, leaps_ledger=ledger, prev_date_ts=_F008_T0)
     ctx = _make_gtt_force_close_ctx(spot=210.0)
     inputs = _make_day_inputs(
         date_ts=_F008_T1, regime_t=0, spot=210.0, raw_vix_value=0.25, mtm_iv_value=0.22
@@ -643,7 +659,7 @@ def test_force_close_hypothesis_a3_invariant(spot: float, n_contracts: float) ->
 
     new_state = _apply_gtt_force_close(state, inputs, ctx)
 
-    new_events = new_state.all_gtt_closes[len(state.all_gtt_closes):]
+    new_events = new_state.all_gtt_closes[len(state.all_gtt_closes) :]
     expected_pool = initial_pool + sum(e.net_proceeds for e in new_events)
     assert abs(new_state.leaps_pool - expected_pool) < 1e-9
 
@@ -656,9 +672,7 @@ def test_force_close_hypothesis_a3_invariant(spot: float, n_contracts: float) ->
 def test_returns_flat_holdings_unchanged() -> None:
     """Flat returns (day_ret=0.0) leave holdings numerically identical."""
     state = _make_portfolio_state({"VTI": 5000.0, "VXUS": 3000.0})
-    inputs = _make_day_inputs(
-        date_ts=_F009_DATE, day_ret=pd.Series({"VTI": 0.0, "VXUS": 0.0})
-    )
+    inputs = _make_day_inputs(date_ts=_F009_DATE, day_ret=pd.Series({"VTI": 0.0, "VXUS": 0.0}))
     ctx = _make_returns_ctx()
 
     new = _apply_returns(state, inputs, ctx)
@@ -670,9 +684,7 @@ def test_returns_flat_holdings_unchanged() -> None:
 def test_returns_known_scale_holdings() -> None:
     """Known returns scale holdings by (1 + r) for each asset."""
     state = _make_portfolio_state({"VTI": 10_000.0, "VXUS": 5_000.0})
-    inputs = _make_day_inputs(
-        date_ts=_F009_DATE, day_ret=pd.Series({"VTI": 0.05, "VXUS": -0.02})
-    )
+    inputs = _make_day_inputs(date_ts=_F009_DATE, day_ret=pd.Series({"VTI": 0.05, "VXUS": -0.02}))
     ctx = _make_returns_ctx()
 
     new = _apply_returns(state, inputs, ctx)
@@ -707,9 +719,7 @@ def test_returns_exact_formula_property(
 def test_returns_non_holdings_fields_unchanged() -> None:
     """Fields other than holdings are not mutated by _apply_returns."""
     state = _make_portfolio_state({"VTI": 5000.0, "VXUS": 3000.0}, sleeve=200.0, pool=100.0)
-    inputs = _make_day_inputs(
-        date_ts=_F009_DATE, day_ret=pd.Series({"VTI": 0.01, "VXUS": 0.02})
-    )
+    inputs = _make_day_inputs(date_ts=_F009_DATE, day_ret=pd.Series({"VTI": 0.01, "VXUS": 0.02}))
     ctx = _make_returns_ctx()
 
     new = _apply_returns(state, inputs, ctx)
@@ -804,9 +814,7 @@ def test_defensive_compounding_noop_when_def_gross_none() -> None:
 
 def test_defensive_compounding_non_sleeve_fields_unchanged() -> None:
     """Fields other than sleeve and pool are not mutated."""
-    state = _make_portfolio_state(
-        {"VTI": 500.0, "VXUS": 300.0}, sleeve=1_000.0, pool=200.0
-    )
+    state = _make_portfolio_state({"VTI": 500.0, "VXUS": 300.0}, sleeve=1_000.0, pool=200.0)
     inputs = _make_day_inputs(date_ts=_F009_DATE, regime_t=0, def_gross_return=0.005)
     ctx = _make_returns_ctx(
         gtt_active=True, def_gross=pd.Series([0.005], index=pd.DatetimeIndex([_F009_DATE]))
@@ -1019,9 +1027,7 @@ def test_leaps_mtm_scale_applied() -> None:
     strike_ratio=st.floats(min_value=0.50, max_value=0.90, allow_nan=False, allow_infinity=False),
 )
 @settings(max_examples=200)
-def test_leaps_mtm_hypothesis_value_nonneg(
-    spot: float, iv: float, strike_ratio: float
-) -> None:
+def test_leaps_mtm_hypothesis_value_nonneg(spot: float, iv: float, strike_ratio: float) -> None:
     """For any valid spot/iv/strike combination, leaps_value is always >= 0.0."""
     strike = spot * strike_ratio
     purchase_date = pd.Timestamp("2022-01-03")
@@ -1037,9 +1043,7 @@ def test_leaps_mtm_hypothesis_value_nonneg(
         n_contracts=1.0,
         account_type=AccountType.TAXABLE,
     )
-    ledger = LeapsLedger(
-        contracts=(contract,), roll_events=(), account_type=AccountType.TAXABLE
-    )
+    ledger = LeapsLedger(contracts=(contract,), roll_events=(), account_type=AccountType.TAXABLE)
     state = _make_portfolio_state(
         {"VTI": 50000.0}, leaps_ledger=ledger, leaps_value=0.0, prev_regime=1
     )
@@ -1094,9 +1098,7 @@ def test_port_return_negative() -> None:
 
 
 @given(
-    holdings_vals=st.fixed_dictionaries(
-        {"VTI": st.floats(0.0, 1e6), "VXUS": st.floats(0.0, 1e6)}
-    ),
+    holdings_vals=st.fixed_dictionaries({"VTI": st.floats(0.0, 1e6), "VXUS": st.floats(0.0, 1e6)}),
     leaps=st.floats(0.0, 1e5),
     sleeve=st.floats(0.0, 1e5),
     pool=st.floats(0.0, 1e5),
@@ -1160,9 +1162,7 @@ def test_contribution_month_end_long_day_holdings_increase() -> None:
 
 def test_contribution_month_end_defensive_governed_to_sleeve() -> None:
     """Defensive month-end: governed asset allocation goes to sleeve, not holdings."""
-    state = _make_portfolio_state(
-        {"VTI": 1000.0, "VXUS": 500.0}, sleeve=200.0
-    )
+    state = _make_portfolio_state({"VTI": 1000.0, "VXUS": 500.0}, sleeve=200.0)
     inputs = _make_day_inputs(date_ts=_F012_DATE, regime_t=0, is_month_end=True)
     ctx = _make_contribution_ctx(
         base_assets=("VTI", "VXUS"),
@@ -1198,9 +1198,7 @@ def test_contribution_month_end_defensive_leaps_pool_receives_monthly() -> None:
 
 def test_contribution_month_end_reentry_governed_to_holdings() -> None:
     """Re-entry day (regime_t=1): governed allocation goes to holdings, not sleeve."""
-    state = _make_portfolio_state(
-        {"VTI": 1000.0, "VXUS": 500.0}, sleeve=300.0
-    )
+    state = _make_portfolio_state({"VTI": 1000.0, "VXUS": 500.0}, sleeve=300.0)
     inputs = _make_day_inputs(date_ts=_F012_DATE, regime_t=1, is_month_end=True)
     ctx = _make_contribution_ctx(
         base_assets=("VTI", "VXUS"),
@@ -1301,14 +1299,10 @@ def test_rebalance_quarterly_nav_neutral() -> None:
     holdings_in = {"VTI": 60_000.0, "VXUS": 20_000.0, "GLD": 20_000.0}
     base_target_w = pd.Series({"VTI": 0.6, "VXUS": 0.2, "GLD": 0.2})
     state = _make_portfolio_state(holdings_in)
-    ctx = _make_rebalance_ctx(
-        base_assets=("VTI", "VXUS", "GLD"), base_target_w=base_target_w
-    )
+    ctx = _make_rebalance_ctx(base_assets=("VTI", "VXUS", "GLD"), base_target_w=base_target_w)
     inputs = _make_day_inputs(is_rebal_date=True)
     result = _apply_rebalance(state, inputs, ctx)
-    assert sum(result.holdings.values()) == pytest.approx(
-        sum(holdings_in.values()), rel=1e-9
-    )
+    assert sum(result.holdings.values()) == pytest.approx(sum(holdings_in.values()), rel=1e-9)
 
 
 def test_rebalance_quarterly_weights_correct() -> None:
@@ -1316,9 +1310,7 @@ def test_rebalance_quarterly_weights_correct() -> None:
     holdings_in = {"VTI": 50_000.0, "VXUS": 30_000.0, "GLD": 20_000.0}
     base_target_w = pd.Series({"VTI": 0.6, "VXUS": 0.2, "GLD": 0.2})
     state = _make_portfolio_state(holdings_in)
-    ctx = _make_rebalance_ctx(
-        base_assets=("VTI", "VXUS", "GLD"), base_target_w=base_target_w
-    )
+    ctx = _make_rebalance_ctx(base_assets=("VTI", "VXUS", "GLD"), base_target_w=base_target_w)
     inputs = _make_day_inputs(is_rebal_date=True)
     result = _apply_rebalance(state, inputs, ctx)
     total = sum(result.holdings.values())
@@ -1346,6 +1338,115 @@ def test_rebalance_quarterly_gtt_defensive_governed_swept() -> None:
     base_nav = sum(holdings_in.values())
     expected_vti_rebalanced = base_nav * 0.6
     assert result.defensive_sleeve == pytest.approx(sleeve_in + expected_vti_rebalanced, rel=1e-9)
+
+
+def test_rebalance_quarterly_trims_leaps_overweight() -> None:
+    """QUARTERLY trims LEAPS back to ctx.leaps_fraction when it's overweight.
+
+    base=70k, leaps_value=60k -> total=130k; target_leaps=130k*0.30=39k.
+    LEAPS is overweight by 21k, which should be trimmed and returned to base.
+    """
+    contract = make_contract(n=2.0)
+    ledger = make_ledger(contract)
+    holdings_in = {"VTI": 70_000.0}
+    base_target_w = pd.Series({"VTI": 1.0})
+    state = _make_portfolio_state(
+        holdings_in,
+        leaps_value=60_000.0,
+        leaps_ledger=ledger,
+        prev_date_ts=pd.Timestamp("2020-01-01"),
+    )
+    ctx = _make_rebalance_ctx(
+        base_assets=("VTI",),
+        base_target_w=base_target_w,
+        leaps_keys=("VTI_LEAPS",),
+        leaps_fraction=0.30,
+    )
+    inputs = _make_day_inputs(is_rebal_date=True)
+    result = _apply_rebalance(state, inputs, ctx)
+
+    assert result.leaps_value == pytest.approx(39_000.0, rel=1e-9)
+    assert result.holdings["VTI"] == pytest.approx(91_000.0, rel=1e-9)  # 70k + 21k proceeds
+    assert result.leaps_scale[contract] == pytest.approx(39_000.0 / 60_000.0, rel=1e-9)
+    # Total NAV of the rebalanced sleeves is conserved (A5, LEAPS-inclusive).
+    total_before = sum(holdings_in.values()) + 60_000.0
+    total_after = sum(result.holdings.values()) + result.leaps_value
+    assert total_after == pytest.approx(total_before, rel=1e-9)
+
+
+def test_rebalance_quarterly_no_trim_when_leaps_within_target() -> None:
+    """QUARTERLY leaves LEAPS untouched when it is at or below ctx.leaps_fraction."""
+    contract = make_contract(n=2.0)
+    ledger = make_ledger(contract)
+    holdings_in = {"VTI": 70_000.0}
+    base_target_w = pd.Series({"VTI": 1.0})
+    state = _make_portfolio_state(
+        holdings_in,
+        leaps_value=30_000.0,
+        leaps_ledger=ledger,
+        prev_date_ts=pd.Timestamp("2020-01-01"),
+    )
+    ctx = _make_rebalance_ctx(
+        base_assets=("VTI",),
+        base_target_w=base_target_w,
+        leaps_keys=("VTI_LEAPS",),
+        leaps_fraction=0.30,
+    )
+    inputs = _make_day_inputs(is_rebal_date=True)
+    result = _apply_rebalance(state, inputs, ctx)
+
+    assert result.leaps_value == pytest.approx(30_000.0, rel=1e-9)
+    assert result.holdings["VTI"] == pytest.approx(70_000.0, rel=1e-9)
+    assert result.leaps_scale == {}
+
+
+def test_rebalance_quarterly_no_leaps_configured_unaffected() -> None:
+    """QUARTERLY with no LEAPS overlay (leaps_fraction=0.0) is unaffected (backward-compat)."""
+    holdings_in = {"VTI": 60_000.0, "VXUS": 40_000.0}
+    base_target_w = pd.Series({"VTI": 0.6, "VXUS": 0.4})
+    state = _make_portfolio_state(holdings_in)
+    ctx = _make_rebalance_ctx(base_assets=("VTI", "VXUS"), base_target_w=base_target_w)
+    inputs = _make_day_inputs(is_rebal_date=True)
+    result = _apply_rebalance(state, inputs, ctx)
+
+    assert result.leaps_value == 0.0
+    assert result.leaps_scale == {}
+    assert sum(result.holdings.values()) == pytest.approx(sum(holdings_in.values()), rel=1e-9)
+
+
+@given(
+    base_vti=st.floats(min_value=1.0, max_value=1_000_000.0, allow_nan=False, allow_infinity=False),
+    leaps_value=st.floats(
+        min_value=0.0, max_value=1_000_000.0, allow_nan=False, allow_infinity=False
+    ),
+    leaps_fraction=st.floats(min_value=0.0, max_value=0.9, allow_nan=False, allow_infinity=False),
+)
+@settings(max_examples=200)
+def test_rebalance_quarterly_leaps_inclusive_nav_conservation_property(
+    base_vti: float, leaps_value: float, leaps_fraction: float
+) -> None:
+    """Property (A5, LEAPS-inclusive): QUARTERLY conserves sum(holdings)+leaps_value."""
+    contract = make_contract(n=2.0)
+    ledger = make_ledger(contract)
+    holdings_in = {"VTI": base_vti}
+    state = _make_portfolio_state(
+        holdings_in,
+        leaps_value=leaps_value,
+        leaps_ledger=ledger,
+        prev_date_ts=pd.Timestamp("2020-01-01"),
+    )
+    ctx = _make_rebalance_ctx(
+        base_assets=("VTI",),
+        base_target_w=pd.Series({"VTI": 1.0}),
+        leaps_keys=("VTI_LEAPS",),
+        leaps_fraction=leaps_fraction,
+    )
+    inputs = _make_day_inputs(is_rebal_date=True)
+    result = _apply_rebalance(state, inputs, ctx)
+
+    total_before = base_vti + leaps_value
+    total_after = sum(result.holdings.values()) + result.leaps_value
+    assert total_after == pytest.approx(total_before, rel=1e-9)
 
 
 def test_rebalance_drift_not_triggered_noop() -> None:
@@ -1391,7 +1492,8 @@ def test_rebalance_drift_triggered_realigns_holdings() -> None:
     gld=st.floats(min_value=1.0, max_value=1_000_000.0, allow_nan=False, allow_infinity=False),
     w_raw=st.lists(
         st.floats(min_value=0.01, max_value=1.0, allow_nan=False, allow_infinity=False),
-        min_size=3, max_size=3,
+        min_size=3,
+        max_size=3,
     ),
 )
 @settings(max_examples=300)
@@ -1409,9 +1511,7 @@ def test_rebalance_quarterly_a5_sum_conservation(
     ctx = _make_rebalance_ctx(base_assets=assets, base_target_w=base_target_w)
     inputs = _make_day_inputs(is_rebal_date=True)
     result = _apply_rebalance(state, inputs, ctx)
-    assert sum(result.holdings.values()) == pytest.approx(
-        sum(holdings_in.values()), rel=1e-9
-    )
+    assert sum(result.holdings.values()) == pytest.approx(sum(holdings_in.values()), rel=1e-9)
 
 
 # ---------------------------------------------------------------------------
@@ -1452,9 +1552,7 @@ def test_reentry_noop_gtt_inactive() -> None:
 def test_reentry_a2_nav_neutral() -> None:
     """After re-entry, sum(holdings) + leaps_value == total within 1e-9 (A2)."""
     ctx = _make_reentry_ctx(leaps_fraction=0.15)
-    state = _make_portfolio_state(
-        {"VTI": 75_000.0}, sleeve=20_000.0, pool=5_000.0, prev_regime=0
-    )
+    state = _make_portfolio_state({"VTI": 75_000.0}, sleeve=20_000.0, pool=5_000.0, prev_regime=0)
     inputs = _make_day_inputs(
         date_ts=_F014_RE_ENTRY_DATE, regime_t=1, spot=_F014_SPOT, rfr=_F014_RFR
     )
@@ -1472,9 +1570,7 @@ def test_reentry_a4_leaps_value_equals_capital_deployed() -> None:
     """leaps_value == total * leaps_fraction within 1e-6 (A4, Bug 2 regression test)."""
     leaps_fraction = 0.15
     ctx = _make_reentry_ctx(leaps_fraction=leaps_fraction)
-    state = _make_portfolio_state(
-        {"VTI": 75_000.0}, sleeve=20_000.0, pool=5_000.0, prev_regime=0
-    )
+    state = _make_portfolio_state({"VTI": 75_000.0}, sleeve=20_000.0, pool=5_000.0, prev_regime=0)
     inputs = _make_day_inputs(
         date_ts=_F014_RE_ENTRY_DATE, regime_t=1, spot=_F014_SPOT, rfr=_F014_RFR, raw_vix_value=None
     )
@@ -1490,12 +1586,13 @@ def test_reentry_bug2_elevated_vix_priced_at_creation_iv() -> None:
     """Elevated raw_vix_value at re-entry: creation_iv=max(raw_vix_value, ctx.iv)."""
     raw_vix_value = 0.50
     ctx = _make_reentry_ctx(leaps_fraction=0.15, iv=DEFAULT_IV)
-    state = _make_portfolio_state(
-        {"VTI": 75_000.0}, sleeve=20_000.0, pool=5_000.0, prev_regime=0
-    )
+    state = _make_portfolio_state({"VTI": 75_000.0}, sleeve=20_000.0, pool=5_000.0, prev_regime=0)
     inputs = _make_day_inputs(
-        date_ts=_F014_RE_ENTRY_DATE, regime_t=1, spot=_F014_SPOT,
-        rfr=_F014_RFR, raw_vix_value=raw_vix_value
+        date_ts=_F014_RE_ENTRY_DATE,
+        regime_t=1,
+        spot=_F014_SPOT,
+        rfr=_F014_RFR,
+        raw_vix_value=raw_vix_value,
     )
     total_before = sum(state.holdings.values()) + state.defensive_sleeve + state.leaps_pool
 
@@ -1503,7 +1600,7 @@ def test_reentry_bug2_elevated_vix_priced_at_creation_iv() -> None:
 
     creation_iv = max(raw_vix_value, DEFAULT_IV)
     assert result.leaps_ledger is not None
-    win_prices = _F014_PRICES.loc[_F014_RE_ENTRY_DATE:_F014_DATES[-1]]
+    win_prices = _F014_PRICES.loc[_F014_RE_ENTRY_DATE : _F014_DATES[-1]]
     manual_ledger = run_leaps_simulation(
         win_prices,
         ctx.leaps_monthly,
@@ -1553,9 +1650,7 @@ def test_reentry_leaps_scale_reset() -> None:
     leaps_fraction=st.floats(min_value=0.0, max_value=0.30, allow_nan=False),
     total_nav=st.floats(min_value=10_000.0, max_value=100_000.0, allow_nan=False),
 )
-def test_reentry_hypothesis_a2_nav_conservation(
-    leaps_fraction: float, total_nav: float
-) -> None:
+def test_reentry_hypothesis_a2_nav_conservation(leaps_fraction: float, total_nav: float) -> None:
     """A2: sum(holdings) + leaps_value == total within 1e-9 for any valid inputs."""
     holdings_val = total_nav * 0.75
     sleeve_val = total_nav * 0.15
@@ -1566,8 +1661,7 @@ def test_reentry_hypothesis_a2_nav_conservation(
         {"VTI": holdings_val}, sleeve=sleeve_val, pool=pool_val, prev_regime=0
     )
     inputs = _make_day_inputs(
-        date_ts=_F014_RE_ENTRY_DATE, regime_t=1, spot=_F014_SPOT,
-        rfr=_F014_RFR, raw_vix_value=None
+        date_ts=_F014_RE_ENTRY_DATE, regime_t=1, spot=_F014_SPOT, rfr=_F014_RFR, raw_vix_value=None
     )
 
     result = _apply_gtt_reentry(state, inputs, ctx)
@@ -1759,9 +1853,7 @@ def test_assemble_two_window_gtt(sample_contract: LeapsContract) -> None:
         leaps_ledger=ledger_w2,
         all_window_ledgers=(ledger_w1, ledger_w2),
     )
-    ctx = _make_minimal_backtest_ctx(
-        gtt_active=True, use_leaps=True, leaps_config=leaps_config
-    )
+    ctx = _make_minimal_backtest_ctx(gtt_active=True, use_leaps=True, leaps_config=leaps_config)
     result = _assemble_leaps_ledger(state, ctx, pd.Timestamp("2025-12-31"))
     assert result is not None
     assert len(result.contracts) == len(ledger_w1.contracts) + len(ledger_w2.contracts)

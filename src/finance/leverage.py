@@ -584,6 +584,59 @@ def create_leaps_contract(
     )
 
 
+def build_leaps_contract(
+    purchase_date: pd.Timestamp,
+    expiry_date: pd.Timestamp,
+    spot_at_purchase: float,
+    n_contracts: float,
+    iv: float = DEFAULT_IV,
+    account_type: AccountType = AccountType.TAXABLE,
+    risk_free_rate: float = DEFAULT_RISK_FREE_RATE,
+    dividend_yield: float = DEFAULT_DIVIDEND_YIELD,
+) -> LeapsContract:
+    """Construct a LeapsContract for a position the caller already holds.
+
+    Unlike create_leaps_contract (which sizes a new position from a dollar
+    budget and a fixed 2-year expiry), this reports an existing position:
+    purchase_date, expiry_date, spot_at_purchase, and n_contracts are all
+    caller-supplied — e.g. read directly off a brokerage trade confirmation —
+    and premium_paid is back-computed via Black-Scholes at those exact terms.
+
+    Strike is set at LEAPS_STRIKE_RATIO * spot_at_purchase, matching the
+    deep-in-the-money convention used throughout the LEAPS overlay.
+
+    Arguments:
+        purchase_date: Trade date.
+        expiry_date: Option expiry, as reported by the broker.
+        spot_at_purchase: Underlying price on purchase_date.
+        n_contracts: Number of contracts held.
+        iv: Implied volatility used to back out premium_paid via
+            Black-Scholes. Default 0.18.
+        account_type: Tax treatment applied at future roll. Default TAXABLE.
+        risk_free_rate: Continuously compounded risk-free rate. Default 0.0.
+        dividend_yield: Continuously compounded dividend yield. Default 0.0.
+
+    Returns:
+        LeapsContract with all fields populated.
+    """
+    strike = LEAPS_STRIKE_RATIO * spot_at_purchase
+    t_years = (expiry_date - purchase_date).days / 365.0
+    premium_paid = bs_call_price(
+        spot_at_purchase, strike, t_years, iv, risk_free_rate, dividend_yield
+    )
+    return LeapsContract(
+        purchase_date=purchase_date,
+        expiry_date=expiry_date,
+        strike=strike,
+        spot_at_purchase=spot_at_purchase,
+        premium_paid=premium_paid,
+        notional=spot_at_purchase * CONTRACT_MULTIPLIER,
+        n_contracts=n_contracts,
+        account_type=account_type,
+        dividend_yield=dividend_yield,
+    )
+
+
 def price_leaps_contract(
     contract: LeapsContract,
     current_spot: float,

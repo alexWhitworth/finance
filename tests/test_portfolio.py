@@ -608,7 +608,12 @@ def test_leaps_base_contribution_share() -> None:
     On a flat, zero-return series with no rebalancing distortion, the base
     holdings grow by exactly the base share of each contribution.
     """
-    n = 45  # spans ~2 month-ends
+    # n=40 spans exactly 2 month-ends (Jan, Feb) and stays within February —
+    # n=45 would spill into a partial March bucket, and _get_rebalance_dates
+    # treats the last available day of *any* month bucket (even a truncated
+    # one at the window's end) as a rebal date, which would trigger a QUARTERLY
+    # LEAPS rebalance and violate this test's "no rebalancing distortion" premise.
+    n = 40
     idx = pd.bdate_range("2015-01-02", periods=n)
     prices = pd.DataFrame(100.0, index=idx, columns=list(_TICKERS))
     returns = pd.DataFrame(0.0, index=idx, columns=list(_TICKERS))
@@ -847,8 +852,15 @@ def test_drift_quarterly_regression_unchanged() -> None:
     assert result.nav_series.iloc[-1] > 0
 
 
-def test_drift_no_partial_close_events_when_quarterly() -> None:
-    """QUARTERLY LEAPS run accumulates no partial_close_events."""
+def test_quarterly_triggers_partial_close_on_leaps_overshoot() -> None:
+    """QUARTERLY rebalances the whole portfolio: LEAPS overshoot is trimmed too.
+
+    Unlike DRIFT, QUARTERLY has no tolerance band — it realigns LEAPS to its
+    target fraction on every scheduled date regardless of drift magnitude, so
+    even the modest default rise (vti_daily=0.0015, insufficient to breach
+    DRIFT's 10% band — see test_drift_triggers_partial_close_on_overshoot)
+    produces at least one partial-close event.
+    """
     rd, pd_obj = _rising_vti_pd_rd(504)
     cfg = _config(
         weights=dict(_LEAPS_WEIGHTS), leaps_config=LeapsConfig(),
@@ -856,7 +868,7 @@ def test_drift_no_partial_close_events_when_quarterly() -> None:
     )
     result = run_backtest(rd, pd_obj, cfg)
     assert result.leaps_ledger is not None
-    assert result.leaps_ledger.partial_close_events == ()
+    assert len(result.leaps_ledger.partial_close_events) > 0
 
 
 def test_drift_triggers_partial_close_on_overshoot() -> None:

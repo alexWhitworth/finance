@@ -310,6 +310,15 @@ def test_vix_fallback_when_no_asset_iv_mapping() -> None:
     assert 0.0 <= sig.entry_score <= 100.0
 
 
+def test_iv_column_named_by_raw_ticker_is_resolved() -> None:
+    """build_price_data names vol_prices columns by raw ticker (e.g. "VTI"), not
+    "<ticker>_IV" — this must resolve without falling through to the VIX fallback
+    or raising, matching the convention _backtest_steps.py already relies on."""
+    pd_obj = _make_price_data(vol_col_name="VTI")
+    sig = compute_leaps_dca_signal(pd_obj, "VTI", _as_of(pd_obj))
+    assert 0.0 <= sig.entry_score <= 100.0
+
+
 def test_raises_on_insufficient_data() -> None:
     """ValueError when fewer than min_lookback days available."""
     pd_obj = _make_price_data(n_days=100)

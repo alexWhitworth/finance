@@ -15,7 +15,7 @@ import pandas as pd
 import yfinance as yf
 
 from finance._portfolio_types import BacktestResult
-from finance.consts import DRIFT_BAND_RELATIVE
+from finance.consts import DRIFT_BAND_RELATIVE, LEAPS_KEY_SUFFIX
 from finance.gtt import GttSignalData, fetch_gtt_signal_data
 from finance.leverage import LeapsContract, RebalanceRule, get_live_contracts
 from finance.rebalance import should_rebalance
@@ -181,6 +181,55 @@ def compute_holdings_view(
     return tuple(views)
 
 
+def compute_leaps_holdings_view(
+    portfolio: LivePortfolio,
+    nav: NavBreakdown,
+) -> tuple[HoldingView, ...]:
+    """Compute weight-drift HoldingView rows for the LEAPS sleeve(s) in target_weights.
+
+    compute_holdings_view() only covers portfolio.holdings (base assets) — the
+    LEAPS sleeve is tracked separately via leaps_contracts/nav.leaps_nav and is
+    otherwise absent from a holdings-drift view. This uses the same key
+    detection (LEAPS_KEY_SUFFIX) and proportional-split logic
+    compute_rebalance_plan() applies internally for its own DRIFT check, so
+    callers can display LEAPS weight drift alongside base assets from
+    compute_holdings_view().
+
+    Arguments:
+        portfolio: LivePortfolio providing target_weights.
+        nav: NavBreakdown providing leaps_nav and total_nav.
+
+    Returns:
+        Tuple of HoldingView, one per key in target_weights ending with
+        LEAPS_KEY_SUFFIX. Empty tuple if no such key is present.
+    """
+    leaps_keys = [k for k in portfolio.target_weights if k.endswith(LEAPS_KEY_SUFFIX)]
+    if not leaps_keys:
+        return ()
+
+    total_nav = nav.total_nav
+    leaps_weight = nav.leaps_nav / total_nav if total_nav > 0.0 else 0.0
+    key_target_sum = sum(portfolio.target_weights[k] for k in leaps_keys)
+
+    views = []
+    for k in leaps_keys:
+        share = portfolio.target_weights[k] / key_target_sum if key_target_sum > 0.0 else 0.0
+        actual_w = leaps_weight * share
+        target_w = portfolio.target_weights[k]
+        drift = actual_w - target_w
+        views.append(
+            HoldingView(
+                ticker=k,
+                dollar_value=nav.leaps_nav * share,
+                actual_weight=actual_w,
+                target_weight=target_w,
+                weight_drift=drift,
+                relative_drift=drift / target_w if target_w != 0.0 else None,
+            )
+        )
+    return tuple(views)
+
+
 @dataclass(frozen=True)
 class TradeOrder:
     """Single buy/sell instruction from a rebalance simulation.
@@ -244,9 +293,12 @@ def compute_rebalance_plan(
     the base_nav is fixed, the sum of target_values equals the sum of current
     values, so trades cancel exactly.
 
-    For the DRIFT rule, leaps_trim is the dollar overshoot of the LEAPS sleeve
-    relative to its target fraction of total_nav. Non-zero only when DRIFT fires
-    and the LEAPS sleeve is overweight.
+    leaps_trim is the dollar overshoot of the LEAPS sleeve relative to its
+    target fraction of total_nav. Non-zero whenever the rebalance actually
+    fires (QUARTERLY or DRIFT) and the LEAPS sleeve is overweight — QUARTERLY
+    has no tolerance band, so it trims LEAPS back to target on every scheduled
+    date, while DRIFT only fires (and therefore only trims) once drift exceeds
+    the band.
 
     Arguments:
         portfolio: LivePortfolio providing holdings, target_weights, and
@@ -269,8 +321,6 @@ def compute_rebalance_plan(
         ending with '_LEAPS'. leaps_trim reports the dollar overshoot only;
         no scale update is simulated (R-007).
     """
-    from finance.consts import LEAPS_KEY_SUFFIX
-
     holdings_view = compute_holdings_view(portfolio, nav)
     base_nav = nav.base_nav
     total_nav = nav.total_nav
@@ -373,13 +423,14 @@ def compute_rebalance_plan(
             )
         )
 
-    # leaps_trim: DRIFT-only, when LEAPS sleeve is overweight
+    # leaps_trim: applies whenever the rebalance actually fires — QUARTERLY or
+    # DRIFT — when the LEAPS sleeve is overweight relative to its target
+    # fraction. would_trigger is unconditionally True past this point.
     leaps_trim = 0.0
-    if rebalance_rule == RebalanceRule.DRIFT and trigger_reason == "drift_threshold":
-        leaps_nav = nav.leaps_nav
-        target_leaps_nav = total_nav * leaps_target_fraction
-        if leaps_nav > target_leaps_nav:
-            leaps_trim = leaps_nav - target_leaps_nav
+    leaps_nav = nav.leaps_nav
+    target_leaps_nav = total_nav * leaps_target_fraction
+    if leaps_nav > target_leaps_nav:
+        leaps_trim = leaps_nav - target_leaps_nav
 
     return RebalancePlan(
         as_of_date=portfolio.as_of_date,
@@ -388,6 +439,41 @@ def compute_rebalance_plan(
         trades=tuple(orders),
         leaps_trim=leaps_trim,
         holdings_view=holdings_view,
+    )
+
+
+def leaps_trim_as_trade_order(
+    leaps_view: HoldingView,
+    leaps_trim: float,
+) -> TradeOrder | None:
+    """Represent a RebalancePlan's leaps_trim as a TradeOrder for display.
+
+    compute_rebalance_plan() reports LEAPS overweight only as a dollar
+    overshoot (RebalancePlan.leaps_trim) — not as an entry in plan.trades —
+    because a partial LEAPS close isn't a simple buy/sell of a base asset and
+    the freed proceeds are not redistributed to other trades (R-007). This is
+    a read-only convenience for combining the LEAPS sleeve with base-asset
+    trades in a single display table; the result is not part of plan.trades
+    and does not participate in the trade-conservation invariant (I3).
+
+    Arguments:
+        leaps_view: HoldingView for the LEAPS sleeve, from
+            compute_leaps_holdings_view().
+        leaps_trim: RebalancePlan.leaps_trim from the same evaluation.
+
+    Returns:
+        TradeOrder representing the LEAPS partial close, or None when
+        leaps_trim is 0.0.
+    """
+    if leaps_trim <= 0.0:
+        return None
+    return TradeOrder(
+        ticker=leaps_view.ticker,
+        current_value=leaps_view.dollar_value,
+        target_value=leaps_view.dollar_value - leaps_trim,
+        trade_amount=-leaps_trim,
+        current_weight=leaps_view.actual_weight,
+        target_weight=leaps_view.target_weight,
     )
 
 

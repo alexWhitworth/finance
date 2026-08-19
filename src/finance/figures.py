@@ -10,6 +10,7 @@ from __future__ import annotations
 import io
 import math
 import os
+from dataclasses import asdict
 from pathlib import Path
 
 import matplotlib.image as mpimg
@@ -21,8 +22,11 @@ import plotnine as p9
 from matplotlib.figure import Figure
 
 from finance.consts import CRISIS_PERIODS, NBER_RECESSION_PERIODS
+from finance.dca_signal import LeapsDcaSignal
+from finance.greeks import PortfolioGreeks
 from finance.metrics import PerformanceMetrics, PerformanceReport
 from finance.portfolio import BacktestResult
+from finance.portfolio_manager import HoldingView, NavBreakdown, TradeOrder
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -531,6 +535,119 @@ def format_performance_table(report: PerformanceReport) -> str:
 
     lines.append("=" * 100)
     return os.linesep.join(lines)
+
+
+def format_contract_greeks_table(greeks: PortfolioGreeks) -> str:
+    """Format per-contract LEAPS greeks as a human-readable table string.
+
+    Arguments:
+        greeks: PortfolioGreeks with per-contract detail.
+
+    Returns:
+        A formatted string suitable for printing to stdout. A single line
+        reading "No active LEAPS contracts." when greeks.contracts is empty.
+    """
+    if not greeks.contracts:
+        return "No active LEAPS contracts."
+
+    rows = [
+        {
+            "purchased": cg.contract.purchase_date.date(),
+            "expiry": cg.contract.expiry_date.date(),
+            "n_contracts": cg.contract.n_contracts,
+            "delta": round(cg.delta, 3),
+            "gamma": f"{cg.gamma:.4f}",
+            "vega": f"{cg.vega:.4f}",
+            "theta/day": round(cg.theta, 2),
+            "position_delta": round(cg.position_delta, 1),
+        }
+        for cg in greeks.contracts
+    ]
+    return pd.DataFrame(rows).to_string(index=False)
+
+
+def format_nav_breakdown_table(nav: NavBreakdown) -> str:
+    """Format a NavBreakdown as a one-value-per-row table string.
+
+    Arguments:
+        nav: NavBreakdown to display.
+
+    Returns:
+        A formatted string suitable for printing to stdout.
+    """
+    rows = [
+        ("base_nav", f"${nav.base_nav:,.2f}"),
+        ("leaps_nav", f"${nav.leaps_nav:,.2f}"),
+        ("defensive_sleeve", f"${nav.defensive_sleeve:,.2f}"),
+        ("leaps_pool", f"${nav.leaps_pool:,.2f}"),
+        ("total_nav", f"${nav.total_nav:,.2f}"),
+    ]
+    df = pd.DataFrame(rows, columns=["field", "value"]).set_index("field")
+    return df.to_string(header=False, index_names=False)
+
+
+def format_leaps_dca_signal_table(signal: LeapsDcaSignal) -> str:
+    """Format a LeapsDcaSignal as a one-value-per-row table string.
+
+    Arguments:
+        signal: LeapsDcaSignal to display.
+
+    Returns:
+        A formatted string suitable for printing to stdout.
+    """
+    rows = [
+        ("as_of_date", str(signal.as_of_date.date())),
+        ("ticker", signal.ticker),
+        ("entry_score", f"{signal.entry_score:.1f}"),
+        ("score_percentile", f"{signal.score_percentile:.1f}"),
+        ("alpha_t", f"{signal.alpha_t:.2f}"),
+        ("dca_action", signal.dca_action),
+        ("rsi", f"{signal.rsi:.1f}"),
+        ("stoch_d", f"{signal.stoch_d:.1f}"),
+        ("iv_current", f"{signal.iv_current:.1%}"),
+        ("iv_percentile", f"{signal.iv_percentile:.1f}"),
+        ("macd_hist", f"{signal.macd_hist:.3f}"),
+        ("macd_bearish_confirmed", str(signal.macd_bearish_confirmed)),
+        ("macd_gate", f"{signal.macd_gate:.2f}"),
+    ]
+    df = pd.DataFrame(rows, columns=["field", "value"]).set_index("field")
+    return df.to_string(header=False, index_names=False)
+
+
+def format_holdings_table(views: tuple[HoldingView, ...]) -> str:
+    """Format a HoldingView tuple as a human-readable weight-drift table string.
+
+    Arguments:
+        views: Per-asset holding views, e.g. from compute_holdings_view() and
+            compute_leaps_holdings_view() concatenated together.
+
+    Returns:
+        A formatted string suitable for printing to stdout.
+    """
+    df = pd.DataFrame([asdict(v) for v in views]).set_index("ticker")
+    df["dollar_value"] = df["dollar_value"].map(lambda x: f"{x:,.2f}")
+    df["actual_weight"] = df["actual_weight"].map(lambda x: f"{x:.1%}")
+    df["target_weight"] = df["target_weight"].map(lambda x: f"{x:.1%}")
+    df["weight_drift"] = df["weight_drift"].map(lambda x: f"{x:+.1%}")
+    return df[["dollar_value", "actual_weight", "target_weight", "weight_drift"]].to_string()
+
+
+def format_trade_orders_table(trades: tuple[TradeOrder, ...]) -> str:
+    """Format a TradeOrder tuple as a human-readable trade table string.
+
+    Arguments:
+        trades: Trade instructions, e.g. from RebalancePlan.trades with
+            leaps_trim_as_trade_order() appended.
+
+    Returns:
+        A formatted string suitable for printing to stdout, or an empty
+        string when trades is empty.
+    """
+    if not trades:
+        return ""
+    df = pd.DataFrame([asdict(t) for t in trades]).set_index("ticker")
+    df = df[["current_value", "target_value", "trade_amount"]]
+    return df.map(lambda x: f"{x:,.2f}").to_string()
 
 
 def compare_performance_table(reports: list[tuple[str, PerformanceReport]]) -> str:

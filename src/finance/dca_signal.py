@@ -278,13 +278,16 @@ def compute_leaps_dca_signal(
     low = ohlcv_ticker["Low"] if "Low" in ohlcv_ticker.columns else close_all
     close = ohlcv_ticker["Close"] if "Close" in ohlcv_ticker.columns else close_all
 
-    # Resolve IV series: prefer ASSET_VOL_INDEX mapping, fallback to VIX, then raise
+    # Resolve IV series: build_price_data names vol_prices columns by raw ticker
+    # (e.g. "VTI"; see _backtest_steps.py's identical lookup). "<ticker>_IV" is
+    # also accepted for callers that hand-construct PriceData with that naming.
     vol_col: str | None = None
     mapped_index = ASSET_VOL_INDEX.get(ticker)
     if mapped_index is not None:
-        iv_col_name = f"{ticker}_IV"
-        if iv_col_name in pd_obj.vol_prices.columns:
-            vol_col = iv_col_name
+        if ticker in pd_obj.vol_prices.columns:
+            vol_col = ticker
+        elif f"{ticker}_IV" in pd_obj.vol_prices.columns:
+            vol_col = f"{ticker}_IV"
     if vol_col is None:
         # Fallback: any VIX-related column
         vix_cols = [c for c in pd_obj.vol_prices.columns if "VIX" in c.upper() or "VTI_IV" in c]

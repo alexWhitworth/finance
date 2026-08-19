@@ -15,18 +15,33 @@ import plotnine as p9  # type: ignore[import-untyped]
 import pytest
 
 from finance.data import PriceData
+from finance.dca_signal import LeapsDcaSignal
 from finance.figures import (
     _compute_drawdown_series,
     compare_performance_table,
+    format_contract_greeks_table,
+    format_holdings_table,
+    format_leaps_dca_signal_table,
+    format_nav_breakdown_table,
     format_performance_table,
+    format_trade_orders_table,
     plot_drawdown,
     plot_leaps_tax_drag,
     plot_nav_growth,
     plot_vol_contributions,
 )
-from finance.leverage import RebalanceRule, WeightStrategy
+from finance.greeks import PortfolioGreeks, compute_portfolio_greeks
+from finance.leverage import RebalanceRule, WeightStrategy, build_leaps_contract
 from finance.metrics import PerformanceReport, build_performance_report
 from finance.portfolio import BacktestResult, PortfolioConfig, run_backtest
+from finance.portfolio_manager import (
+    LivePortfolio,
+    compute_holdings_view,
+    compute_leaps_holdings_view,
+    compute_nav_breakdown,
+    compute_rebalance_plan,
+    leaps_trim_as_trade_order,
+)
 from finance.returns import ReturnData
 from finance.volatility import build_volatility_model
 
@@ -426,3 +441,253 @@ class TestComparePerformanceTable:
         assert "Pre-tax" in table
         assert "Post-tax" in table
         assert "Ann. Tax Drag" in table
+
+
+# ---------------------------------------------------------------------------
+# format_contract_greeks_table
+# ---------------------------------------------------------------------------
+
+
+def _make_portfolio_greeks(n_contracts: float = 3.0) -> PortfolioGreeks:
+    """PortfolioGreeks for a LivePortfolio with one live LEAPS contract."""
+    contract = build_leaps_contract(
+        pd.Timestamp("2024-01-15"), pd.Timestamp("2026-01-15"), 300.0, n_contracts
+    )
+    portfolio = LivePortfolio(
+        as_of_date=pd.Timestamp("2025-06-01"),
+        holdings={},
+        target_weights={"VTI_LEAPS": 1.0},
+        leaps_contracts=((contract, 1.0),),
+        gtt_regime=None,
+    )
+    return compute_portfolio_greeks(portfolio, spot=320.0, iv=0.18)
+
+
+class TestFormatContractGreeksTable:
+    def test_returns_string(self) -> None:
+        greeks = _make_portfolio_greeks()
+        assert isinstance(format_contract_greeks_table(greeks), str)
+
+    def test_contains_expected_columns(self) -> None:
+        table = format_contract_greeks_table(_make_portfolio_greeks())
+        for col in (
+            "purchased", "expiry", "n_contracts", "delta", "gamma", "vega",
+            "theta/day", "position_delta",
+        ):
+            assert col in table
+
+    def test_one_row_per_contract(self) -> None:
+        contract_a = build_leaps_contract(
+            pd.Timestamp("2024-01-15"), pd.Timestamp("2026-01-15"), 300.0, 2.0
+        )
+        contract_b = build_leaps_contract(
+            pd.Timestamp("2024-07-15"), pd.Timestamp("2026-07-15"), 310.0, 3.0
+        )
+        portfolio = LivePortfolio(
+            as_of_date=pd.Timestamp("2025-06-01"),
+            holdings={},
+            target_weights={"VTI_LEAPS": 1.0},
+            leaps_contracts=((contract_a, 1.0), (contract_b, 1.0)),
+            gtt_regime=None,
+        )
+        greeks = compute_portfolio_greeks(portfolio, spot=320.0, iv=0.18)
+        table = format_contract_greeks_table(greeks)
+        assert table.count("2024-01-15") == 1
+        assert table.count("2024-07-15") == 1
+
+    def test_empty_contracts_returns_placeholder(self) -> None:
+        empty = PortfolioGreeks(
+            as_of_date=pd.Timestamp("2025-06-01"),
+            contracts=(),
+            net_delta=0.0,
+            net_vega=0.0,
+            net_gamma=0.0,
+            net_theta=0.0,
+            net_vanna=0.0,
+            net_charm=0.0,
+        )
+        assert format_contract_greeks_table(empty) == "No active LEAPS contracts."
+
+
+# ---------------------------------------------------------------------------
+# format_holdings_table / format_trade_orders_table
+# ---------------------------------------------------------------------------
+
+
+class TestFormatHoldingsTable:
+    def test_returns_string(self) -> None:
+        lp = LivePortfolio(
+            as_of_date=pd.Timestamp("2025-06-01"),
+            holdings={"VXUS": 78_000.0, "GLD": 74_000.0},
+            target_weights={"VXUS": 0.60, "GLD": 0.20, "VTI_LEAPS": 0.20},
+            leaps_contracts=(),
+            gtt_regime=None,
+        )
+        nb = compute_nav_breakdown(lp, leaps_mtm=40_000.0)
+        views = (*compute_holdings_view(lp, nb), *compute_leaps_holdings_view(lp, nb))
+        assert isinstance(format_holdings_table(views), str)
+
+    def test_leaps_row_included_alongside_base_assets(self) -> None:
+        lp = LivePortfolio(
+            as_of_date=pd.Timestamp("2025-06-01"),
+            holdings={"VXUS": 78_000.0},
+            target_weights={"VXUS": 0.60, "VTI_LEAPS": 0.40},
+            leaps_contracts=(),
+            gtt_regime=None,
+        )
+        nb = compute_nav_breakdown(lp, leaps_mtm=40_000.0)
+        views = (*compute_holdings_view(lp, nb), *compute_leaps_holdings_view(lp, nb))
+        table = format_holdings_table(views)
+        assert "VXUS" in table
+        assert "VTI_LEAPS" in table
+
+    def test_dollar_value_not_scientific_notation(self) -> None:
+        """A column mixing 0.0 with large values must not render in scientific notation."""
+        lp = LivePortfolio(
+            as_of_date=pd.Timestamp("2025-06-01"),
+            holdings={"VTI": 0.0, "VXUS": 2_375_081.0},
+            target_weights={"VTI": 0.0, "VXUS": 1.0},
+            leaps_contracts=(),
+            gtt_regime=None,
+        )
+        nb = compute_nav_breakdown(lp)
+        table = format_holdings_table(compute_holdings_view(lp, nb))
+        assert "e+" not in table
+        assert "2,375,081.00" in table
+
+
+class TestFormatTradeOrdersTable:
+    def test_empty_trades_returns_empty_string(self) -> None:
+        assert format_trade_orders_table(()) == ""
+
+    def test_returns_string_for_nonempty_trades(self) -> None:
+        lp = LivePortfolio(
+            as_of_date=pd.Timestamp("2025-06-01"),
+            holdings={"VXUS": 78_000.0, "GLD": 74_000.0},
+            target_weights={"VXUS": 0.6, "GLD": 0.4},
+            leaps_contracts=(),
+            gtt_regime=None,
+        )
+        nb = compute_nav_breakdown(lp)
+        plan = compute_rebalance_plan(
+            lp, nb, RebalanceRule.QUARTERLY, is_rebal_date=True, is_month_end=False
+        )
+        table = format_trade_orders_table(plan.trades)
+        assert isinstance(table, str)
+        assert "VXUS" in table
+        assert "GLD" in table
+
+    def test_leaps_trim_row_combines_with_base_trades(self) -> None:
+        lp = LivePortfolio(
+            as_of_date=pd.Timestamp("2025-06-01"),
+            holdings={"VTI": 40_000.0},
+            target_weights={"VTI": 0.70, "VTI_LEAPS": 0.30},
+            leaps_contracts=(),
+            gtt_regime=None,
+        )
+        nb = compute_nav_breakdown(lp, leaps_mtm=60_000.0)
+        plan = compute_rebalance_plan(
+            lp, nb, RebalanceRule.DRIFT, is_rebal_date=False, is_month_end=True
+        )
+        assert plan.leaps_trim > 0.0
+        leaps_view = compute_leaps_holdings_view(lp, nb)[0]
+        leaps_trade = leaps_trim_as_trade_order(leaps_view, plan.leaps_trim)
+        assert leaps_trade is not None
+        table = format_trade_orders_table((*plan.trades, leaps_trade))
+        assert "VTI_LEAPS" in table
+        assert "e+" not in table
+
+
+# ---------------------------------------------------------------------------
+# format_nav_breakdown_table
+# ---------------------------------------------------------------------------
+
+
+class TestFormatNavBreakdownTable:
+    def test_returns_string(self) -> None:
+        lp = LivePortfolio(
+            as_of_date=pd.Timestamp("2025-06-01"),
+            holdings={"VXUS": 78_000.0},
+            target_weights={"VXUS": 1.0},
+            leaps_contracts=(),
+            gtt_regime=None,
+        )
+        nb = compute_nav_breakdown(lp, leaps_mtm=40_000.0)
+        assert isinstance(format_nav_breakdown_table(nb), str)
+
+    def test_one_row_per_field(self) -> None:
+        lp = LivePortfolio(
+            as_of_date=pd.Timestamp("2025-06-01"),
+            holdings={"VXUS": 78_000.0},
+            target_weights={"VXUS": 1.0},
+            leaps_contracts=(),
+            gtt_regime=None,
+        )
+        nb = compute_nav_breakdown(lp, leaps_mtm=40_000.0)
+        table = format_nav_breakdown_table(nb)
+        lines = table.splitlines()
+        assert len(lines) == 5
+        for field in ("base_nav", "leaps_nav", "defensive_sleeve", "leaps_pool", "total_nav"):
+            assert field in table
+
+    def test_values_not_scientific_notation(self) -> None:
+        lp = LivePortfolio(
+            as_of_date=pd.Timestamp("2025-06-01"),
+            holdings={"VXUS": 78_000.0},
+            target_weights={"VXUS": 1.0},
+            leaps_contracts=(),
+            gtt_regime=None,
+        )
+        nb = compute_nav_breakdown(lp, leaps_mtm=2_375_081.0)
+        table = format_nav_breakdown_table(nb)
+        assert "e+" not in table
+        assert "$2,375,081.00" in table
+
+
+# ---------------------------------------------------------------------------
+# format_leaps_dca_signal_table
+# ---------------------------------------------------------------------------
+
+
+def _make_dca_signal() -> LeapsDcaSignal:
+    """A representative LeapsDcaSignal for table-formatting tests."""
+    return LeapsDcaSignal(
+        as_of_date=pd.Timestamp("2026-06-29"),
+        ticker="VTI",
+        entry_score=15.7,
+        score_percentile=29.2,
+        alpha_t=0.08,
+        dca_action="TRANCHE",
+        rsi=54.3,
+        stoch_d=45.3,
+        iv_percentile=59.9,
+        iv_current=0.176,
+        macd_hist=-0.760,
+        macd_bearish_confirmed=True,
+        macd_gate=0.5,
+    )
+
+
+class TestFormatLeapsDcaSignalTable:
+    def test_returns_string(self) -> None:
+        assert isinstance(format_leaps_dca_signal_table(_make_dca_signal()), str)
+
+    def test_one_row_per_field(self) -> None:
+        table = format_leaps_dca_signal_table(_make_dca_signal())
+        lines = table.splitlines()
+        assert len(lines) == 13
+
+    def test_contains_expected_fields_and_values(self) -> None:
+        table = format_leaps_dca_signal_table(_make_dca_signal())
+        assert "as_of_date" in table
+        assert "2026-06-29" in table
+        assert "ticker" in table
+        assert "VTI" in table
+        assert "dca_action" in table
+        assert "TRANCHE" in table
+        assert "macd_bearish_confirmed" in table
+        assert "True" in table
+
+    def test_iv_current_rendered_as_percent(self) -> None:
+        table = format_leaps_dca_signal_table(_make_dca_signal())
+        assert "17.6%" in table

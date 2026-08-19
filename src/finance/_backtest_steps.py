@@ -686,6 +686,14 @@ def _apply_gtt_force_close(
             ctx.config.leaps_config.ltcg_rate,
             close_rfr,
         )
+        if scale != 1.0:
+            # Value/tax the surviving (scaled) amount, but record the event against
+            # the *original* contract so get_live_contracts() — which matches
+            # gtt_close_events against ledger.contracts by identity — recognizes
+            # this contract as closed. Without this, any contract previously
+            # trimmed by a rebalance (QUARTERLY or DRIFT) would leak through as
+            # falsely "live" after a GTT force-close.
+            evt = replace(evt, contract=c)
         new_closes.append(evt)
         pool_delta += evt.net_proceeds
 
@@ -953,11 +961,17 @@ def _apply_rebalance(
     inputs: DayInputs,
     ctx: BacktestContext,
 ) -> PortfolioState:
-    """Realign base holdings to base_target_w on scheduled or drift-triggered dates.
+    """Realign the entire portfolio — base holdings and LEAPS — on scheduled or
+    drift-triggered dates.
 
     QUARTERLY: fires when inputs.is_rebal_date and ctx.base_assets is non-empty.
-    Distributes sum(holdings) by ctx.base_target_w. When GTT is active and
-    defensive (regime_t==0), repopulated governed assets are re-swept to sleeve.
+    If the LEAPS sleeve is overweight relative to ctx.leaps_fraction, it is
+    trimmed pro-rata first (proceeds returned to base holdings, tax-free,
+    mirroring the DRIFT trim below); sum(base holdings) is then distributed by
+    ctx.base_target_w. LEAPS is never topped up on a QUARTERLY date when
+    underweight — it closes that gap organically via the monthly contribution
+    schedule (ctx.leaps_monthly). When GTT is active and defensive
+    (regime_t==0), repopulated governed assets are re-swept to sleeve.
 
     DRIFT: fires when config.rebalance_rule==DRIFT and inputs.is_month_end.
     Checks current weights; if outside the band, realigns and trims any LEAPS
@@ -973,8 +987,10 @@ def _apply_rebalance(
         and leaps_scale. Returns state unchanged when neither path fires.
 
     Notes:
-        Invariant A5: sum(holdings_out) == sum(holdings_in) within 1e-9
-        for the QUARTERLY path.
+        Invariant A5: sum(holdings_out) + leaps_value_out == sum(holdings_in) +
+        leaps_value_in within 1e-9 for the QUARTERLY path (total NAV of the
+        rebalanced sleeves is conserved; a LEAPS trim only moves value between
+        leaps_value and holdings, never destroys or creates it).
     """
     holdings = dict(state.holdings)
     defensive_sleeve = state.defensive_sleeve
@@ -983,6 +999,14 @@ def _apply_rebalance(
 
     if inputs.is_rebal_date and ctx.base_assets:
         base_nav = sum(holdings.values())
+        target_leaps_now = (base_nav + leaps_value) * ctx.leaps_fraction
+        if leaps_value > target_leaps_now and leaps_value > 0.0:
+            close_scale = target_leaps_now / leaps_value
+            net_proceeds = leaps_value - target_leaps_now
+            for c in get_live_contracts(state.leaps_ledger, inputs.date_ts):  # type: ignore[arg-type]
+                leaps_scale[c] = leaps_scale.get(c, 1.0) * close_scale
+            base_nav += net_proceeds
+            leaps_value = target_leaps_now
         holdings = {a: base_nav * float(ctx.base_target_w[a]) for a in ctx.base_assets}
         if ctx.gtt_active and inputs.regime_t == 0:
             for k in ctx.governed_base:

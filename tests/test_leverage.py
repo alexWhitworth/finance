@@ -10,6 +10,7 @@ from hypothesis import strategies as st
 
 from finance.leverage import (
     CONTRACT_MULTIPLIER,
+    DEFAULT_DIVIDEND_YIELD,
     DEFAULT_IV,
     LEAPS_STRIKE_RATIO,
     LTCG_RATE,
@@ -32,6 +33,7 @@ from finance.leverage import (
     bs_call_theta,
     bs_call_vanna,
     bs_call_vega,
+    build_leaps_contract,
     compute_leaps_nav_contribution,
     compute_leaps_tax_summary,
     compute_terminal_nav,
@@ -262,6 +264,74 @@ def test_create_leaps_account_type_stored() -> None:
     """Account type is preserved on the contract."""
     c = _make_contract(account_type=AccountType.TAX_SHELTERED)
     assert c.account_type == AccountType.TAX_SHELTERED
+
+
+# ---------------------------------------------------------------------------
+# build_leaps_contract
+# ---------------------------------------------------------------------------
+
+
+def test_build_leaps_strike_at_50pct() -> None:
+    """Strike is 50% of spot_at_purchase."""
+    spot = 250.0
+    c = build_leaps_contract(
+        pd.Timestamp("2024-01-15"), pd.Timestamp("2026-01-15"), spot, 3.0
+    )
+    assert c.strike == pytest.approx(LEAPS_STRIKE_RATIO * spot, rel=1e-9)
+
+
+def test_build_leaps_preserves_caller_supplied_expiry_and_n_contracts() -> None:
+    """expiry_date and n_contracts are stored exactly as passed, not derived."""
+    purchase = pd.Timestamp("2024-03-01")
+    expiry = pd.Timestamp("2026-09-15")  # not exactly purchase + 2 years
+    c = build_leaps_contract(purchase, expiry, 300.0, 7.5)
+    assert c.expiry_date == expiry
+    assert c.n_contracts == 7.5
+
+
+def test_build_leaps_notional() -> None:
+    """Notional equals spot_at_purchase * CONTRACT_MULTIPLIER."""
+    spot = 310.0
+    c = build_leaps_contract(
+        pd.Timestamp("2024-06-01"), pd.Timestamp("2026-06-01"), spot, 2.0
+    )
+    assert c.notional == pytest.approx(spot * CONTRACT_MULTIPLIER, rel=1e-9)
+
+
+def test_build_leaps_premium_matches_bs_call_price() -> None:
+    """premium_paid matches bs_call_price computed at the same terms (I7-style)."""
+    purchase = pd.Timestamp("2024-01-15")
+    expiry = pd.Timestamp("2026-01-15")
+    spot = 280.0
+    c = build_leaps_contract(purchase, expiry, spot, 4.0, iv=0.20)
+    t_years = (expiry - purchase).days / 365.0
+    expected = bs_call_price(
+        spot, LEAPS_STRIKE_RATIO * spot, t_years, 0.20, 0.0, DEFAULT_DIVIDEND_YIELD
+    )
+    assert c.premium_paid == pytest.approx(expected, rel=1e-9)
+
+
+def test_build_leaps_account_type_and_dividend_yield_stored() -> None:
+    """account_type and dividend_yield are preserved on the contract."""
+    c = build_leaps_contract(
+        pd.Timestamp("2024-01-15"),
+        pd.Timestamp("2026-01-15"),
+        280.0,
+        4.0,
+        account_type=AccountType.TAX_SHELTERED,
+        dividend_yield=0.015,
+    )
+    assert c.account_type == AccountType.TAX_SHELTERED
+    assert c.dividend_yield == pytest.approx(0.015, rel=1e-9)
+
+
+def test_build_leaps_frozen() -> None:
+    """LeapsContract returned by build_leaps_contract is frozen."""
+    c = build_leaps_contract(
+        pd.Timestamp("2024-01-15"), pd.Timestamp("2026-01-15"), 280.0, 4.0
+    )
+    with pytest.raises((AttributeError, TypeError)):
+        c.strike = 0.0  # type: ignore[misc]
 
 
 # ---------------------------------------------------------------------------
