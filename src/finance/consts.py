@@ -12,6 +12,8 @@ SPLICE_MAP: dict[str, tuple[str, str]] = {
     "VXUS": ("VGTSX", "2011-01-28"),
     "VTI": ("VTSMX", "2001-06-15"),
     "VGIT": ("VFITX", "2009-11-23"),
+    # BND: first available date in yfinance is 2007-04-10.
+    "BND": ("VBMFX", "2007-04-10"),
     "MUB": ("VWITX", "2007-09-10"),
     "GLD": ("GC=F", "2004-11-18"),  # only goes back to 2000-08-30 :(
     # Unable to find a splice source further back. Still trying to get.
