@@ -91,7 +91,7 @@ $$m(t) = \frac{\text{NAV}(t)}{\text{Contributed}_{\text{hurdle}}(t)}$$
 
 ### Core Analytical Takeaways
 
-#### 1. GTT (Gain/Trend Timing) is Dominated by Multi-Asset Architecture
+#### 1. GTT (Grwoth Trend Timing) is Dominated by Multi-Asset Architecture
 * **Macro-Gate Failures:** GTT relies on dual trend/unemployment triggers ($\text{UE} > \text{SMA}_{12}$ AND $P < \text{SMA}_{200}$) to move into cash/bonds. During non-recessionary supply shocks (like the 2022 inflation/rate-hike surge), unemployment remained tight, leaving GTT fully exposed to duration and equity drawdowns.
 * **Structural Interaction Bugs:** Coupling GTT with dynamic schedules (`GLIDE`) causes re-entry seeding shocks. When GTT flips `DEFENSIVE -> RISK_ON`, initializing options at baseline $w_0$ forces the engine to immediately execute a massive $70\%+$ market-sale of newly acquired option contracts on the subsequent daily step due to elevated $m(t)$ levels. 
 * **Conclusion:** Static multi-asset diversification (`KMLM` + `GLD`) provides superior, un-gated crisis alpha without execution friction or whipsaw risk.

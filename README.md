@@ -21,7 +21,6 @@ DCA entry-timing signal round out the toolkit for deploying and managing capital
   - [Cookbook](#cookbook)
   - [Extensions](#extensions)
 - [References](#references)
-- [License](#license)
 
 ## tl;dr (for most investors):
 
@@ -373,7 +372,3 @@ See [`examples/backtesting/basic_gtt.py`](examples/backtesting/basic_gtt.py) for
     note         = {Blog post}
 }
 ```
-
-## License
-
-MIT — see [LICENSE](LICENSE).
