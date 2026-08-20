@@ -45,11 +45,19 @@ dominated by a multi-asset portfolio with leveraged equity.
     do a _better job._ 
     - The core aim of diversification is finding **multiple uncorrelated assets.** If achieved,
     this outperforms market timing, especially imperfect market timing.
+4. For the typical investor with high equity exposure (e.g. VTI, VXUS), a multi-asset portfolio
+should extend beyond "stocks and bonds." See [Motivation](#motivation) for more details. Backtests
+strongly support adding Gold and Managed Futures.
+5. Better construction of the "defensive sleeve" of a multi-asset portfolio (i.e. beyond bonds)
+**enables** more equity risk exposure, via leverage. Succinctly, you can achieve similar or better
+risk-adjusted return but with higher CAGRs by combining leverage and better "defensive sleeve"
+construction.
 
 **Evidence:** see [`outputs/backtest_summary.md`](outputs/backtest_summary.md) and
-[`outputs/gtt_findings.md`](outputs/gtt_findings.md) for the analysis behind these conclusions.
-These are working notes from the most recent research pass, not a continuously maintained
-backtest archive — rerun the [examples](#runnable-examples) against current data to reproduce.
+[`outputs/gtt_findings.md`](outputs/gtt_findings.md) for the analysis behind all conclusions in
+the tl;dr. These are working notes from the most recent research pass, not a continuously
+maintained backtest archive — rerun the [examples](#runnable-examples) against current data to
+reproduce.
 
 ## Motivation
 
