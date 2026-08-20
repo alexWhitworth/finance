@@ -27,7 +27,7 @@ DCA entry-timing signal round out the toolkit for deploying and managing capital
 
 From extensive backtests and analyses when building this library, the following guidance
 applies to most investors. When paired with the multi-asset portfolios defined in `examples/`,
-the result is handily beating standard institutional frameworks (eg. 60/40, 80/20, 
+the result is **handily beating** standard institutional frameworks (eg. 60/40, 80/20, 
 All-Weather, etc):
 
 1. `RebalanceRule.DRIFT` with or without a `GlidepathConfig`, dominates.
