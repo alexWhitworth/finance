@@ -1,0 +1,186 @@
+================================================================================
+JUDGE VERDICT — F-3: Splice-Eligibility Guard
+Round: 1   Date: 2026-07-30   Reviewer: judge-agent (adversarial)
+Scope: data.py:292 guard tightening + 3 new tests in tests/test_data.py
+================================================================================
+
+VERDICT: CONDITIONAL_PASS
+
+--------------------------------------------------------------------------------
+EXECUTIVE SUMMARY
+--------------------------------------------------------------------------------
+The production fix is a clean, minimal one-line change that is correct. The
+guard at data.py:292 is tightened from `start_date < splice_date` to
+`start_date < splice_date <= end_date`, which exactly matches the spec's
+stated invariant. Two ruff lint violations exist in the new test code (unused
+variables + one line-too-long violation in a pre-existing test). The overall
+test suite coverage drops below the repo threshold when measured globally, but
+the failures driving that are pre-existing and unrelated to F-3.
+
+One test falsifies the pre-fix bug. Two tests are regression guards only (they
+pass on both old and new code — they cannot catch a regression to the pre-fix
+behavior because the splice path behavior is identical whether triggered by the
+old or new guard). This is a structural gap in mutation resistance.
+
+Required actions are advisory for this feature, but must be resolved before F-5
+signs off the full suite.
+
+--------------------------------------------------------------------------------
+ACCEPTANCE CRITERIA SCORECARD
+--------------------------------------------------------------------------------
+
+AC-1: A window with end_date < splice_date returns primary-only prices with no
+      ValueError (matches use_splice=False path).
+      STATUS: MET
+      Evidence: test_splice_skipped_when_window_before_splice_date passes. The
+      test verifies spliced=False AND that the proxy ticker VGTSX was not
+      fetched. Pre-fix code would have triggered the splice path and raised a
+      ValueError (pre-fix: start_date < splice_date evaluates True for end=2010-12-31
+      with splice_date=2011-01-28). This test IS falsifying against the pre-fix code.
+
+AC-2: A window straddling the splice date (start_date < splice_date <= end_date)
+      still produces the spliced series exactly as before (no regression to the
+      normal case). Both sides of the boundary incl. end_date == splice_date.
+      STATUS: MET (regression guard, not falsifying)
+      Evidence:
+        - test_splice_still_applied_when_window_straddles_splice_date: verifies
+          spliced=True and non-empty pre-splice history.
+        - test_splice_applied_when_end_date_equals_splice_date: verifies the
+          inclusive <= boundary (end==splice_date) still splices.
+      NOTE: Both tests pass on pre-fix code unchanged (the pre-fix guard
+      start_date < splice_date is also True for these windows). They test the
+      post-splice outcome, not the guard condition change. They are valid
+      regression tests but provide no mutation resistance to the specific
+      one-character change (`<= end_date`) introduced by F-3.
+
+--------------------------------------------------------------------------------
+TEST COVERAGE
+--------------------------------------------------------------------------------
+
+Scoped to data.py only (relevant to F-3):
+  src/finance/data.py: 68 stmts, 5 missed, 93% covered.
+  Missing lines: 325-326 (MUB dividend reindex branch), 331-336 (vol_prices
+  fetch branch). These are unrelated to the F-3 guard and were uncovered
+  before this commit. Not a regression.
+
+Global total: 9% (BELOW the 80% fail_under threshold).
+  This is a pre-existing condition caused by test_integration.py's
+  TestRealDataSmoke fixture failing with a KeyError: 'IRX' (the parquet column
+  is named '^IRX' — the F-2C fix task is open). The 5 FAILED / 6 ERROR test
+  items are all in test_gtt_config.py, test_integration.py, and test_metrics.py,
+  none of which are touched by F-3. Confirmed by examining the F-3 commit diff:
+  only src/finance/data.py, tests/test_data.py, and plans/leaps_debug_spec.json
+  were changed.
+
+  The global coverage failure is NOT attributable to F-3 and is being tracked
+  under F-2C and F-5.
+
+--------------------------------------------------------------------------------
+MUTATION RESISTANCE ASSESSMENT
+--------------------------------------------------------------------------------
+
+Mutation: revert `start_date < splice_date <= end_date` → `start_date < splice_date`
+  - test_splice_skipped_when_window_before_splice_date: KILLS this mutant.
+    The pre-fix guard triggers splice with an empty post slice; _fake_prices
+    returns a DataFrame for end=2010-12-31 that has no rows on or after
+    2011-01-28, so splice() raises ValueError. The test expects no raise and
+    asserts spliced=False — it would fail on the mutant. RESISTANT.
+  - test_splice_still_applied_when_window_straddles_splice_date: DOES NOT kill.
+    Pre-fix guard is also True for start=2009, end=2012 → same splice behavior.
+    TAUTOLOGICAL against this specific mutation.
+  - test_splice_applied_when_end_date_equals_splice_date: DOES NOT kill.
+    Pre-fix guard is also True for end==splice_date → same splice behavior.
+    TAUTOLOGICAL against this specific mutation.
+
+Mutation: change `<=` to `<` in `start_date < splice_date <= end_date`
+  - test_splice_applied_when_end_date_equals_splice_date: KILLS this mutant.
+    With strict `<`, end=="2011-01-28" < "2011-01-28" is False → guard skips
+    splice → spliced=False. Test asserts spliced=True. RESISTANT.
+
+Mutation: flip left bound `<` to `<=` (`start_date <= splice_date <= end_date`)
+  - No test covers start_date == splice_date. The spec notes this edge case is
+    "already handled by the existing left bound" and defers it. No test covers
+    it. LOW-RISK gap (existing behavior for start>=splice_date is a separate
+    prior-art guard path not changed by F-3), but unverified.
+
+Both sides of the primary bug boundary are tested:
+  - end_date < splice_date (skip): tested (test_1).
+  - end_date == splice_date (splice): tested (test_3).
+  - end_date > splice_date (splice): tested (test_2).
+BOUNDARY COVERAGE: COMPLETE for the introduced guard.
+
+--------------------------------------------------------------------------------
+FINDINGS
+--------------------------------------------------------------------------------
+
+FINDING-1 [ADVISORY]: Two unused-variable lint violations in new test code.
+  File: tests/test_data.py:296, 322
+  Issue: `fake_proxy` is created in test_splice_still_applied_when_window_straddles_splice_date
+  and test_splice_applied_when_end_date_equals_splice_date but never used in
+  the mock setup. VXUS proxy goes through the yf path (fetch_prices), not
+  fetch_file_proxy, so the fake_proxy series is dead code. `ruff check` reports
+  F841 on both lines.
+  Impact: Ruff is non-green (3 errors total including 1 pre-existing E501).
+  Required before F-5 sign-off: remove or use the unused variables.
+
+FINDING-2 [ADVISORY]: Pre-existing ruff violation.
+  File: tests/test_data.py:194
+  Issue: E501 line too long (105 > 100). This predates F-3 but F-3 did not
+  fix it. Not blocking this feature, but contributes to the ruff failure that
+  F-5 must clean up.
+
+FINDING-3 [ADVISORY]: Two of three new tests are not falsifying against the
+  pre-fix bug. Tests 2 and 3 are pure regression guards that would also pass
+  on the pre-fix code. The spec only required one of the three named tests to be
+  falsifying for the specific bug (AC-1), and that test (test_1) is present and
+  correct. However, per the spec's own mutation resistance note ("F-3 unit-tests
+  both sides of the boundary"), the intent was for the boundary tests to
+  discriminate the fix. The right-boundary test (test_3) does discriminate the
+  `<` vs `<=` mutation — this partially satisfies the intent.
+
+FINDING-4 [ADVISORY]: Global coverage is 9% (below 80% threshold). Root cause
+  is pre-existing failures in TestRealDataSmoke (IRX column key bug, F-2C scope).
+  Not attributable to F-3. Must be resolved by F-5.
+
+FINDING-5 [INFORMATIONAL]: `_fake_prices` uses a single fixed seed (99) for all
+  tickers across all call sites, which means every call produces identical
+  price paths regardless of ticker name. This is harmless for F-3's boolean
+  guard tests, but worth noting for future tests that check per-ticker behavior.
+
+--------------------------------------------------------------------------------
+CONDITIONAL_PASS CONDITIONS
+--------------------------------------------------------------------------------
+This verdict is CONDITIONAL_PASS. The production fix is correct and the primary
+falsifying test exists. Before F-5 regression gate:
+
+  1. Remove the two dead `fake_proxy` assignments in tests/test_data.py (lines
+     296 and 322) to clear the ruff F841 violations.
+  2. The pre-existing E501 at line 194 should also be addressed in the F-5 lint
+     cleanup pass.
+
+These do not block the F-3 feature itself from being used as a dependency by
+later phases, but the ruff violations must be resolved before F-5 marks the
+suite clean.
+
+--------------------------------------------------------------------------------
+SUMMARY TABLE
+--------------------------------------------------------------------------------
+
+Check                                           Result
+-----------------------------------------------+-------------------------------
+Build clean (uv pip install -e .)               PASS
+Production fix correct (data.py:292)            PASS
+All 16 test_data.py tests pass                  PASS
+No new test_data.py regressions                 PASS
+Pre-existing failures unrelated to F-3          CONFIRMED (test_integration, gtt_config, metrics)
+AC-1 (end<splice → primary-only, no raise)      MET
+AC-2 (straddle/equal → spliced=True)            MET (regression guard)
+Ruff clean on data.py                           PASS
+Ruff clean on tests/test_data.py                FAIL (F841 x2, E501 x1)
+data.py coverage (scoped)                       93% (PASS)
+Global coverage                                 9% (pre-existing failures; not F-3)
+Mutation: revert end_date guard                 KILLED by test_1
+Mutation: < instead of <=                       KILLED by test_3
+Off-by-one boundary (end==splice_date)          TESTED
+Unused variable dead code in test_2, test_3     ADVISORY (ruff F841)
+================================================================================

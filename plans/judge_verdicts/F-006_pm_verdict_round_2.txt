@@ -1,0 +1,68 @@
+F-006 JUDGE VERDICT — Round 2 (portfolio_management_spec.json)
+================================================================
+Date: 2026-08-10
+Feature: F-006 — Phase 2a: Add missing BS greeks to leverage.py
+Scope: Lightweight mathematical correctness review (no hypothesis / mutmut)
+       Focus: verify charm fix (q*exp(-qT)*N(d1) term) from round-1 FAIL
+
+VERDICT: PASS
+=============
+
+The round-1 blocking defect is resolved. All four BS greek functions are now
+mathematically correct and verified by independent finite-difference cross-checks
+and first-principles derivation. No new defects found.
+
+───────────────────────────────────────────────────────────────────────────────
+SCORECARDS
+───────────────────────────────────────────────────────────────────────────────
+Build:         uv pip install -e .  → success
+Test Suite:    736 passed / 1 skipped (full suite)  — PASS
+Coverage:      leverage.py 94%, total 98.56%  — PASS
+Ruff:          clean
+Mypy strict:   clean
+
+Acceptance Criteria (spec F-006):
+  AC-1  bs_call_gamma(100,100,1.0,0.20,0,0) ≈ 0.019848 (correct analytic value)  → MET
+        [spec oracle 0.019894 is a known typo; implementation value is correct]
+  AC-2  bs_call_theta(100,100,1.0,0.20,0,0) < 0                                   → MET
+  AC-3  bs_call_vega convention advisory (spec says 0.7954, impl returns 39.695)   → MET
+        [implementation follows standard BS convention; spec criterion has a units error]
+
+FD Verification (judge-run, correct sign conventions):
+  greek          impl              FD               err       status
+  gamma          +0.0198476274     +0.0198476274     1.65e-12  PASS
+  vega           +39.6952547477    +39.6952547313    1.64e-08  PASS
+  theta          -0.0108754123     -0.0108754123     3.57e-13  PASS
+  charm (q=0)    -0.0000543771     -0.0000543771     3.00e-15  PASS
+  charm (q=0.013)-0.0000779446     -0.0000779446     1.11e-14  PASS
+
+First-principles derivation (charm, q=0.013):
+  charm_fp vs impl: err = 2.71e-20  PASS  (machine-epsilon agreement)
+
+───────────────────────────────────────────────────────────────────────────────
+ROUND-1 BLOCKING FINDING — RESOLVED
+───────────────────────────────────────────────────────────────────────────────
+Finding 3 (BLOCKING): bs_call_charm missing q*exp(-qT)*N(d1) term
+  Status: RESOLVED
+  Fix at: src/finance/leverage.py:523-529
+  The term q * math.exp(-q * t_years) * stats.norm.cdf(d1) is now present.
+  Error at q=DEFAULT_DIVIDEND_YIELD has dropped from ~2e-05/day to <3e-15/day.
+  New test test_bs_charm_with_dividend_yield_finite_difference covers q=0.013
+  at T ∈ {0.25, 0.5, 1.0, 2.0} with FD tolerance 1e-7/day (actual error <1e-14).
+
+───────────────────────────────────────────────────────────────────────────────
+FINDINGS
+───────────────────────────────────────────────────────────────────────────────
+No new blocking or advisory findings.
+
+Round-1 ADVISORY findings remain open (spec-level, not Actor-actionable):
+  Finding 1 (ADVISORY): spec gamma criterion 0.019894 is a typo; correct is 0.019848.
+  Finding 2 (ADVISORY): spec vega criterion 0.7954 uses a non-standard unit convention.
+  Both are spec authoring issues; the implementation is correct in both cases.
+
+───────────────────────────────────────────────────────────────────────────────
+REQUIRED ACTIONS
+───────────────────────────────────────────────────────────────────────────────
+None. Feature is complete.
+
+[spec.json status should be updated to "complete" by the Actor or orchestrator]

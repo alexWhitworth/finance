@@ -38,5 +38,4 @@ build/
 .claude/worktrees
 
 # judge verdicts
-plans/judge_verdicts
 .claude/worktrees/

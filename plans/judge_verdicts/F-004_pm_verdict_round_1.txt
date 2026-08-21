@@ -1,0 +1,90 @@
+================================================================================
+JUDGE VERDICT — F-004: Phase 1b: Pass final state into BacktestResult
+Round: 2  |  Date: 2026-08-10  |  Judge: Senior Staff Engineer (Adversarial)
+Spec: portfolio_management_spec.json
+================================================================================
+
+VERDICT: CONDITIONAL_PASS
+
+--------------------------------------------------------------------------------
+SCORECARDS
+--------------------------------------------------------------------------------
+Acceptance Criteria:
+  [BRITTLE] BacktestResult.final_state.as_of_date equals last date in nav_series
+              → Spec says "as_of_date" but field is "prev_date_ts" (spec imprecision,
+                not an Actor defect). Test correctly uses prev_date_ts:
+                test_run_backtest_final_state_date_matches_nav_end — PASSES.
+                Value verified: result.final_state.prev_date_ts == nav_series.index[-1]
+  [MET]   uv run pytest passes unchanged (non-regression I13)
+            → 787 passed, 0 failures
+
+Temporal Invariant:
+  [MET]   final_state reflects state as of the last backtest date — no future data
+            → state is set AFTER _advance_state(state, total_nav, inputs) where
+              inputs.date_ts = last loop date. prev_date_ts = inputs.date_ts = last date.
+              Confirmed by test_run_backtest_final_state_date_matches_nav_end.
+
+Accounting Oracle:
+  [NOT TESTED] result.nav_series.iloc[-1] ≈ total NAV reconstructible from final_state
+    → No test directly reconstructs NAV from final_state fields and compares to
+      nav_series.iloc[-1]. This oracle requires summing:
+        sum(state.holdings.values()) + state.leaps_value + state.defensive_sleeve + state.leaps_pool
+      and comparing to result.nav_series.iloc[-1].
+      NOTE: NavBreakdown (F-010) is the intended vehicle for this check. The oracle
+      cannot be fully verified until F-010 is implemented. This is a deferred test
+      gap, not a current defect.
+
+Complexity Budget: O(1) — single assignment at loop end. MET.
+Mutation Testing: ENABLED per spec, but waived for this lightweight review per user request.
+
+Module Coverage:
+  portfolio.py:  98% (line 131 = GTT fillna path, not related to final_state wiring)
+
+--------------------------------------------------------------------------------
+FINDINGS
+--------------------------------------------------------------------------------
+
+BLOCKING [B1] — Accounting oracle untested (I11 deferred)
+  File: tests/test_portfolio.py — no test reconstructs total NAV from final_state
+  Spec accounting_oracle: "result.nav_series.iloc[-1] ≈ total NAV reconstructible
+  from final_state". This is partially deferred to F-010/NavBreakdown, but a
+  direct sanity check is possible now without NavBreakdown:
+    sum(state.holdings.values()) + state.leaps_value + state.defensive_sleeve
+    + state.leaps_pool ≈ result.nav_series.iloc[-1]
+  This verifies the critical invariant that the final_state is internally
+  consistent with the output nav_series.
+  
+  SEVERITY: BLOCKING for full PASS. Does not fail existing tests. Requires one
+  additional test to satisfy the accounting oracle acceptance criterion.
+
+ADVISORY [A1] — "as_of_date" spec language vs "prev_date_ts" implementation
+  (Same as F-003/A1 — spec imprecision, implementation is correct.)
+
+ADVISORY [A2] — leaps_ledger in final_state is pre-assembly
+  File: src/finance/portfolio.py:124–139
+  The assembled leaps_ledger (result.leaps_ledger) differs from state.leaps_ledger
+  in the GTT+LEAPS path: _assemble_leaps_ledger mutates the ledger with partial-close
+  events after the loop ends, but final_state=state is set to the POST-_advance_state,
+  PRE-assembly value. For non-GTT QUARTERLY backtests, state.leaps_ledger IS
+  result.leaps_ledger (same object — verified empirically). For DRIFT backtests with
+  partial closes, the assembly freezes leaps_scale into partial_close_events on the
+  assembled ledger, but state.leaps_scale still holds the raw scale dict.
+  as_live_portfolio uses state.leaps_scale directly (correct) and state.leaps_ledger
+  (which lacks the post-assembly partial_close_events). get_live_contracts handles
+  both correctly because it checks continuation contracts. Net effect: no correctness
+  defect for as_live_portfolio, but state.leaps_ledger != result.leaps_ledger after
+  assembly in the DRIFT path.
+  Action: None required for current feature scope; document the divergence.
+
+--------------------------------------------------------------------------------
+REQUIRED ACTIONS FOR ACTOR
+--------------------------------------------------------------------------------
+[B1] Add one test to tests/test_portfolio.py that verifies the accounting oracle:
+     sum(result.final_state.holdings.values())
+       + result.final_state.leaps_value
+       + result.final_state.defensive_sleeve
+       + result.final_state.leaps_pool
+     ≈ result.nav_series.iloc[-1]  (within 1e-6)
+     for a standard non-GTT backtest run.
+
+================================================================================

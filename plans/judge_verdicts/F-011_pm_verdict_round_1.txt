@@ -1,0 +1,96 @@
+================================================================================
+JUDGE VERDICT — F-011: compute_rebalance_plan
+Round: 1  |  Date: 2026-08-12
+================================================================================
+
+VERDICT: CONDITIONAL_PASS
+
+--------------------------------------------------------------------------------
+SCORECARD
+--------------------------------------------------------------------------------
+Acceptance Criteria:
+  [MET]    sum(t.trade_amount) ≈ 0.0 within 1e-6 when trades non-empty (I3)
+           — MET for the well-formed case (holdings.keys() ⊆ base_target_keys).
+           — See BLOCKING finding B1 for the uncovered violation path.
+  [MET]    would_trigger=False / trigger_reason='not_triggered' when QUARTERLY
+           and is_rebal_date=False (I8) — verified via unit test + property test.
+  [MET]    trades is empty tuple when would_trigger=False.
+
+Test Coverage (portfolio_manager.py isolated): 96%
+Full-suite coverage: 98.45% (875 passed, 1 skipped)
+Mutation testing: skipped per user instruction (light review)
+Python static analysis: 4 ruff violations (see ADVISORY A1–A3); mypy strict PASS.
+
+--------------------------------------------------------------------------------
+FINDINGS
+--------------------------------------------------------------------------------
+
+B1  [BLOCKING]  I3 conservation violated when holdings contains tickers absent
+    from target_weights.
+
+    File: src/finance/portfolio_manager.py, lines 325–356
+    Reproduce:
+        lp = LivePortfolio(
+            holdings={'VTI': 70_000.0, 'EXTRA': 30_000.0},
+            target_weights={'VTI': 1.0},
+            ...
+        )
+        nb = compute_nav_breakdown(lp)
+        plan = compute_rebalance_plan(lp, nb, RebalanceRule.QUARTERLY,
+                                      is_rebal_date=True, is_month_end=False)
+        sum(t.trade_amount for t in plan.trades)  # → 30_000.0, not 0.0
+
+    Root cause: `base_target_keys` iterates over target_weights keys only.
+    A holding in `holdings` that has no corresponding key in `target_weights`
+    (e.g. a residual position being wound down) is excluded from the order
+    list. The target_values for the listed tickers sum to `base_nav` (all
+    holdings including the stray), but current_values only sum to the listed
+    holdings. Cash is created from thin air.
+
+    Fix: Either (a) add a sell-all order for tickers in holdings not in
+    base_target_keys (explicit zero-target liquidation), OR (b) tighten the
+    compute_rebalance_plan docstring to assert/raise when
+    holdings.keys() ⊄ target_weights.keys(), documenting the precondition.
+    Option (a) is semantically correct per I3. Option (b) is acceptable if
+    LivePortfolio semantics guarantee the sets match.
+
+    Note: The spec does not restrict holdings.keys() to equal target_weights.keys(),
+    so option (a) is the safer default.
+
+A1  [ADVISORY]  Ruff: import sort violation (I001) — `yfinance` import block
+    not sorted relative to `pandas`.
+    File: src/finance/portfolio_manager.py, line 16
+    Fix: move `import yfinance as yf` immediately after `import pandas as pd`
+    (same block, alphabetical order — pandas before yfinance).
+
+A2  [ADVISORY]  Ruff: line too long (E501, 103 chars > 100 limit).
+    File: src/finance/portfolio_manager.py, line 335
+    Fix: wrap the dict comprehension across two lines.
+
+A3  [ADVISORY]  Ruff: C420 — unnecessary dict comprehension where
+    `dict.fromkeys` is idiomatic (lines 338, 426).
+    Fix: replace `{k: 1.0/n for k in seq}` with `dict.fromkeys(seq, 1.0/n)`.
+
+A4  [ADVISORY]  No test for the edge case where a holding ticker is absent
+    from target_weights (the I3-violating path). This is the untested path
+    that exposes B1.
+
+--------------------------------------------------------------------------------
+REQUIRED ACTIONS (for Actor before re-judge)
+--------------------------------------------------------------------------------
+
+1. Fix B1: decide whether to (a) emit a zero-target sell order for stray
+   holdings tickers or (b) add a ValueError guard in compute_rebalance_plan
+   that rejects when holdings has keys not present in target_weights.
+   Whichever approach is chosen, add a test that exercises this path.
+
+2. Fix A1–A3 ruff violations (`uv run ruff check --fix src/` will auto-fix
+   I001 and C420; E501 requires a manual wrap).
+
+3. Once B1 is resolved, re-run `uv run ruff check src/finance/portfolio_manager.py`
+   and confirm 0 errors before re-submission.
+
+--------------------------------------------------------------------------------
+SPEC STATUS UPDATE
+--------------------------------------------------------------------------------
+F-011 status: pending (was pending_judge — B1 BLOCKING finding prevents complete)

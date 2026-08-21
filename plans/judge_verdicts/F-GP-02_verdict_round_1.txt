@@ -1,0 +1,77 @@
+================================================================================
+JUDGE VERDICT — F-GP-02: glide_path_leaps_weight() pure function
+Spec: plans/glide_path_rebalance_spec.json
+Round: 1
+Effort: light/mid
+================================================================================
+
+VERDICT: PASS
+
+--------------------------------------------------------------------------------
+SCORECARD
+--------------------------------------------------------------------------------
+Acceptance Criteria:          5 / 5 MET
+Tests (F-GP-02 scope):       22 / 22 PASSED
+Formula correctness:          VERIFIED (analytical probe, diff < 1e-16)
+_backtest_steps.py coverage
+  (glide_path_leaps_weight fn): 100% (lines 129–167 fully exercised)
+Mutation testing:             SKIPPED per user directive
+FFI:                          N/A (pure Python)
+
+--------------------------------------------------------------------------------
+ACCEPTANCE CRITERIA VERIFICATION
+--------------------------------------------------------------------------------
+
+[MET] glide_path_leaps_weight(1.0, 0.40, 0.05, 2.0) == 0.40 within 1e-12
+      Result: 0.400000000000000, diff < 1e-16. test_m_at_break_even_equals_w0.
+
+[MET] glide_path_leaps_weight(3.0, 0.40, 0.05, 2.0) == 0.05 + 0.35*exp(-ln2) == 0.225 within 1e-12
+      Analytically: at m=3.0 with HLM=2.0, exponent = -ln(2)/2.0 * 2.0 = -ln(2),
+      exp(-ln(2)) = 0.5, so w = 0.05 + 0.35*0.5 = 0.225.
+      Result: 0.225000000000000, diff = 5.55e-17. test_spec_m3_value.
+
+[MET] Result in [0.05, 0.40] for all m in [0.0, 100.0] (1000-point sweep)
+      test_result_in_bounds_sweep.
+
+[MET] Monotone non-increasing for m in [1.0, 100.0] (1000-point sweep with 1e-15 tolerance)
+      test_monotone_non_increasing_for_m_gte_1.
+
+[MET] half_life_multiple <= 0 raises ValueError; floor >= w0 raises ValueError.
+      test_half_life_multiple_zero_raises, test_half_life_multiple_negative_raises,
+      test_floor_equals_w0_raises, test_floor_greater_than_w0_raises.
+
+--------------------------------------------------------------------------------
+FORMULA AUDIT
+--------------------------------------------------------------------------------
+Implementation (src/finance/_backtest_steps.py:159–167):
+    lam = math.log(2.0) / half_life_multiple
+    active = (w0 - floor) * math.exp(-lam * max(m - 1.0, 0.0))
+    return floor + active
+
+Spec formula:
+    lam = ln(2) / half_life_multiple
+    w(m) = floor + (w0 - floor) * exp(-lam * max(m - 1.0, 0.0))
+
+Exact match. No drift.
+
+--------------------------------------------------------------------------------
+TEST QUALITY NOTES
+--------------------------------------------------------------------------------
+- Tabulated parametrize covers 6 m values including boundary (0.5, 1.0, 1.5, 2.0, 3.0, 10.0).
+- Half-life property test (test_m_at_half_life_multiple_halves_active_weight) directly
+  verifies the defining property of the half-life parameter.
+- Boundary tests at m = 1.0 ± 1e-9 confirm the max(m-1, 0) clamping.
+- All float comparisons use np.testing.assert_allclose with explicit atol (1e-12 or 1e-15).
+- No tautological tests detected.
+- Edge case floor=0.0 and small half_life_multiple (fast decay) are both tested.
+
+--------------------------------------------------------------------------------
+ADVISORY FINDINGS
+--------------------------------------------------------------------------------
+None.
+
+--------------------------------------------------------------------------------
+STATUS UPDATE
+--------------------------------------------------------------------------------
+features["F-GP-02"].status: complete
+================================================================================

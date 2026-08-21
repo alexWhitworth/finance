@@ -1,0 +1,41 @@
+================================================================================
+JUDGE VERDICT — F-012: compute_volatility_report
+Round: 2  |  Date: 2026-08-12  |  Mode: Lightweight (no mutmut/hypothesis)
+================================================================================
+
+VERDICT: PASS
+
+--------------------------------------------------------------------------------
+SCORECARD
+--------------------------------------------------------------------------------
+Acceptance Criteria:
+  [MET]    VolatilityReport.portfolio_vol > 0 for any non-trivial portfolio.
+  [MET]    ValueError propagated when return_data does not cover as_of_date.
+  [MET]    VolatilityReport is a frozen dataclass.
+  [MET]    contribution_table has correct columns.
+  [MET]    weights_used sums to 1.0 for base-only portfolio.
+  [MET]    vol_model is a VolatilityModel instance.
+
+Full-suite coverage: 98.45% (879 passed)
+Ruff: 0 violations (cleaned bundled with F-011)
+mypy: strict PASS
+
+--------------------------------------------------------------------------------
+ROUND-1 REQUIRED ACTIONS — STATUS
+--------------------------------------------------------------------------------
+
+1  [RESOLVED]  Ruff A1–A3 violations fixed in same file (bundled with F-011).
+   No code changes required for F-012 logic itself — all criteria remain MET.
+
+--------------------------------------------------------------------------------
+FINDINGS
+--------------------------------------------------------------------------------
+
+None. No new findings. Round-1 A1 (spec invariant mismatch on contrib.sum())
+remains a spec documentation error, not an implementation defect — no actor
+action required.
+
+--------------------------------------------------------------------------------
+SPEC STATUS UPDATE
+--------------------------------------------------------------------------------
+F-012 status: complete (no change — already complete)

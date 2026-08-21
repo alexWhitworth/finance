@@ -1,0 +1,26 @@
+F-011 JUDGE VERDICT — Round 1
+==============================
+Date: 2026-08-02
+Feature: F-011 — _compute_nav_before_contrib and _compute_port_return extraction
+
+VERDICT: CONDITIONAL_PASS
+
+CRITERIA
+--------
+1. Known state: nav_before == sum(holdings)+leaps_value+defensive_sleeve+leaps_pool within 1e-12: PASS
+   - test_nav_before_known_state PASSED
+2. port_return == nav_before / prev_total_nav - 1.0 within 1e-14: PASS
+
+COVERAGE: 100% (6/6 statements)
+mypy: PASS (--strict, no issues)
+Tests: 7/7 pass
+
+FINDINGS
+--------
+ADVISORY: Line 21 of _step_f011.py exceeds 100-char line limit (E501 ruff warning):
+`return sum(state.holdings.values()) + state.leaps_value + state.defensive_sleeve + state.leaps_pool`
+This is 103 characters. Minor style issue only.
+
+REQUIRED ACTIONS
+----------------
+ADVISORY: Wrap the return expression to fit within 100 chars.

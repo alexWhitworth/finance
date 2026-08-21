@@ -1,0 +1,179 @@
+================================================================================
+JUDGE VERDICT — F-015-pm
+Feature : Phase 5b-c: LeapsDcaSignal dataclass and compute_leaps_dca_signal
+Spec     : plans/portfolio_management_spec.json § F-015
+Round    : 1
+Verdict  : CONDITIONAL_PASS
+================================================================================
+
+SCORECARDS
+----------
+Acceptance Criteria   : 6 / 6 MET
+Tests (dedicated)     : 40 / 40 PASS  (tests/test_dca_signal.py)
+Line Coverage         : 99 %  (1 uncovered line: dca_signal.py:288 — dead-ish branch)
+Property-based tests  : 5 Hypothesis properties PASS (max_examples=30 each)
+Mutation Testing      : DISABLED per request (lightweight review)
+Ruff                  : CLEAN
+mypy --strict         : CLEAN (dca_signal.py + data.py)
+
+ACCEPTANCE CRITERIA STATUS
+---------------------------
+[MET]  I14: entry_score ∈ [0, 100]
+         Unit: test_entry_score_in_bounds — PASS
+         Property: test_property_score_bounds (30 seeds) — PASS
+
+[MET]  I15: alpha_t ∈ [0, 1]
+         Unit: test_alpha_t_in_bounds — PASS
+         Property: test_property_alpha_t_bounds (30 seeds) — PASS
+
+[MET]  I16: dca_action ∈ {HOLD, TRANCHE, AGGRESSIVE_SWEEP}
+         Unit: test_dca_action_valid_values — PASS
+         Property: test_property_dca_action_membership (30 seeds) — PASS
+
+[MET]  I17: Raises ValueError when price_data.ohlcv is empty
+         Unit: test_raises_on_empty_ohlcv — PASS
+         Property: test_property_raises_on_empty_ohlcv_always (30 seeds) — PASS
+
+[MET]  I19: Raises ValueError when weights ≠ 1.0 ± 1e-6
+         Unit: test_raises_on_weights_not_summing_to_one — PASS
+         Property: test_property_weights_sum_raises (30 seeds) — PASS
+
+[MET]  I18: No data after as_of_date used (T1 no-lookahead)
+         Unit: test_no_lookahead_extra_row_does_not_change_output — PASS
+         Method: runs signal at index[-2] twice on same PriceData (extra row present);
+                 verifies entry_score, rsi, macd_hist identical.
+         Note: this test only confirms idempotency within the same PriceData object.
+               It does NOT construct a separate PriceData truncated at as_of_date.
+               See Advisory A1.
+
+ACCOUNTING ORACLE VERIFICATION
+-------------------------------
+Spec invariant (DS-010 / AC-015):
+  entry_score = clip(w_rsi*score_rsi + w_stoch*score_stoch + w_iv*score_iv + w_macd*score_macd, 0, 100) * macd_gate
+
+Implementation (dca_signal.py lines 333–346):
+  score_rsi   = clip(100 - rsi_val, 0, 100)                    ✓
+  score_stoch = clip(100 - stoch_d_val, 0, 100)                ✓
+  score_iv    = clip(100 - iv_pct, 0, 100)                     ✓
+  score_macd  = 100.0 if macd_hist_val > 0.0 else 0.0          ✓ (binary per spec semantics)
+  raw_score   = w_rsi*score_rsi + ... + w_macd*score_macd       ✓
+  entry_score = clip(raw_score, 0, 100) * gate                  ✓
+
+Oracle: CONFIRMED.
+
+
+FINDINGS
+--------
+
+[ADVISORY A1] tests/test_dca_signal.py lines 404–418 — I18 test is idempotency, not true T1
+
+  The spec requires: "appending one extra row after as_of_date does not change output."
+  The test calls compute_leaps_dca_signal(pd_obj, 'VTI', as_of) twice on the same
+  pd_obj where as_of = index[-2] (one row before the end). Both calls see the same
+  data — there is no second PriceData with an appended row. This validates that the
+  function is deterministic, not that the [:as_of_date] slice excludes future data.
+
+  A stronger I18 test would:
+    1. Build pd_obj_short truncated at as_of_date.
+    2. Build pd_obj_long with one additional row appended after as_of_date.
+    3. Assert signal from pd_obj_short == signal from pd_obj_long at as_of_date.
+
+  The T1 slice is implemented correctly (line 253: close_all = pd_obj.prices[ticker].loc[:as_of_date])
+  but the test does not strictly verify it. This is advisory since the implementation
+  is correct; the test weakness would only matter if a regression removed the [:as_of_date] slice.
+
+[ADVISORY A2] dca_signal.py line 173 — price_data: object type annotation
+
+  The function signature uses `price_data: object` with a `type: ignore[assignment]`
+  cast at line 233 to avoid a circular import with data.py. This circumvents mypy's
+  strict mode for this argument and hides any type error on the caller side.
+
+  Preferred resolution: use TYPE_CHECKING guard or a Protocol to avoid the circular import
+  while retaining type safety. As-is, mypy does not enforce that callers pass PriceData.
+
+  No behavioural defect; advisory only.
+
+[ADVISORY A3] dca_signal.py lines 381–384 — O(n²) lookback gate loop
+
+  The gate series for the percentile distribution is computed via a Python for-loop
+  with iloc slicing (lines 381–384), which is O(n²) for the lookback window. Spec
+  acknowledges this as R-009 ("Acceptable for 5-year daily series ~1250 rows").
+  No action required; flagged for awareness.
+
+[ADVISORY A4] dca_signal.py line 288 — 1 uncovered line (vol_col fallback branch)
+
+  Coverage report shows line 288 uncovered. This is the inner else-branch of the
+  ASSET_VOL_INDEX resolution block. The exact scenario: ticker IS in ASSET_VOL_INDEX
+  (so mapped_index is not None), but the expected iv_col_name (e.g. "VTI_IV") is
+  absent from vol_prices.columns (line 282 evaluates False → vol_col stays None →
+  control reaches line 284 fallback). The existing test_raises_on_missing_vol_prices
+  reaches ValueError via the empty vol_prices path but misses this specific sub-branch.
+
+  No behavioural defect; the end result (ValueError) is the same.
+  A targeted test using vol_prices with a mismatched column name would achieve 100%.
+
+[PASS] LeapsDcaSignal dataclass
+  @dataclass(frozen=True) per CLAUDE.md spec. All DS-010 fields present and typed.
+  Immutability verified: test_leaps_dca_signal_is_frozen — PASS.
+
+[PASS] Invariant I14-I16 bounds via np.clip
+  entry_score uses np.clip before gate multiplication — gate ∈ (0, 1] cannot exceed 1.0,
+  so clip(raw_score, 0, 100) * gate ∈ [0, 100]. Correct.
+
+[PASS] alpha_t linear interpolation (lines 401–406)
+  Correctly handles edge case band == 0 (returns 1.0). np.clip applied.
+  test_alpha_t_linear_interpolation verifies boundary conditions.
+
+[PASS] dca_action classification (lines 408–413)
+  Three-way branch: score_pct < hold_pctile → HOLD; >= aggressive_pctile → AGGRESSIVE_SWEEP;
+  else → TRANCHE. Correct exhaustive partition.
+
+[PASS] IV resolution chain (lines 279–293)
+  ASSET_VOL_INDEX → mapped column → VIX fallback → ValueError. Tested for:
+  - Normal VTI_IV path (happy path)
+  - Empty vol_prices (raises ValueError I17-adjacent)
+  - VTI_IV fallback via vix_cols heuristic
+  - ticker absent from ohlcv MultiIndex (raises ValueError)
+
+[PASS] MACD bearish confirmed gate (lines 325–326)
+  `gate = macd_gate_floor if (use_macd_gate and bearish) else 1.0`
+  test_macd_gate_applied_when_bearish_confirmed and test_macd_gate_off_always_one — both PASS.
+  test_macd_bearish_confirmed_gate_reduces_score asserts monotonicity — PASS.
+
+[PASS] Stochastic NaN handling (line 307–308)
+  stoch_d_clean = stoch_d_series.dropna(); fallback to 50.0 (neutral) if empty. Correct.
+
+[PASS] min_lookback enforcement (lines 255–259)
+  test_raises_on_insufficient_data (n_days=100, min_lookback=252) — PASS.
+
+
+REQUIRED ACTIONS FOR ACTOR
+---------------------------
+A1 [ADVISORY] Strengthen I18 test in tests/test_dca_signal.py:
+   Replace the current idempotency test with a proper T1 test:
+     pd_long  = _make_price_data(n_days=N_DAYS, seed=7)
+     pd_short = _make_price_data(n_days=N_DAYS - 1, seed=7)  # truncated by 1 row
+     as_of    = pd_short.prices.index[-1]
+     sig_a    = compute_leaps_dca_signal(pd_long, 'VTI', as_of)
+     sig_b    = compute_leaps_dca_signal(pd_short, 'VTI', as_of)
+     assert sig_a.entry_score == pytest.approx(sig_b.entry_score, abs=1e-9)
+     assert sig_a.rsi         == pytest.approx(sig_b.rsi,         abs=1e-9)
+     assert sig_a.macd_hist   == pytest.approx(sig_b.macd_hist,   abs=1e-9)
+
+A2 [ADVISORY] Resolve price_data: object workaround in dca_signal.py line 173.
+   Use TYPE_CHECKING import or a structural Protocol to restore mypy coverage.
+
+Note: Actions A3 and A4 are acknowledged/tracked but do not require changes per spec.
+_fetch_ohlcv bugs from F-014 (B1, B2) are a dependency — fix those before live integration.
+
+
+SUMMARY
+-------
+All 6 spec acceptance criteria are met. 40 tests pass. The implementation is clean,
+mypy-strict compliant, and correctly enforces T1/I14/I15/I16/I17/I18/I19. Two advisory
+improvements are requested (I18 test strengthening, type-annotation workaround).
+No blocking defects in dca_signal.py itself; the only pre-production blocker is the
+_fetch_ohlcv normalization bugs catalogued in F-014-pm (B1, B2).
+
+Status update: pending_judge → complete (with A1/A2 advisory fixes tracked)
+================================================================================

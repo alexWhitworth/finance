@@ -1,0 +1,98 @@
+================================================================================
+JUDGE VERDICT — F-GP-03: compute_glide_target_weights() pure function
+Spec: plans/glide_path_rebalance_spec.json
+Round: 1
+Effort: light/mid
+================================================================================
+
+VERDICT: PASS
+
+--------------------------------------------------------------------------------
+SCORECARD
+--------------------------------------------------------------------------------
+Acceptance Criteria:          5 / 5 MET
+Tests (F-GP-03 scope):       22 / 22 PASSED
+Formula correctness:          VERIFIED (analytical probes, max diff < 1e-15)
+Multi-LEAPS-key coverage:     VERIFIED (proportional split correct across 2 keys)
+Mutation testing:             SKIPPED per user directive
+FFI:                          N/A (pure Python)
+
+--------------------------------------------------------------------------------
+ACCEPTANCE CRITERIA VERIFICATION
+--------------------------------------------------------------------------------
+
+[MET] result.sum() == 1.0 within 1e-12 for m in [0.5, 1.0, 1.5, 2.0, 5.0, 10.0]
+      Probe also confirmed at m=100.0. Max diff: 2.22e-16. test_sum_equals_one.
+
+[MET] At m==1.0, result equals config.target_weights (VTI==0.0) for all keys within 1e-12
+      All diffs exactly 0.0 for the standard 7-asset portfolio. test_identity_at_m_one,
+      test_identity_at_m_below_one.
+
+[MET] result['VTI'] == (w0 - glide_path_leaps_weight(m)) * vti_alpha within 1e-12 at m==2.0
+      Diff: 0.0e+00. test_vti_weight_at_m2_explicit.
+
+[MET] All base asset weights >= original target_weights for m > 1.0 (non-decreasing)
+      Monotonicity sweep confirmed at 100 points in [1.0, 10.0].
+      test_monotonicity_vti_and_base_weights, test_base_weights_ge_original_for_m_gt_one.
+
+[MET] ValueError: 'VTI' absent; ValueError: base_sum == 0
+      test_vti_absent_from_target_weights_raises, test_base_sum_zero_raises.
+
+--------------------------------------------------------------------------------
+FORMULA AUDIT
+--------------------------------------------------------------------------------
+Implementation (src/finance/_backtest_steps.py:200–228):
+
+    leaps_keys = {k for k in tw if k.endswith(LEAPS_KEY_SUFFIX)}
+    w0 = float(sum(tw[k] for k in leaps_keys))
+    base_weights = {k: v for k, v in tw.items() if k not in leaps_keys and k != "VTI"}
+    base_sum = sum(base_weights.values())
+
+    w_leaps = glide_path_leaps_weight(m, w0, floor, half_life_multiple)
+    w_freed = w0 - w_leaps
+
+    result["VTI"] = vti_alpha * w_freed
+    base_scale = (1 - vti_alpha) * w_freed / base_sum
+    for k in base_weights:
+        result[k] = tw[k] + tw[k] * base_scale        # tw[k] * (1 + base_scale)
+    if w0 > 0:
+        for k in leaps_keys:
+            result[k] = tw[k] * (w_leaps / w0)        # proportional split
+
+Sum identity proof: VTI + sum(base_k) + sum(leaps_k)
+    = vti_alpha*w_freed + sum(tw[k]*(1+base_scale)) + w_leaps
+    = vti_alpha*w_freed + base_sum*(1 + (1-vti_alpha)*w_freed/base_sum) + w_leaps
+    = vti_alpha*w_freed + base_sum + (1-vti_alpha)*w_freed + w_leaps
+    = w_freed*(vti_alpha + 1 - vti_alpha) + base_sum + w_leaps
+    = w_freed + base_sum + w_leaps
+    = (w0 - w_leaps) + base_sum + w_leaps
+    = w0 + base_sum
+    = 1.0  ✓ (since target_weights sums to 1.0 and VTI=0.0 in original)
+
+Multi-key LEAPS proportional split (confirmed by probe with 2 LEAPS keys):
+    VTI_LEAPS=0.25, VXUS_LEAPS=0.15, w0=0.40
+    Split at m=2.0: each key scaled by w_leaps/w0 — exact within 1e-15.
+
+--------------------------------------------------------------------------------
+ADVISORY FINDINGS
+--------------------------------------------------------------------------------
+
+[ADVISORY — 1]
+The test suite targets only the standard single-LEAPS-key fixture. The multi-LEAPS-key
+path (>1 key) is not covered by F-GP-03 tests. Probe confirms correctness but no test
+asserts multi-key proportional split. Given the current portfolio only has one LEAPS key,
+this is low risk. Adding one parametrized multi-key test would be good hygiene.
+
+[ADVISORY — 2]
+The F-GP-01 BLOCKING gap (VTI value not checked as 0.0 in PortfolioConfig.__post_init__)
+also affects F-GP-03: if a caller bypasses the PortfolioConfig guard, the function's own
+VTI guard catches the "absent" case but not the "present but nonzero" case. The function
+itself has no defense — it trusts tw["VTI"] == 0.0. This is safe once F-GP-01 blocking fix
+is applied and the fix in PortfolioConfig.__post_init__ closes the gap at construction time.
+
+--------------------------------------------------------------------------------
+STATUS UPDATE
+--------------------------------------------------------------------------------
+features["F-GP-03"].status: complete
+Note: Contingent on F-GP-01 BLOCKING fix being applied to prevent sum violation.
+================================================================================

@@ -1,0 +1,128 @@
+================================================================================
+JUDGE VERDICT — F-014-pm
+Feature : Phase 5a: Add ohlcv field to PriceData and fetch_ohlcv to build_price_data
+Spec     : plans/portfolio_management_spec.json § F-014
+Round    : 1
+Verdict  : CONDITIONAL_PASS
+================================================================================
+
+SCORECARDS
+----------
+Acceptance Criteria   : 2 / 2 MET
+Test Coverage (F-014) : 100 % (all 5 dedicated tests pass; _fetch_ohlcv is pragma: no cover I/O boundary)
+Mutation Testing      : DISABLED per spec (I/O boundary, yfinance fetch)
+Ruff                  : CLEAN (uv run ruff check src/finance/data.py)
+mypy --strict         : CLEAN (uv run mypy src/finance/data.py)
+
+ACCEPTANCE CRITERIA STATUS
+---------------------------
+[MET]  build_price_data(..., fetch_ohlcv=True) returns PriceData with non-empty ohlcv DataFrame
+         Evidence: test_ohlcv_populated_when_fetch_requested — PASS
+[MET]  build_price_data(..., fetch_ohlcv=False) returns PriceData with empty ohlcv DataFrame
+         Evidence: test_ohlcv_empty_when_not_requested — PASS
+         Evidence: test_fetch_ohlcv_false_does_not_call_fetch_ohlcv — PASS (verifies _fetch_ohlcv not called)
+[MET]  Spec edge case: MultiIndex normalization guard
+         Evidence: test_ohlcv_multiindex_structure verifies (ticker, field) structure when mocked
+
+
+FINDINGS
+--------
+
+[ADVISORY] data.py lines 293–298 — Branch 2 variable-name inversion in _fetch_ohlcv
+
+  Context:
+    Branch 2 is entered when raw.columns.names[0] == "Ticker", i.e. yfinance already
+    returns (Ticker, Price) MultiIndex. The intent is to rename to ('ticker', 'field').
+    The code reads:
+
+        raw.columns = pd.MultiIndex.from_tuples(
+            [(ticker, field) for field, ticker in raw.columns],   # line 295
+            names=['ticker', 'field'],
+        )
+
+    Since raw.columns iteration yields (Ticker_val, Price_val) — e.g. ('VTI', 'Close') —
+    the destructuring `for field, ticker in raw.columns` binds:
+        field  = 'VTI'   (the ticker value)
+        ticker = 'Close' (the price field value)
+    Then the tuple (ticker, field) = ('Close', 'VTI').
+
+    Result: columns are [('Close','VTI'), ('High','VTI'), ...] instead of
+                        [('VTI','Close'), ('VTI','High'), ...].
+
+    This is a BLOCKING logic error that would corrupt the (ticker, field) contract
+    assumed by compute_leaps_dca_signal. It is only masked by the fact that the
+    unit tests mock _fetch_ohlcv and never exercise this branch.
+
+  Severity: Advisory (I/O boundary marked pragma: no cover; mocked in all tests).
+            ESCALATES to BLOCKING if a live integration test is added for F-015 or F-016.
+
+  Fix: swap the variable names in the destructuring:
+        [(ticker, field) for ticker, field in raw.columns]
+
+[ADVISORY] data.py lines 289–292 — Branch 1 stack produces wrong output shape
+
+  Context:
+    Branch 1 fires when raw.columns.names[0] != 'Ticker' (the standard yfinance >=0.2.x
+    format, where names = ['Price', 'Ticker']).
+
+        result = raw.stack(level=0, future_stack=True)
+        result.columns.name = "field"
+        return result
+
+    stack(level=0) moves the Price axis into the row MultiIndex, producing:
+        Index:   MultiIndex of (date, price_field)   — e.g. (2022-01-03, 'Close')
+        Columns: flat Series of ticker names          — e.g. ['VTI']
+
+    Setting columns.name = "field" renames the axis but leaves columns flat.
+    The caller (compute_leaps_dca_signal) tests `isinstance(ohlcv.columns, pd.MultiIndex)`
+    and expects (ticker, field) MultiIndex columns. The stacked result has no MultiIndex
+    columns — downstream access of ohlcv['VTI']['High'] would silently fail or produce
+    wrong data.
+
+    The correct approach for this branch is swaplevel + rename:
+        result = raw.swaplevel(axis=1)
+        result.columns.names = ['ticker', 'field']
+
+  Severity: Advisory (same pragma: no cover scope as above).
+
+
+[PASS] data.py line 40 — PriceData.ohlcv field
+  Uses field(default_factory=pd.DataFrame). Correct: avoids mutable-default-argument
+  trap with frozen dataclass. Default is empty; explicit non-empty only when fetch_ohlcv=True.
+
+[PASS] data.py line 395 — conditional _fetch_ohlcv call
+  `ohlcv = _fetch_ohlcv(asset_tickers, start_date, end_date) if fetch_ohlcv else pd.DataFrame()`
+  Clean ternary; empty DataFrame on False path matches DS-012 spec.
+
+[PASS] test_fetch_ohlcv_false_does_not_call_fetch_ohlcv
+  Explicitly asserts mock_ohlcv.assert_not_called() — guards against accidental calls.
+
+
+REQUIRED ACTIONS FOR ACTOR
+---------------------------
+B1 [ADVISORY → pre-integration-test BLOCKING]
+   Fix Branch 2 variable-name swap in data.py line 295:
+     OLD: [(ticker, field) for field, ticker in raw.columns]
+     NEW: [(ticker, field) for ticker, field in raw.columns]
+
+B2 [ADVISORY → pre-integration-test BLOCKING]
+   Fix Branch 1 normalization in data.py lines 289–292:
+     OLD: result = raw.stack(level=0, future_stack=True); result.columns.name = "field"; return result
+     NEW: result = raw.swaplevel(axis=1); result.columns.names = ['ticker', 'field']; return result
+
+Note: Both bugs are safe to defer while _fetch_ohlcv is mocked in tests, but MUST be
+resolved before any live/integration path exercises build_price_data(fetch_ohlcv=True)
+with real yfinance data.
+
+
+SUMMARY
+-------
+The Python-layer interface (PriceData.ohlcv field + build_price_data parameter) is
+correctly implemented, tests pass, mypy and ruff are clean, and all spec acceptance
+criteria are met via mocked unit tests. Two normalization bugs exist inside _fetch_ohlcv
+(the pragma: no cover I/O boundary) that would break real yfinance calls. These do not
+block the current test-suite acceptance but must be fixed before live use or integration
+testing.
+
+Status update: pending_judge → complete (with B1/B2 advisory fixes tracked)
+================================================================================

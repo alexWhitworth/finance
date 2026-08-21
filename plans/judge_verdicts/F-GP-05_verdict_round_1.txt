@@ -1,0 +1,114 @@
+================================================================================
+JUDGE VERDICT — F-GP-05: _build_context rfr_series population and VTI validation
+Spec: plans/glide_path_rebalance_spec.json
+Round: 1
+Effort: light/mid
+================================================================================
+
+VERDICT: CONDITIONAL_PASS
+
+--------------------------------------------------------------------------------
+SCORECARD
+--------------------------------------------------------------------------------
+Acceptance Criteria:          4 / 4 MET (with one wording gap noted below)
+Tests (F-GP-05 scope):        7 / 7 PASSED
+Implementation correctness:   VERIFIED via probes
+No-double-populate guard:     VERIFIED (line 468 `if rfr_series is None:` guard)
+Mutation testing:             SKIPPED per user directive
+FFI:                          N/A (pure Python)
+
+--------------------------------------------------------------------------------
+ACCEPTANCE CRITERIA VERIFICATION
+--------------------------------------------------------------------------------
+
+[MET] _build_context with glide_path_config set + use_leaps=False → rfr_series not None and NaN-free.
+      Note: In the current design, PortfolioConfig.__post_init__ requires floor < leaps_fraction,
+      which requires at least one _LEAPS key, making use_leaps=True effectively mandatory when
+      glide_path_config is set. The test correctly documents this and tests the equivalent
+      use_leaps=True path. The spec criterion is satisfied in spirit and in code: the glide_path
+      block at line 456–469 runs regardless of use_leaps value; test_glide_path_no_leaps_rfr_populated
+      confirms rfr_series is populated and NaN-free.
+
+[MET] _build_context with glide_path_config=None + use_leaps=False → rfr_series=None (no regression).
+      test_no_glide_path_no_leaps_rfr_none. Confirmed: rfr_series is None.
+
+[MET] _build_context with glide_path_config set + 'VTI' absent from return_data.returns.columns
+      raises ValueError.
+      test_glide_path_vti_absent_from_returns_raises. Note: VTI is a base_asset (has 0.0 weight
+      in target_weights), so the pre-existing "Assets missing from return_data" check at line 378
+      fires FIRST. The new glide-path VTI check at line 457 provides a redundant but
+      semantically clearer message. Either guard protects the invariant. Verdict: MET.
+
+[MET] _build_context with glide_path_config set + rfr_series having leading NaN on start date
+      raises ValueError.
+      test_glide_path_leading_rfr_nan_raises, test_glide_path_all_nan_rfr_raises.
+      Line 462–467: raw_rfr_at_start.iloc[0] is checked with pd.isna before proceeding.
+
+--------------------------------------------------------------------------------
+IMPLEMENTATION AUDIT
+--------------------------------------------------------------------------------
+Relevant block (src/finance/_backtest_steps.py:456–469):
+
+    if config.glide_path_config is not None:
+        if "VTI" not in return_data.returns.columns:       # VTI column check (line 457)
+            raise ValueError(...)
+        start_date = idx[0]
+        raw_rfr_at_start = return_data.risk_free_rate.reindex(idx, method="ffill")
+        if pd.isna(raw_rfr_at_start.iloc[0]):               # leading NaN guard (line 463)
+            raise ValueError(...)
+        if rfr_series is None:                              # no-double-populate guard (line 468)
+            rfr_series = raw_rfr_at_start.fillna(0.0)
+
+All four lines are correct and consistent with spec intent.
+
+No-double-populate (edge case): when use_leaps=True, rfr_series is already set (line 445).
+The `if rfr_series is None:` guard (line 468) prevents overwriting. Confirmed by probe:
+with rfr=0.05 constant, context rfr_series has all-0.05 values (use_leaps path preserved).
+
+--------------------------------------------------------------------------------
+ADVISORY FINDINGS
+--------------------------------------------------------------------------------
+
+[ADVISORY — 1] Internal NaN gap handling in rfr_series
+The current pattern:
+    rfr_series = return_data.risk_free_rate.reindex(idx, method="ffill").fillna(0.0)
+In pandas 3.0.5, `reindex(idx, method="ffill")` does NOT forward-fill within-series NaN gaps
+when the index keys already exist in the original series. Only new index keys (from reindexing
+to a different index) are filled by method="ffill". Internal NaN gaps (e.g., ^IRX missing a
+few trading days) pass through unchanged and are then filled with 0.0 via fillna(0.0),
+silently substituting 0% risk-free rate.
+
+This is a pre-existing behavior in the codebase (the same pattern exists for the use_leaps
+rfr_series at line 445) and is NOT introduced by F-GP-05. However, it could cause subtle
+hurdle undercounting if ^IRX has sporadic missing days, since the monthly compounding factor
+(1+rfr)^(1/12) would be 1.0 for those days instead of the true rate.
+
+Mitigation: Real-world ^IRX from FRED is rarely gapped. The leading-NaN check catches the
+most dangerous case. This is low-probability risk for this use case.
+
+If forward-filling internal gaps is desired, the fix is:
+    rfr_series = return_data.risk_free_rate.ffill().reindex(idx, method="ffill").fillna(0.0)
+This is a pre-existing design choice, not a regression from F-GP-05.
+
+[ADVISORY — 2] Spec criterion wording vs implementation reachability
+The spec states "glide_path_config set and use_leaps=False" as an acceptance criterion.
+In practice this path cannot be reached because PortfolioConfig validation requires
+floor < leaps_fraction which mandates LEAPS keys. The test documents this tension honestly.
+If future use cases drop the LEAPS key requirement while keeping glide_path_config (e.g., a
+pure-equity glide path), the current validation will block construction. This is an
+ESCALATION-level spec question, not a blocking defect.
+
+--------------------------------------------------------------------------------
+REQUIRED ACTIONS (for CONDITIONAL_PASS → PASS)
+--------------------------------------------------------------------------------
+
+1. [ADVISORY] No blocking defects in F-GP-05 itself. This CONDITIONAL_PASS is issued
+   because the F-GP-01 BLOCKING gap (VTI value=0.0 not validated) affects the integrity
+   of the system F-GP-05 feeds into. Once F-GP-01 is fixed, this becomes PASS.
+
+--------------------------------------------------------------------------------
+STATUS UPDATE
+--------------------------------------------------------------------------------
+features["F-GP-05"].status: pending
+Reason: Contingent on F-GP-01 BLOCKING fix. No defects in F-GP-05 itself.
+================================================================================
