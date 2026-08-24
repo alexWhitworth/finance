@@ -98,7 +98,7 @@ roll with LTCG preservation, and taxable vs. tax-sheltered scenarios
     3. Glide-path: deleverage the portfolio overtime, by converting realized gains the base
     multi-asset, lower risk, unlevered portfolio. 
         - Technically: uses exponential decay proportional to wealth accumulation over time. 
-        - (_see [glide_path_rebalance](./plans/glide_path_rebalance_spec.json)
+        - (_see [glide_path_rebalance_plan](./plans/notional_glide_path_rebalance.md)
     for details_)
 - **Portfolio Volatility Forecasting/Attribution:** EWMA vol (λ=0.95), 36-month rolling weekly
 correlations, per-asset contribution table summing to 1
