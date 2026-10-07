@@ -15,6 +15,7 @@ SPLICE_MAP: dict[str, tuple[str, str]] = {
     # BND: first available date in yfinance is 2007-04-10.
     "BND": ("VBMFX", "2007-04-10"),
     "MUB": ("VWITX", "2007-09-10"),
+    "IAU": ("GC=F", "2005-01-28"),
     "GLD": ("GC=F", "2004-11-18"),  # only goes back to 2000-08-30 :(
     # Unable to find a splice source further back. Still trying to get.
     # -------------------------------------------
@@ -32,6 +33,7 @@ ASSET_VOL_INDEX: dict[str, str | None] = {
     # Fallback: ^VIX scaled by VOL_INDEX_SCALAR["VXUS"] = 1.15.
     "VXUS": "^VIX",
     "GLD": "^GVZ",
+    "IAU": "^GVZ",
     "MUB": "^MOVE",
     "KMLM": None,
     "VGIT": "^MOVE",
