@@ -12,6 +12,9 @@ jobs:
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
+        with:
+          # Full history so git diff / diff-cover can compare against origin/master
+          fetch-depth: 0
       - name: Install uv
         uses: astral-sh/setup-uv@v8.1.0
         with:
@@ -23,7 +26,33 @@ jobs:
         run: uv run pytest
         env:
           FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
-          NASDAQ_DATA_LINK_API_KEY: ${{ secrets.NASDAQ_DATA_LINK_API_KEY }} 
+          NASDAQ_DATA_LINK_API_KEY: ${{ secrets.NASDAQ_DATA_LINK_API_KEY }}
+      - name: Coverage of changed lines (diff-cover)
+        # 1. Line-level coverage restricted to lines touched by this PR/branch.
+        #    --fail-under=0 keeps this informational; raise it (e.g. 100) to
+        #    enforce a diff-coverage gate. The overall 85% floor is enforced
+        #    by [tool.coverage.report] fail_under during the test run.
+        run: |
+          uv run diff-cover coverage.xml \
+            --compare-branch=origin/master \
+            --fail-under=0 \
+            --format markdown:diff-cover.md
+          cat diff-cover.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Coverage of changed files
+        # 2. File-level coverage of every .py file touched by this PR/branch
+        #    (added, modified, or renamed; deleted files excluded).
+        run: |
+          CHANGED_FILES=$(git diff --name-only --diff-filter=d origin/master...HEAD \
+            | { grep '\.py$' || true; } | paste -sd, -)
+          if [ -n "$CHANGED_FILES" ]; then
+            uv run coverage report --include="$CHANGED_FILES" --fail-under=0
+          else
+            echo "No changed Python files."
+          fi
+      - name: Overall library coverage
+        # 3. Coverage of the entire src/finance package (fail_under=85 from
+        #    pyproject.toml applies by default).
+        run: uv run coverage report
 
   lint:
     runs-on: ubuntu-latest

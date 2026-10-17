@@ -16,7 +16,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest", "pytest-cov", "ruff", "mypy", "hypothesis"]
+dev = ["pytest", "pytest-cov", "ruff", "mypy", "hypothesis", "diff-cover>=9"]
 
 [build-system]
 requires = ["hatchling"]
@@ -79,7 +79,7 @@ source = ["src/finance"]
 omit = ["tests/*", "**/__init__.py", "src/finance/figures.py"]
 
 [tool.coverage.report]
-fail_under = 80
+fail_under = 85
 show_missing = true
 exclude_lines = [
     "pragma: no cover",
