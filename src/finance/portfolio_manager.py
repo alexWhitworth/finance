@@ -466,39 +466,47 @@ def compute_rebalance_plan(
     )
 
 
-def leaps_trim_as_trade_order(
-    leaps_view: HoldingView,
-    leaps_trim: float,
-) -> TradeOrder | None:
-    """Represent a RebalancePlan's leaps_trim as a TradeOrder for display.
+def leaps_trims_as_trade_orders(
+    leaps_views: tuple[HoldingView, ...],
+    leaps_trim: dict[str, float],
+) -> tuple[TradeOrder, ...]:
+    """Represent a RebalancePlan's per-ticker leaps_trim as TradeOrders for display.
 
-    compute_rebalance_plan() reports LEAPS overweight only as a dollar
-    overshoot (RebalancePlan.leaps_trim) — not as an entry in plan.trades —
-    because a partial LEAPS close isn't a simple buy/sell of a base asset and
-    the freed proceeds are not redistributed to other trades (R-007). This is
-    a read-only convenience for combining the LEAPS sleeve with base-asset
-    trades in a single display table; the result is not part of plan.trades
-    and does not participate in the trade-conservation invariant (I3).
+    compute_rebalance_plan() reports LEAPS overweight only as a per-ticker
+    dollar overshoot (RebalancePlan.leaps_trim, keyed by bare ticker) — not as
+    entries in plan.trades — because a partial LEAPS close isn't a simple
+    buy/sell of a base asset and the freed proceeds are not redistributed to
+    other trades (R-007). This is a read-only convenience for combining the
+    LEAPS sleeves with base-asset trades in a single display table; the results
+    are not part of plan.trades and do not participate in the trade-conservation
+    invariant (I3).
 
     Arguments:
-        leaps_view: HoldingView for the LEAPS sleeve, from
-            compute_leaps_holdings_view().
-        leaps_trim: RebalancePlan.leaps_trim from the same evaluation.
+        leaps_views: HoldingView rows for the LEAPS sleeves, from
+            compute_leaps_holdings_view(). Each ticker is "<ticker>_LEAPS".
+        leaps_trim: RebalancePlan.leaps_trim from the same evaluation, keyed
+            by bare ticker.
 
     Returns:
-        TradeOrder representing the LEAPS partial close, or None when
-        leaps_trim is 0.0.
+        One TradeOrder per ticker in leaps_trim, keyed by "<ticker>_LEAPS".
+        Empty tuple when leaps_trim is empty.
     """
-    if leaps_trim <= 0.0:
-        return None
-    return TradeOrder(
-        ticker=leaps_view.ticker,
-        current_value=leaps_view.dollar_value,
-        target_value=leaps_view.dollar_value - leaps_trim,
-        trade_amount=-leaps_trim,
-        current_weight=leaps_view.actual_weight,
-        target_weight=leaps_view.target_weight,
-    )
+    view_by_key = {v.ticker: v for v in leaps_views}
+    orders = []
+    for ticker, trim in leaps_trim.items():
+        key = ticker + LEAPS_KEY_SUFFIX
+        view = view_by_key[key]
+        orders.append(
+            TradeOrder(
+                ticker=key,
+                current_value=view.dollar_value,
+                target_value=view.dollar_value - trim,
+                trade_amount=-trim,
+                current_weight=view.actual_weight,
+                target_weight=view.target_weight,
+            )
+        )
+    return tuple(orders)
 
 
 @dataclass(frozen=True)

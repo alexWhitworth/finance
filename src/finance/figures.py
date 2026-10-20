@@ -637,7 +637,7 @@ def format_trade_orders_table(trades: tuple[TradeOrder, ...]) -> str:
 
     Arguments:
         trades: Trade instructions, e.g. from RebalancePlan.trades with
-            leaps_trim_as_trade_order() appended.
+            leaps_trims_as_trade_orders() appended.
 
     Returns:
         A formatted string suitable for printing to stdout, or an empty

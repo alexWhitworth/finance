@@ -34,7 +34,7 @@ from finance.portfolio_manager import (
     compute_nav_breakdown,
     compute_rebalance_plan,
     compute_volatility_report,
-    leaps_trim_as_trade_order,
+    leaps_trims_as_trade_orders,
 )
 from finance.returns import ReturnData, build_return_data
 
@@ -792,55 +792,58 @@ def test_leaps_actual_weights_by_key_zero_total_nav() -> None:
 
 
 # ---------------------------------------------------------------------------
-# leaps_trim_as_trade_order
+# leaps_trims_as_trade_orders
 # ---------------------------------------------------------------------------
 
 
-def test_leaps_trim_as_trade_order_none_when_zero() -> None:
-    """Returns None when leaps_trim is 0.0."""
+def _two_sleeve_divergent() -> tuple[LivePortfolio, NavBreakdown]:
+    """Build a portfolio with two LEAPS sleeves at divergent trim sizes."""
     lp = LivePortfolio(
         as_of_date=_AS_OF,
-        holdings={"VTI": 60_000.0},
-        target_weights={"VTI": 0.60, "VTI_LEAPS": 0.40},
+        holdings={"VXUS": 60_000.0},
+        target_weights={"VXUS": 0.60, "VTI_LEAPS": 0.20, "IWM_LEAPS": 0.20},
         leaps_contracts=(),
         gtt_regime=None,
     )
-    nb = compute_nav_breakdown(lp, leaps_mtm_by_ticker={"VTI": 40_000.0})
-    view = compute_leaps_holdings_view(lp, nb)[0]
-    assert leaps_trim_as_trade_order(view, 0.0) is None
+    # total_nav = 60k + 30k + 10k = 100k; VTI overweight by 10k, IWM underweight.
+    nb = compute_nav_breakdown(lp, leaps_mtm_by_ticker={"VTI": 30_000.0, "IWM": 10_000.0})
+    return lp, nb
 
 
-def test_leaps_trim_as_trade_order_none_when_negative() -> None:
-    """Returns None when leaps_trim is negative (defensive guard)."""
-    lp = LivePortfolio(
-        as_of_date=_AS_OF,
-        holdings={"VTI": 60_000.0},
-        target_weights={"VTI": 0.60, "VTI_LEAPS": 0.40},
-        leaps_contracts=(),
-        gtt_regime=None,
-    )
-    nb = compute_nav_breakdown(lp, leaps_mtm_by_ticker={"VTI": 40_000.0})
-    view = compute_leaps_holdings_view(lp, nb)[0]
-    assert leaps_trim_as_trade_order(view, -5.0) is None
+def test_leaps_trims_as_trade_orders_count_matches_trim() -> None:
+    """M6: two overweight sleeves produce exactly two TradeOrder entries."""
+    # VTI trimmed by 10k and IWM trimmed by 2k (both overweight under this fixture).
+    lp, _ = _two_sleeve_divergent()
+    leaps_views = compute_leaps_holdings_view(lp, compute_nav_breakdown(
+        lp, leaps_mtm_by_ticker={"VTI": 30_000.0, "IWM": 30_000.0}
+    ))
+    orders = leaps_trims_as_trade_orders(leaps_views, {"VTI": 10_000.0, "IWM": 2_000.0})
+    assert len(orders) == 2
+    by_key = {o.ticker: o for o in orders}
+    assert set(by_key) == {"VTI_LEAPS", "IWM_LEAPS"}
 
 
-def test_leaps_trim_as_trade_order_fields() -> None:
-    """Fields mirror the LEAPS HoldingView, reduced by leaps_trim."""
-    lp = LivePortfolio(
-        as_of_date=_AS_OF,
-        holdings={"VTI": 40_000.0},
-        target_weights={"VTI": 0.70, "VTI_LEAPS": 0.30},
-        leaps_contracts=(),
-        gtt_regime=None,
-    )
-    nb = compute_nav_breakdown(lp, leaps_mtm_by_ticker={"VTI": 60_000.0})
-    view = compute_leaps_holdings_view(lp, nb)[0]
-    order = leaps_trim_as_trade_order(view, 30_000.0)
-    assert isinstance(order, TradeOrder)
+def test_leaps_trims_as_trade_orders_empty_trim() -> None:
+    """An empty leaps_trim dict produces an empty tuple."""
+    lp, nb = _two_sleeve_divergent()
+    leaps_views = compute_leaps_holdings_view(lp, nb)
+    assert leaps_trims_as_trade_orders(leaps_views, {}) == ()
+
+
+def test_leaps_trims_as_trade_orders_fields() -> None:
+    """Fields mirror the per-ticker HoldingView, reduced by that ticker's trim."""
+    lp, nb = _two_sleeve_divergent()
+    leaps_views = compute_leaps_holdings_view(lp, nb)
+    by_key = {v.ticker: v for v in leaps_views}
+    orders = leaps_trims_as_trade_orders(leaps_views, {"VTI": 10_000.0})
+
+    assert len(orders) == 1
+    order = orders[0]
+    view = by_key["VTI_LEAPS"]
     assert order.ticker == "VTI_LEAPS"
-    assert order.current_value == pytest.approx(60_000.0, rel=1e-9)
-    assert order.target_value == pytest.approx(30_000.0, rel=1e-9)
-    assert order.trade_amount == pytest.approx(-30_000.0, rel=1e-9)
+    assert order.current_value == pytest.approx(30_000.0, rel=1e-9)
+    assert order.target_value == pytest.approx(20_000.0, rel=1e-9)
+    assert order.trade_amount == pytest.approx(-10_000.0, rel=1e-9)
     assert order.current_weight == pytest.approx(view.actual_weight, rel=1e-9)
     assert order.target_weight == pytest.approx(view.target_weight, rel=1e-9)
 

@@ -40,7 +40,7 @@ from finance.portfolio_manager import (
     compute_leaps_holdings_view,
     compute_nav_breakdown,
     compute_rebalance_plan,
-    leaps_trim_as_trade_order,
+    leaps_trims_as_trade_orders,
 )
 from finance.returns import ReturnData
 from finance.volatility import build_volatility_model
@@ -590,10 +590,10 @@ class TestFormatTradeOrdersTable:
             lp, nb, RebalanceRule.DRIFT, is_rebal_date=False, is_month_end=True
         )
         assert plan.leaps_trim["VTI"] > 0.0
-        leaps_view = compute_leaps_holdings_view(lp, nb)[0]
-        leaps_trade = leaps_trim_as_trade_order(leaps_view, plan.leaps_trim["VTI"])
-        assert leaps_trade is not None
-        table = format_trade_orders_table((*plan.trades, leaps_trade))
+        leaps_views = compute_leaps_holdings_view(lp, nb)
+        leaps_trades = leaps_trims_as_trade_orders(leaps_views, plan.leaps_trim)
+        assert len(leaps_trades) == 1
+        table = format_trade_orders_table((*plan.trades, *leaps_trades))
         assert "VTI_LEAPS" in table
         assert "e+" not in table
 
