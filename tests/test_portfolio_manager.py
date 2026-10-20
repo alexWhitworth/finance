@@ -26,6 +26,7 @@ from finance.portfolio_manager import (
     LivePortfolio,
     NavBreakdown,
     TradeOrder,
+    _leaps_actual_weights_by_key,
     as_live_portfolio,
     compute_gtt_status,
     compute_holdings_view,
@@ -475,7 +476,7 @@ def test_nav_breakdown_leaps_mtm_included() -> None:
     """total_nav includes leaps_mtm (I1)."""
     holdings = {"VTI": 50_000.0}
     lp = _make_portfolio(holdings)
-    nb = compute_nav_breakdown(lp, leaps_mtm=10_000.0)
+    nb = compute_nav_breakdown(lp, leaps_mtm_by_ticker={"VTI": 10_000.0})
     assert abs(nb.total_nav - 60_000.0) < 1e-9
     assert abs(nb.leaps_nav - 10_000.0) < 1e-9
 
@@ -501,7 +502,7 @@ def test_nav_breakdown_all_components() -> None:
     """total_nav is exact sum of all four components (I1) — boundary test."""
     holdings = {"VTI": 30_000.0, "VXUS": 20_000.0}
     lp = _make_portfolio(holdings, defensive_sleeve=10_000.0, leaps_pool=5_000.0)
-    nb = compute_nav_breakdown(lp, leaps_mtm=8_000.0)
+    nb = compute_nav_breakdown(lp, leaps_mtm_by_ticker={"VTI": 8_000.0})
     expected_total = 30_000.0 + 20_000.0 + 8_000.0 + 10_000.0 + 5_000.0
     identity = nb.base_nav + nb.leaps_nav + nb.defensive_sleeve + nb.leaps_pool
     assert abs(nb.total_nav - expected_total) < 1e-9
@@ -525,7 +526,7 @@ def test_nav_breakdown_zero_holdings() -> None:
         leaps_contracts=(),
         gtt_regime=None,
     )
-    nb = compute_nav_breakdown(lp, leaps_mtm=5_000.0)
+    nb = compute_nav_breakdown(lp, leaps_mtm_by_ticker={"VTI": 5_000.0})
     assert nb.base_nav == 0.0
     assert abs(nb.total_nav - 5_000.0) < 1e-9
 
@@ -685,7 +686,7 @@ def test_leaps_holdings_view_single_key_actual_weight() -> None:
         leaps_contracts=(),
         gtt_regime=None,
     )
-    nb = compute_nav_breakdown(lp, leaps_mtm=40_000.0)  # total_nav=100k
+    nb = compute_nav_breakdown(lp, leaps_mtm_by_ticker={"VTI": 40_000.0})  # total_nav=100k
     views = compute_leaps_holdings_view(lp, nb)
     assert len(views) == 1
     assert views[0].ticker == "VTI_LEAPS"
@@ -703,7 +704,7 @@ def test_leaps_holdings_view_weight_drift_sign() -> None:
         leaps_contracts=(),
         gtt_regime=None,
     )
-    nb = compute_nav_breakdown(lp, leaps_mtm=60_000.0)  # total_nav=100k, leaps actual=0.60
+    nb = compute_nav_breakdown(lp, leaps_mtm_by_ticker={"VTI": 60_000.0})  # total_nav=100k, leaps actual=0.60
     view = compute_leaps_holdings_view(lp, nb)[0]
     assert view.weight_drift == pytest.approx(0.60 - 0.30, rel=1e-9)
 
@@ -717,7 +718,7 @@ def test_leaps_holdings_view_relative_drift_none_when_target_zero() -> None:
         leaps_contracts=(),
         gtt_regime=None,
     )
-    nb = compute_nav_breakdown(lp, leaps_mtm=0.0)
+    nb = compute_nav_breakdown(lp, leaps_mtm_by_ticker={"VTI": 0.0})
     view = compute_leaps_holdings_view(lp, nb)[0]
     assert view.relative_drift is None
 
@@ -731,11 +732,63 @@ def test_leaps_holdings_view_returns_frozen_holdingview() -> None:
         leaps_contracts=(),
         gtt_regime=None,
     )
-    nb = compute_nav_breakdown(lp, leaps_mtm=40_000.0)
+    nb = compute_nav_breakdown(lp, leaps_mtm_by_ticker={"VTI": 40_000.0})
     view = compute_leaps_holdings_view(lp, nb)[0]
     assert isinstance(view, HoldingView)
     with pytest.raises((AttributeError, TypeError)):
         view.actual_weight = 0.0  # type: ignore[misc]
+
+
+# ---------------------------------------------------------------------------
+# _leaps_actual_weights_by_key (F-003)
+# ---------------------------------------------------------------------------
+
+
+def test_leaps_actual_weights_by_key_uses_actual_exposure() -> None:
+    """Actual weight derives from per-ticker MTM / total_nav, not target split."""
+    lp = LivePortfolio(
+        as_of_date=_AS_OF,
+        holdings={"VTI": 40_000.0},
+        target_weights={"VTI": 0.50, "VTI_LEAPS": 0.30, "IWM_LEAPS": 0.20},
+        leaps_contracts=(),
+        gtt_regime=None,
+    )
+    # total_nav = 40k + 30k + 10k = 80k; equal target weights, divergent MTM
+    nb = compute_nav_breakdown(
+        lp, leaps_mtm_by_ticker={"VTI": 30_000.0, "IWM": 10_000.0}
+    )
+    weights = _leaps_actual_weights_by_key(lp, nb)
+    assert weights["VTI_LEAPS"] == pytest.approx(30_000.0 / 80_000.0, rel=1e-9)
+    assert weights["IWM_LEAPS"] == pytest.approx(10_000.0 / 80_000.0, rel=1e-9)
+
+
+def test_leaps_actual_weights_by_key_missing_ticker_is_zero() -> None:
+    """A *_LEAPS key with no matching ticker shows 100% underweight (0.0)."""
+    lp = LivePortfolio(
+        as_of_date=_AS_OF,
+        holdings={"VTI": 70_000.0},
+        target_weights={"VTI": 0.60, "VTI_LEAPS": 0.20, "IWM_LEAPS": 0.20},
+        leaps_contracts=(),
+        gtt_regime=None,
+    )
+    nb = compute_nav_breakdown(lp, leaps_mtm_by_ticker={"VTI": 30_000.0})
+    weights = _leaps_actual_weights_by_key(lp, nb)
+    assert weights["IWM_LEAPS"] == 0.0
+    assert weights["VTI_LEAPS"] == pytest.approx(30_000.0 / 100_000.0, rel=1e-9)
+
+
+def test_leaps_actual_weights_by_key_zero_total_nav() -> None:
+    """Zero total_nav yields all-zero actual weights without division errors."""
+    lp = LivePortfolio(
+        as_of_date=_AS_OF,
+        holdings={},
+        target_weights={"VTI_LEAPS": 1.0},
+        leaps_contracts=(),
+        gtt_regime=None,
+    )
+    nb = compute_nav_breakdown(lp)
+    weights = _leaps_actual_weights_by_key(lp, nb)
+    assert weights == {"VTI_LEAPS": 0.0}
 
 
 # ---------------------------------------------------------------------------
@@ -752,7 +805,7 @@ def test_leaps_trim_as_trade_order_none_when_zero() -> None:
         leaps_contracts=(),
         gtt_regime=None,
     )
-    nb = compute_nav_breakdown(lp, leaps_mtm=40_000.0)
+    nb = compute_nav_breakdown(lp, leaps_mtm_by_ticker={"VTI": 40_000.0})
     view = compute_leaps_holdings_view(lp, nb)[0]
     assert leaps_trim_as_trade_order(view, 0.0) is None
 
@@ -766,7 +819,7 @@ def test_leaps_trim_as_trade_order_none_when_negative() -> None:
         leaps_contracts=(),
         gtt_regime=None,
     )
-    nb = compute_nav_breakdown(lp, leaps_mtm=40_000.0)
+    nb = compute_nav_breakdown(lp, leaps_mtm_by_ticker={"VTI": 40_000.0})
     view = compute_leaps_holdings_view(lp, nb)[0]
     assert leaps_trim_as_trade_order(view, -5.0) is None
 
@@ -780,7 +833,7 @@ def test_leaps_trim_as_trade_order_fields() -> None:
         leaps_contracts=(),
         gtt_regime=None,
     )
-    nb = compute_nav_breakdown(lp, leaps_mtm=60_000.0)
+    nb = compute_nav_breakdown(lp, leaps_mtm_by_ticker={"VTI": 60_000.0})
     view = compute_leaps_holdings_view(lp, nb)[0]
     order = leaps_trim_as_trade_order(view, 30_000.0)
     assert isinstance(order, TradeOrder)
@@ -815,7 +868,7 @@ def test_nav_breakdown_total_nav_identity_property(
     """Property I1: total_nav == base_nav + leaps_nav + defensive_sleeve + leaps_pool."""
     holdings = {"VTI": base_vti, "VXUS": base_vxus}
     lp = _make_portfolio(holdings, defensive_sleeve=defensive, leaps_pool=pool)
-    nb = compute_nav_breakdown(lp, leaps_mtm=leaps_mtm)
+    nb = compute_nav_breakdown(lp, leaps_mtm_by_ticker={"VTI": leaps_mtm})
     identity = nb.base_nav + nb.leaps_nav + nb.defensive_sleeve + nb.leaps_pool
     assert abs(nb.total_nav - identity) < 1e-9, f"I1 violated: {nb.total_nav} != {identity}"
 
@@ -861,7 +914,7 @@ def _make_lp_for_rebalance(
         leaps_contracts=(),
         gtt_regime=1,
     )
-    nb = compute_nav_breakdown(lp, leaps_mtm=leaps_val)
+    nb = compute_nav_breakdown(lp, leaps_mtm_by_ticker={"VTI": leaps_val})
     return lp, nb
 
 
@@ -874,7 +927,7 @@ def test_rebalance_plan_quarterly_no_trigger_when_not_rebal_date() -> None:
     assert plan.would_trigger is False
     assert plan.trigger_reason == "not_triggered"
     assert plan.trades == ()
-    assert plan.leaps_trim == 0.0
+    assert plan.leaps_trim == {}
 
 
 def test_rebalance_plan_quarterly_trigger_when_rebal_date() -> None:
@@ -970,21 +1023,21 @@ def test_rebalance_plan_leaps_trim_applies_when_quarterly_overweight() -> None:
         leaps_contracts=(),
         gtt_regime=1,
     )
-    nb = compute_nav_breakdown(lp, leaps_mtm=90_000.0)
+    nb = compute_nav_breakdown(lp, leaps_mtm_by_ticker={"VTI": 90_000.0})
     plan = compute_rebalance_plan(
         lp, nb, RebalanceRule.QUARTERLY, is_rebal_date=True, is_month_end=False
     )
     assert plan.would_trigger is True
-    assert plan.leaps_trim == pytest.approx(30_000.0, rel=1e-9)
+    assert plan.leaps_trim == {"VTI": pytest.approx(30_000.0, rel=1e-9)}
 
 
 def test_rebalance_plan_leaps_trim_zero_when_quarterly_no_leaps_target() -> None:
-    """leaps_trim is 0.0 for QUARTERLY when target_weights has no LEAPS key."""
+    """leaps_trim is empty for QUARTERLY when target_weights has no LEAPS key."""
     lp, nb = _make_lp_for_rebalance(vti_val=80_000.0, vxus_val=20_000.0, leaps_val=0.0)
     plan = compute_rebalance_plan(
         lp, nb, RebalanceRule.QUARTERLY, is_rebal_date=True, is_month_end=False
     )
-    assert plan.leaps_trim == 0.0
+    assert plan.leaps_trim == {}
 
 
 def test_rebalance_plan_not_triggered_always_has_empty_trades() -> None:
@@ -1405,7 +1458,7 @@ def test_gtt_status_is_frozen() -> None:
 
 
 def test_rebalance_plan_drift_leaps_trim_nonzero_when_overweight() -> None:
-    """leaps_trim > 0 when DRIFT fires and LEAPS sleeve exceeds target fraction."""
+    """leaps_trim["VTI"] > 0 when DRIFT fires and LEAPS sleeve exceeds target fraction."""
     # target: VTI=0.70, VTI_LEAPS=0.30 → target_leaps_fraction=0.30
     # holdings: VTI=100k, leaps_mtm=60k → total=160k, leaps_weight=60/160=0.375 → LEAPS overweight
     lp = LivePortfolio(
@@ -1415,19 +1468,19 @@ def test_rebalance_plan_drift_leaps_trim_nonzero_when_overweight() -> None:
         leaps_contracts=(),
         gtt_regime=1,
     )
-    nb = compute_nav_breakdown(lp, leaps_mtm=60_000.0)
+    nb = compute_nav_breakdown(lp, leaps_mtm_by_ticker={"VTI": 60_000.0})
     # total_nav=100k, leaps_nav=60k, target_leaps=30k → overweight by 30k
     # VTI actual=0.40, target=0.70 → rel drift ≈ -0.43 >> 10%
     plan = compute_rebalance_plan(
         lp, nb, RebalanceRule.DRIFT, is_rebal_date=False, is_month_end=True
     )
     assert plan.would_trigger is True
-    assert plan.leaps_trim > 0.0
-    assert abs(plan.leaps_trim - 30_000.0) < 1e-6
+    assert plan.leaps_trim["VTI"] > 0.0
+    assert abs(plan.leaps_trim["VTI"] - 30_000.0) < 1e-6
 
 
 def test_rebalance_plan_drift_leaps_trim_zero_when_not_overweight() -> None:
-    """leaps_trim == 0 when DRIFT fires but LEAPS sleeve is not overweight."""
+    """leaps_trim is empty when DRIFT fires but LEAPS sleeve is not overweight."""
     # VTI=20k, leaps=60k → total=80k; VTI_actual=0.25, target=0.40 → drift fires
     # target_leaps=80k*0.60=48k; leaps_nav=60k>48k → overweight (leaps_trim>0 here too)
     lp2 = LivePortfolio(
@@ -1437,12 +1490,12 @@ def test_rebalance_plan_drift_leaps_trim_zero_when_not_overweight() -> None:
         leaps_contracts=(),
         gtt_regime=1,
     )
-    nb2 = compute_nav_breakdown(lp2, leaps_mtm=60_000.0)
+    nb2 = compute_nav_breakdown(lp2, leaps_mtm_by_ticker={"VTI": 60_000.0})
     plan = compute_rebalance_plan(
         lp2, nb2, RebalanceRule.DRIFT, is_rebal_date=False, is_month_end=True
     )
-    assert isinstance(plan.leaps_trim, float)
-    assert plan.leaps_trim >= 0.0
+    assert isinstance(plan.leaps_trim, dict)
+    assert all(v >= 0.0 for v in plan.leaps_trim.values())
 
 
 # ---------------------------------------------------------------------------

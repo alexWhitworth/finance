@@ -523,7 +523,7 @@ class TestFormatHoldingsTable:
             leaps_contracts=(),
             gtt_regime=None,
         )
-        nb = compute_nav_breakdown(lp, leaps_mtm=40_000.0)
+        nb = compute_nav_breakdown(lp, leaps_mtm_by_ticker={"VTI": 40_000.0})
         views = (*compute_holdings_view(lp, nb), *compute_leaps_holdings_view(lp, nb))
         assert isinstance(format_holdings_table(views), str)
 
@@ -535,7 +535,7 @@ class TestFormatHoldingsTable:
             leaps_contracts=(),
             gtt_regime=None,
         )
-        nb = compute_nav_breakdown(lp, leaps_mtm=40_000.0)
+        nb = compute_nav_breakdown(lp, leaps_mtm_by_ticker={"VTI": 40_000.0})
         views = (*compute_holdings_view(lp, nb), *compute_leaps_holdings_view(lp, nb))
         table = format_holdings_table(views)
         assert "VXUS" in table
@@ -585,13 +585,13 @@ class TestFormatTradeOrdersTable:
             leaps_contracts=(),
             gtt_regime=None,
         )
-        nb = compute_nav_breakdown(lp, leaps_mtm=60_000.0)
+        nb = compute_nav_breakdown(lp, leaps_mtm_by_ticker={"VTI": 60_000.0})
         plan = compute_rebalance_plan(
             lp, nb, RebalanceRule.DRIFT, is_rebal_date=False, is_month_end=True
         )
-        assert plan.leaps_trim > 0.0
+        assert plan.leaps_trim["VTI"] > 0.0
         leaps_view = compute_leaps_holdings_view(lp, nb)[0]
-        leaps_trade = leaps_trim_as_trade_order(leaps_view, plan.leaps_trim)
+        leaps_trade = leaps_trim_as_trade_order(leaps_view, plan.leaps_trim["VTI"])
         assert leaps_trade is not None
         table = format_trade_orders_table((*plan.trades, leaps_trade))
         assert "VTI_LEAPS" in table
@@ -612,7 +612,7 @@ class TestFormatNavBreakdownTable:
             leaps_contracts=(),
             gtt_regime=None,
         )
-        nb = compute_nav_breakdown(lp, leaps_mtm=40_000.0)
+        nb = compute_nav_breakdown(lp, leaps_mtm_by_ticker={"VTI": 40_000.0})
         assert isinstance(format_nav_breakdown_table(nb), str)
 
     def test_one_row_per_field(self) -> None:
@@ -623,7 +623,7 @@ class TestFormatNavBreakdownTable:
             leaps_contracts=(),
             gtt_regime=None,
         )
-        nb = compute_nav_breakdown(lp, leaps_mtm=40_000.0)
+        nb = compute_nav_breakdown(lp, leaps_mtm_by_ticker={"VTI": 40_000.0})
         table = format_nav_breakdown_table(nb)
         lines = table.splitlines()
         assert len(lines) == 5
@@ -638,7 +638,7 @@ class TestFormatNavBreakdownTable:
             leaps_contracts=(),
             gtt_regime=None,
         )
-        nb = compute_nav_breakdown(lp, leaps_mtm=2_375_081.0)
+        nb = compute_nav_breakdown(lp, leaps_mtm_by_ticker={"VTI": 2_375_081.0})
         table = format_nav_breakdown_table(nb)
         assert "e+" not in table
         assert "$2,375,081.00" in table

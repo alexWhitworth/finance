@@ -279,7 +279,7 @@
       "description": "Add leaps_nav_by_ticker to NavBreakdown; change compute_nav_breakdown's input to leaps_mtm_by_ticker; extract _leaps_actual_weights_by_key and wire it into compute_leaps_holdings_view and compute_rebalance_plan's DRIFT branch; make leaps_trim per-ticker.",
       "phase": 2,
       "priority": 3,
-      "status": "planned",
+      "status": "pending_judge",
       "layer": "python",
       "dependencies": ["F-002"],
       "linked_schemas": ["DS-002", "DS-003"],
