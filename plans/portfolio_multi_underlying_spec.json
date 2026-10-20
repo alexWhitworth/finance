@@ -212,7 +212,7 @@
       "description": "Add ticker: str = \"VTI\" to LeapsContract and a matching kwarg to build_leaps_contract.",
       "phase": 0,
       "priority": 1,
-      "status": "planned",
+      "status": "pending_judge",
       "layer": "python",
       "dependencies": [],
       "linked_schemas": ["DS-001"],

@@ -93,18 +93,20 @@ class LeapsConfig:
 
 @dataclass(frozen=True)
 class LeapsContract:
-    """A single DITM VTI LEAPS call contract position.
+    """A single DITM LEAPS call contract position on one underlying.
 
     Attributes:
         purchase_date: Trade date.
         expiry_date: Option expiry (approximately 2 years from purchase_date).
         strike: Strike price; set at LEAPS_STRIKE_RATIO * spot_at_purchase.
-        spot_at_purchase: VTI price on purchase_date.
+        spot_at_purchase: Underlying price on purchase_date.
         premium_paid: Per-share Black-Scholes call price at purchase.
         notional: spot_at_purchase * CONTRACT_MULTIPLIER (100-share multiplier).
         n_contracts: Number of contracts; float to allow fractional allocation.
         account_type: Tax treatment applied at roll.
         dividend_yield: Dividend yield used when this contract was priced.
+        ticker: Underlying ticker (e.g. "VTI", "IWM", "GLD"). Defaults to
+            "VTI" so every existing construction site is unaffected.
 
     Notes:
         Total cost basis = premium_paid * CONTRACT_MULTIPLIER * n_contracts.
@@ -119,6 +121,7 @@ class LeapsContract:
     n_contracts: float
     account_type: AccountType
     dividend_yield: float = DEFAULT_DIVIDEND_YIELD
+    ticker: str = "VTI"
 
 
 @dataclass(frozen=True)
@@ -593,6 +596,7 @@ def build_leaps_contract(
     account_type: AccountType = AccountType.TAXABLE,
     risk_free_rate: float = DEFAULT_RISK_FREE_RATE,
     dividend_yield: float = DEFAULT_DIVIDEND_YIELD,
+    ticker: str = "VTI",
 ) -> LeapsContract:
     """Construct a LeapsContract for a position the caller already holds.
 
@@ -615,6 +619,7 @@ def build_leaps_contract(
         account_type: Tax treatment applied at future roll. Default TAXABLE.
         risk_free_rate: Continuously compounded risk-free rate. Default 0.0.
         dividend_yield: Continuously compounded dividend yield. Default 0.0.
+        ticker: Underlying ticker. Default "VTI".
 
     Returns:
         LeapsContract with all fields populated.
@@ -634,6 +639,7 @@ def build_leaps_contract(
         n_contracts=n_contracts,
         account_type=account_type,
         dividend_yield=dividend_yield,
+        ticker=ticker,
     )
 
 
