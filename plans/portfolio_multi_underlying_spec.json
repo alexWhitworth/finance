@@ -1,0 +1,551 @@
+{
+  "spec_version": "1.0.0",
+  "generated_at": "2026-10-20T00:00:00Z",
+  "project": {
+    "name": "finance-portfolio-multi-underlying-leaps",
+    "description": "Multi-underlying LEAPS support for the live portfolio management layer",
+    "overview": "Extension to plans/portfolio_management.md. LeapsContract carries no underlying ticker today (implicitly VTI-only), so LivePortfolio cannot represent DITM LEAPS held on multiple tickers (e.g. VTI + IWM + GLD) and compute_portfolio_greeks cannot route spot/IV correctly across contracts. Scope is the live-management layer only (LeapsContract, greeks.py, portfolio_manager.py, both example scripts, figures.py table formatting); run_backtest/_backtest_steps.py keeps its existing single-LEAPS-underlying ValueError guard untouched. Fixing ticker routing also surfaces and fixes a latent, previously-unreachable bug: compute_leaps_holdings_view and compute_rebalance_plan currently split the aggregate LEAPS NAV across multiple *_LEAPS target-weight keys proportionally to target weight rather than actual per-ticker exposure."
+  },
+  "tech_stack": {
+    "language": "python",
+    "python_version": ">=3.13",
+    "rust": {
+      "enabled": false,
+      "edition": null,
+      "pyo3_version": null,
+      "build_tool": null
+    },
+    "frameworks": ["pandas", "numpy", "scipy"],
+    "testing": {
+      "unit_framework": "pytest",
+      "property_based_framework": "hypothesis",
+      "mutation_framework": null,
+      "mutation_notes": "mutmut is not present in this repo's pyproject.toml dev dependencies; mutation testing is not part of the existing toolchain, so it is marked disabled at the feature level rather than assumed."
+    },
+    "key_libraries": ["pandas", "numpy", "scipy"],
+    "graphics": null
+  },
+  "build": {
+    "dev_install_cmd": "uv pip install -e .",
+    "requires_rust_toolchain": false
+  },
+  "data_schemas": [
+    {
+      "id": "DS-001",
+      "name": "LeapsContract",
+      "description": "A single DITM LEAPS call contract position. Gains a ticker field so a contract can be tagged with the underlying it is written on.",
+      "immutable": true,
+      "layer": "python",
+      "fields": [
+        { "name": "purchase_date", "required": true, "description": "Trade date." },
+        { "name": "expiry_date", "required": true, "description": "Option expiry." },
+        { "name": "strike", "required": true, "description": "Strike = LEAPS_STRIKE_RATIO * spot_at_purchase." },
+        { "name": "spot_at_purchase", "required": true, "description": "Underlying price at purchase." },
+        { "name": "premium_paid", "required": true, "description": "Per-share Black-Scholes price at purchase." },
+        { "name": "notional", "required": true, "description": "spot_at_purchase * CONTRACT_MULTIPLIER." },
+        { "name": "n_contracts", "required": true, "description": "Number of contracts (float for fractional allocation)." },
+        { "name": "account_type", "required": true, "description": "Tax treatment applied at roll." },
+        { "name": "dividend_yield", "required": false, "description": "Defaults to DEFAULT_DIVIDEND_YIELD." },
+        { "name": "ticker", "required": false, "description": "NEW. Underlying ticker (e.g. \"VTI\", \"IWM\", \"GLD\"). Defaults to \"VTI\" so every existing construction site is unaffected." }
+      ]
+    },
+    {
+      "id": "DS-002",
+      "name": "NavBreakdown",
+      "description": "NAV decomposition for a LivePortfolio. Gains a per-ticker LEAPS MTM breakdown.",
+      "immutable": true,
+      "layer": "python",
+      "fields": [
+        { "name": "base_nav", "required": true, "description": "Sum of base asset holdings." },
+        { "name": "leaps_nav", "required": true, "description": "sum(leaps_nav_by_ticker.values()). Unchanged meaning." },
+        { "name": "leaps_nav_by_ticker", "required": true, "description": "NEW. Mark-to-market value per LEAPS underlying, caller-supplied via compute_nav_breakdown's leaps_mtm_by_ticker." },
+        { "name": "defensive_sleeve", "required": true, "description": "GTT-swept capital." },
+        { "name": "leaps_pool", "required": true, "description": "Parked force-closed LEAPS proceeds." },
+        { "name": "total_nav", "required": true, "description": "base_nav + leaps_nav + defensive_sleeve + leaps_pool." }
+      ]
+    },
+    {
+      "id": "DS-003",
+      "name": "RebalancePlan",
+      "description": "Simulated rebalance outcome for a LivePortfolio. leaps_trim becomes per-underlying.",
+      "immutable": true,
+      "layer": "python",
+      "fields": [
+        { "name": "as_of_date", "required": true, "description": "Date of the simulation." },
+        { "name": "would_trigger", "required": true, "description": "Whether the rebalance rule fires." },
+        { "name": "trigger_reason", "required": true, "description": "quarterly_scheduled | drift_threshold | not_triggered." },
+        { "name": "trades", "required": true, "description": "Per-base-asset buy/sell instructions." },
+        { "name": "leaps_trim", "required": true, "description": "CHANGED: dict[str, float], was float. Per-underlying dollar overshoot keyed by bare ticker (not the \"<ticker>_LEAPS\" target_weights key). Empty dict when no sleeve is overweight." },
+        { "name": "holdings_view", "required": true, "description": "Per-asset drift breakdown before rebalance." }
+      ]
+    }
+  ],
+  "api_contracts": [
+    {
+      "id": "AC-001",
+      "name": "compute_portfolio_greeks",
+      "description": "Computes aggregate greeks across all active LEAPS contracts, routing each contract to its own underlying's spot/IV via contract.ticker.",
+      "layer": "python",
+      "pure": true,
+      "inputs": [
+        { "name": "portfolio", "type": "LivePortfolio" },
+        { "name": "spot", "type": "dict[str, float]", "note": "CHANGED: was float" },
+        { "name": "iv", "type": "dict[str, float]", "note": "CHANGED: was float" },
+        { "name": "risk_free_rate", "type": "float", "default": 0.0 }
+      ],
+      "outputs": [{ "name": "greeks", "type": "PortfolioGreeks" }],
+      "raises": ["ValueError: one or more live contracts' tickers missing from spot or iv; message lists every missing ticker, not just the first"]
+    },
+    {
+      "id": "AC-002",
+      "name": "leaps_mtm_by_ticker",
+      "description": "NEW. Sums position MTM (price * n_contracts * CONTRACT_MULTIPLIER * leaps_scale) grouped by contract.ticker.",
+      "layer": "python",
+      "pure": true,
+      "inputs": [{ "name": "greeks", "type": "PortfolioGreeks" }],
+      "outputs": [{ "name": "mtm_by_ticker", "type": "dict[str, float]" }],
+      "raises": []
+    },
+    {
+      "id": "AC-003",
+      "name": "compute_nav_breakdown",
+      "description": "Decomposes LivePortfolio NAV into base, LEAPS (now per-ticker), defensive, and pool components.",
+      "layer": "python",
+      "pure": true,
+      "inputs": [
+        { "name": "portfolio", "type": "LivePortfolio" },
+        { "name": "leaps_mtm_by_ticker", "type": "dict[str, float] | None", "default": null, "note": "CHANGED: was leaps_mtm: float = 0.0. None sentinel avoids a mutable default; normalized to {} inside." }
+      ],
+      "outputs": [{ "name": "nav", "type": "NavBreakdown" }],
+      "raises": []
+    },
+    {
+      "id": "AC-004",
+      "name": "compute_leaps_holdings_view",
+      "description": "Computes weight-drift HoldingView rows for each *_LEAPS target_weights key using actual per-ticker exposure instead of target-weight-proportional split.",
+      "layer": "python",
+      "pure": true,
+      "inputs": [
+        { "name": "portfolio", "type": "LivePortfolio" },
+        { "name": "nav", "type": "NavBreakdown" }
+      ],
+      "outputs": [{ "name": "views", "type": "tuple[HoldingView, ...]" }],
+      "raises": []
+    },
+    {
+      "id": "AC-005",
+      "name": "compute_rebalance_plan",
+      "description": "Simulates rebalance trades. DRIFT branch and leaps_trim now use actual per-ticker LEAPS exposure instead of target-weight-proportional split.",
+      "layer": "python",
+      "pure": true,
+      "inputs": [
+        { "name": "portfolio", "type": "LivePortfolio" },
+        { "name": "nav", "type": "NavBreakdown" },
+        { "name": "rebalance_rule", "type": "RebalanceRule" },
+        { "name": "is_rebal_date", "type": "bool" },
+        { "name": "is_month_end", "type": "bool" }
+      ],
+      "outputs": [{ "name": "plan", "type": "RebalancePlan" }],
+      "raises": []
+    },
+    {
+      "id": "AC-006",
+      "name": "leaps_trims_as_trade_orders",
+      "description": "RENAMED from leaps_trim_as_trade_order (singular). Represents a RebalancePlan's per-ticker leaps_trim as TradeOrders for display, one per overweight sleeve.",
+      "layer": "python",
+      "pure": true,
+      "inputs": [
+        { "name": "leaps_views", "type": "tuple[HoldingView, ...]" },
+        { "name": "leaps_trim", "type": "dict[str, float]" }
+      ],
+      "outputs": [{ "name": "orders", "type": "tuple[TradeOrder, ...]" }],
+      "raises": []
+    },
+    {
+      "id": "AC-007",
+      "name": "_leaps_actual_weights_by_key",
+      "description": "NEW private helper, shared by compute_leaps_holdings_view and compute_rebalance_plan's DRIFT branch. Maps each \"<ticker>_LEAPS\" target_weights key to nav.leaps_nav_by_ticker.get(ticker, 0.0) / total_nav.",
+      "layer": "python",
+      "pure": true,
+      "inputs": [
+        { "name": "portfolio", "type": "LivePortfolio" },
+        { "name": "nav", "type": "NavBreakdown" }
+      ],
+      "outputs": [{ "name": "weights_by_key", "type": "dict[str, float]" }],
+      "raises": []
+    },
+    {
+      "id": "AC-008",
+      "name": "build_leaps_contract",
+      "description": "Constructs a LeapsContract for a position the caller already holds. Gains a ticker kwarg.",
+      "layer": "python",
+      "pure": true,
+      "inputs": [
+        { "name": "purchase_date", "type": "pd.Timestamp" },
+        { "name": "expiry_date", "type": "pd.Timestamp" },
+        { "name": "spot_at_purchase", "type": "float" },
+        { "name": "n_contracts", "type": "float" },
+        { "name": "iv", "type": "float", "default": "DEFAULT_IV" },
+        { "name": "account_type", "type": "AccountType", "default": "AccountType.TAXABLE" },
+        { "name": "risk_free_rate", "type": "float", "default": "DEFAULT_RISK_FREE_RATE" },
+        { "name": "dividend_yield", "type": "float", "default": "DEFAULT_DIVIDEND_YIELD" },
+        { "name": "ticker", "type": "str", "default": "VTI", "note": "NEW" }
+      ],
+      "outputs": [{ "name": "contract", "type": "LeapsContract" }],
+      "raises": []
+    },
+    {
+      "id": "AC-009",
+      "name": "format_contract_greeks_table",
+      "description": "Formats per-contract LEAPS greeks as a human-readable table string. Gains a ticker column.",
+      "layer": "python",
+      "pure": true,
+      "inputs": [{ "name": "greeks", "type": "PortfolioGreeks" }],
+      "outputs": [{ "name": "table", "type": "str" }],
+      "raises": []
+    }
+  ],
+  "features": [
+    {
+      "id": "F-001",
+      "name": "Tag LeapsContract with ticker",
+      "description": "Add ticker: str = \"VTI\" to LeapsContract and a matching kwarg to build_leaps_contract.",
+      "phase": 0,
+      "priority": 1,
+      "status": "planned",
+      "layer": "python",
+      "dependencies": [],
+      "linked_schemas": ["DS-001"],
+      "linked_apis": ["AC-008"],
+      "invariants": {
+        "temporal_bounds": null,
+        "accounting_oracle": "Default-value equality: ticker == 'VTI' when the kwarg is omitted (M8)",
+        "composition_scope": "ATOMIC",
+        "plausibility_range": null,
+        "realism_requirements": null
+      },
+      "performance_requirements": { "complexity_budget": "O(1)" },
+      "property_based_testing": { "enabled": false, "rationale_if_disabled": "Simple default-value field addition; no state invariant to generate over." },
+      "mutation_testing": { "enabled": true },
+      "acceptance_criteria": [
+        "LeapsContract() constructed without the ticker kwarg has ticker == 'VTI' (M8)",
+        "build_leaps_contract() constructed without the ticker kwarg has ticker == 'VTI' (M8)",
+        "Full existing suite (uv run pytest) passes unchanged with no other modifications"
+      ],
+      "test_requirements": [
+        { "type": "unit", "file": "tests/test_leverage.py", "description": "ticker default-value test on both LeapsContract and build_leaps_contract" }
+      ],
+      "edge_cases": ["Omitting ticker on both factories defaults consistently to 'VTI'"],
+      "clarification_needed": false
+    },
+    {
+      "id": "F-002",
+      "name": "Route portfolio greeks by ticker",
+      "description": "compute_portfolio_greeks takes spot/iv as dict[str, float] and routes each contract by contract.ticker; add leaps_mtm_by_ticker helper.",
+      "phase": 1,
+      "priority": 2,
+      "status": "planned",
+      "layer": "python",
+      "dependencies": ["F-001"],
+      "linked_schemas": [],
+      "linked_apis": ["AC-001", "AC-002"],
+      "invariants": {
+        "temporal_bounds": null,
+        "accounting_oracle": "Contract c is priced with spot[c.ticker]/iv[c.ticker] only, never another ticker's value (M3)",
+        "composition_scope": "ATOMIC",
+        "plausibility_range": null,
+        "realism_requirements": null
+      },
+      "performance_requirements": { "complexity_budget": "O(n) over live contracts" },
+      "property_based_testing": { "enabled": true, "framework": "hypothesis", "strategy": "Generate N contracts across M distinct tickers with random spot/iv maps; assert each ContractGreeks.spot/.iv equals the map value for its own contract.ticker." },
+      "mutation_testing": { "enabled": true },
+      "acceptance_criteria": [
+        "2-contract, 2-ticker portfolio: each ContractGreeks.spot/.iv equals the map value for that contract's own ticker (M3)",
+        "compute_portfolio_greeks raises ValueError listing every missing ticker at once, not just the first (M2)",
+        "leaps_mtm_by_ticker's per-ticker sum matches a manual per-ticker sum within 1e-9"
+      ],
+      "test_requirements": [
+        { "type": "unit", "file": "tests/test_greeks.py", "description": "multi-ticker routing test and missing-ticker ValueError test" }
+      ],
+      "edge_cases": [
+        "Same ticker shared across multiple contracts sums correctly in leaps_mtm_by_ticker",
+        "spot/iv dicts containing extra, unused tickers are harmless"
+      ],
+      "clarification_needed": false
+    },
+    {
+      "id": "F-003",
+      "name": "Fix per-ticker NAV and drift (latent bug fix)",
+      "description": "Add leaps_nav_by_ticker to NavBreakdown; change compute_nav_breakdown's input to leaps_mtm_by_ticker; extract _leaps_actual_weights_by_key and wire it into compute_leaps_holdings_view and compute_rebalance_plan's DRIFT branch; make leaps_trim per-ticker.",
+      "phase": 2,
+      "priority": 3,
+      "status": "planned",
+      "layer": "python",
+      "dependencies": ["F-002"],
+      "linked_schemas": ["DS-002", "DS-003"],
+      "linked_apis": ["AC-003", "AC-004", "AC-005", "AC-007"],
+      "invariants": {
+        "temporal_bounds": null,
+        "accounting_oracle": "leaps_nav == sum(leaps_nav_by_ticker.values()) within 1e-9 (M1)",
+        "composition_scope": "INTEGRATION",
+        "plausibility_range": null,
+        "realism_requirements": "Fixture must include two LEAPS sleeves with divergently realized MTM (e.g. one +30%, one flat) under equal target weights to exercise the bug fix (M4)."
+      },
+      "performance_requirements": { "complexity_budget": "O(k) over *_LEAPS target_weights keys" },
+      "property_based_testing": { "enabled": true, "framework": "hypothesis", "strategy": "Generate random leaps_nav_by_ticker and target_weights combinations; assert actual_weight derived from _leaps_actual_weights_by_key always matches dollar exposure, never the old target-proportional split." },
+      "mutation_testing": { "enabled": true },
+      "acceptance_criteria": [
+        "NavBreakdown.leaps_nav == sum(leaps_nav_by_ticker.values()) within 1e-9 (M1)",
+        "Two-sleeve fixture with divergent MTM (VTI +30%, IWM flat, equal target weights) yields unequal actual_weight in compute_leaps_holdings_view, not the old target-proportional split (M4)",
+        "compute_rebalance_plan.leaps_trim contains only tickers whose sleeve is actually overweight (actual > target * total_nav); absent (not zero-valued) otherwise (M5)"
+      ],
+      "test_requirements": [
+        { "type": "unit", "file": "tests/test_portfolio_manager.py", "description": "_leaps_actual_weights_by_key unit test" },
+        { "type": "integration", "file": "tests/test_portfolio_manager_multi_underlying_integration.py", "description": "End-to-end NAV -> holdings_view -> rebalance_plan regression test covering M1, M4, M5 across two LEAPS sleeves with divergent MTM. Required because M4 is a cross-function regression invariant; cannot be satisfied by atomic unit tests alone." }
+      ],
+      "edge_cases": [
+        "target_weights has a *_LEAPS key with no matching tagged contract: shows 100% underweight via .get(ticker, 0.0), not an error",
+        "A tagged contract has no matching *_LEAPS target key: MTM counted in total_nav/leaps_nav_by_ticker but omitted from the drift table",
+        "Mutable default on leaps_mtm_by_ticker avoided via a None sentinel, normalized to {} inside the function"
+      ],
+      "clarification_needed": false
+    },
+    {
+      "id": "F-004",
+      "name": "Rename and pluralize the trim helper",
+      "description": "Rename leaps_trim_as_trade_order to leaps_trims_as_trade_orders; change signature to take the full leaps_views tuple and the leaps_trim dict, returning one TradeOrder per overweight sleeve.",
+      "phase": 3,
+      "priority": 4,
+      "status": "planned",
+      "layer": "python",
+      "dependencies": ["F-003"],
+      "linked_schemas": ["DS-003"],
+      "linked_apis": ["AC-006"],
+      "invariants": {
+        "temporal_bounds": null,
+        "accounting_oracle": "len(result) == len(leaps_trim) (M6)",
+        "composition_scope": "ATOMIC",
+        "plausibility_range": null,
+        "realism_requirements": null
+      },
+      "performance_requirements": { "complexity_budget": "O(k) over leaps_trim entries" },
+      "property_based_testing": { "enabled": false, "rationale_if_disabled": "Thin mapping function over a dict; a single parametrized count-check covers the state space adequately." },
+      "mutation_testing": { "enabled": true },
+      "acceptance_criteria": [
+        "Two overweight sleeves in leaps_trim produce exactly two TradeOrder entries (M6)",
+        "An empty leaps_trim dict produces an empty tuple"
+      ],
+      "test_requirements": [
+        { "type": "unit", "file": "tests/test_portfolio_manager.py", "description": "leaps_trims_as_trade_orders count and empty-input tests" }
+      ],
+      "edge_cases": ["Dict iteration order determines display order only; not correctness-relevant"],
+      "clarification_needed": false
+    },
+    {
+      "id": "F-005",
+      "name": "Display ticker column",
+      "description": "Add a ticker column to format_contract_greeks_table.",
+      "phase": 4,
+      "priority": 5,
+      "status": "planned",
+      "layer": "python",
+      "dependencies": ["F-002"],
+      "linked_schemas": ["DS-001"],
+      "linked_apis": ["AC-009"],
+      "invariants": {
+        "temporal_bounds": null,
+        "accounting_oracle": "Each formatted row's ticker value equals cg.contract.ticker",
+        "composition_scope": "ATOMIC",
+        "plausibility_range": null,
+        "realism_requirements": null
+      },
+      "performance_requirements": { "complexity_budget": "O(n) over greeks.contracts" },
+      "property_based_testing": { "enabled": false, "rationale_if_disabled": "Pure string-formatting function; a fixed-case table test covers the behavior." },
+      "mutation_testing": { "enabled": true },
+      "acceptance_criteria": [
+        "Each formatted row's ticker column equals cg.contract.ticker for every contract in greeks.contracts",
+        "Table remains well-formed (no column misalignment) for a 3-ticker portfolio"
+      ],
+      "test_requirements": [
+        { "type": "unit", "file": "tests/test_figures.py", "description": "ticker column presence and value test" }
+      ],
+      "edge_cases": ["Empty greeks.contracts still returns the existing 'No active LEAPS contracts.' string"],
+      "clarification_needed": false
+    },
+    {
+      "id": "F-006",
+      "name": "Update manual_leaps_review.py example",
+      "description": "Multi-underlying demo: fetch price/vol data for VTI + IWM + GLD, tag contracts per ticker, add one *_LEAPS target_weights key per underlying, use leaps_mtm_by_ticker and leaps_trims_as_trade_orders.",
+      "phase": 5,
+      "priority": 6,
+      "status": "planned",
+      "layer": "python",
+      "dependencies": ["F-001", "F-002", "F-003", "F-004", "F-005"],
+      "linked_schemas": ["DS-001", "DS-002", "DS-003"],
+      "linked_apis": ["AC-001", "AC-002", "AC-003", "AC-004", "AC-005", "AC-006", "AC-008"],
+      "invariants": {
+        "temporal_bounds": null,
+        "accounting_oracle": "Script runs end-to-end without raising; printed drift table reflects all three underlyings",
+        "composition_scope": "INTEGRATION",
+        "plausibility_range": null,
+        "realism_requirements": "Must fetch real multi-ticker price/vol data (VTI, IWM, GLD) over a multi-year window, not synthetic mocks, to match the original plan's realism gate."
+      },
+      "performance_requirements": {},
+      "property_based_testing": { "enabled": false, "rationale_if_disabled": "End-to-end example script with live network I/O; not a pure function." },
+      "mutation_testing": { "enabled": false, "rationale_if_disabled": "I/O boundary (yfinance network fetch) and example script, not library implementation code." },
+      "acceptance_criteria": [
+        "uv run examples/portfolio_manage/manual_leaps_review.py exits 0 with no unhandled exception",
+        "Printed holdings-drift table contains one row per *_LEAPS target_weights key across all three underlyings"
+      ],
+      "test_requirements": [
+        { "type": "integration", "file": "tests/test_examples_smoke.py", "description": "Smoke-run manual_leaps_review.py end-to-end and capture output, or an equivalent manual verification per the plan's 'Done when' criterion." }
+      ],
+      "edge_cases": ["Network/data-fetch failure for one of the three underlyings"],
+      "clarification_needed": false
+    },
+    {
+      "id": "F-007",
+      "name": "Update backtest_bridge.py example",
+      "description": "Wrap existing scalar leaps_mtm/spot/iv into single-key dicts at both call sites; backtest stays VTI-only.",
+      "phase": 5,
+      "priority": 7,
+      "status": "planned",
+      "layer": "python",
+      "dependencies": ["F-002", "F-003"],
+      "linked_schemas": [],
+      "linked_apis": ["AC-001", "AC-003"],
+      "invariants": {
+        "temporal_bounds": null,
+        "accounting_oracle": "Script runs end-to-end with behavior unchanged (VTI-only); single-key dict wrapping is a no-op on output values",
+        "composition_scope": "INTEGRATION",
+        "plausibility_range": null,
+        "realism_requirements": null
+      },
+      "performance_requirements": {},
+      "property_based_testing": { "enabled": false, "rationale_if_disabled": "End-to-end example script, not a pure function." },
+      "mutation_testing": { "enabled": false, "rationale_if_disabled": "I/O boundary and example script, not library implementation code." },
+      "acceptance_criteria": [
+        "uv run examples/portfolio_manage/backtest_bridge.py exits 0 with no unhandled exception",
+        "NAV and greeks output values are numerically identical to pre-change behavior within 1e-9"
+      ],
+      "test_requirements": [
+        { "type": "integration", "file": "tests/test_examples_smoke.py", "description": "Smoke-run backtest_bridge.py end-to-end." }
+      ],
+      "edge_cases": [],
+      "clarification_needed": false
+    },
+    {
+      "id": "F-008",
+      "name": "Tests, docs, and type-check closure",
+      "description": "Update tests/test_greeks.py, tests/test_portfolio_manager.py, tests/test_figures.py for new signatures; docstrings on all changed signatures; confirm the original plan's I1-I20 invariants and the backtest's single-underlying guard are untouched.",
+      "phase": 6,
+      "priority": 8,
+      "status": "planned",
+      "layer": "python",
+      "dependencies": ["F-001", "F-002", "F-003", "F-004", "F-005", "F-006", "F-007"],
+      "linked_schemas": ["DS-001", "DS-002", "DS-003"],
+      "linked_apis": ["AC-001", "AC-002", "AC-003", "AC-004", "AC-005", "AC-006", "AC-007", "AC-008", "AC-009"],
+      "invariants": {
+        "temporal_bounds": null,
+        "accounting_oracle": "Full existing suite, including I1-I20 from the original plan, passes unchanged; _build_context still raises ValueError for >1 LEAPS underlying (M7)",
+        "composition_scope": "INTEGRATION",
+        "plausibility_range": null,
+        "realism_requirements": null
+      },
+      "performance_requirements": {},
+      "property_based_testing": { "enabled": false, "rationale_if_disabled": "Project-wide tooling/regression gate, not a testable pure function itself." },
+      "mutation_testing": { "enabled": false, "rationale_if_disabled": "Closure phase aggregating prior phases' mutation results; no new implementation code of its own." },
+      "acceptance_criteria": [
+        "uv run mypy src/ strict clean with zero errors",
+        "uv run ruff check . clean with zero violations",
+        "Full uv run pytest suite passes, including all I1-I20 invariant tests from the original plan unmodified (M7)"
+      ],
+      "test_requirements": [
+        { "type": "regression", "file": "tests/", "description": "Full suite run confirming no regression in the original plan's invariant tests and no change to the backtest's single-underlying guard." }
+      ],
+      "edge_cases": [],
+      "clarification_needed": false
+    }
+  ],
+  "risks": [
+    {
+      "id": "R-001",
+      "description": "target_weights's *_LEAPS keys and LeapsContract.ticker tags are not cross-validated; a typo or forgotten tag silently shows a sleeve as 100% underweight rather than erroring.",
+      "severity": "medium",
+      "mitigation": "_leaps_actual_weights_by_key uses .get(ticker, 0.0), matching existing behavior for any untracked target_weights key. Documented in plan Known Assumption 1 / Edge Cases.",
+      "linked_features": ["F-003"]
+    },
+    {
+      "id": "R-002",
+      "description": "Backtest-bridged contracts (via as_live_portfolio) keep ticker='VTI' unconditionally; a future single-underlying backtest on a non-VTI ticker (e.g. 'IWM_LEAPS' alone, still valid since the engine only forbids >1) would mislabel its bridged contracts.",
+      "severity": "low",
+      "mitigation": "Deferred per plan Known Assumption 3 — no current config exercises a non-VTI single underlying. Fixing requires threading the real ticker through create_leaps_contract, roll_contract, and run_leaps_simulation call sites; flagged, not implemented in this spec.",
+      "linked_features": ["F-001"]
+    },
+    {
+      "id": "R-003",
+      "description": "Mutable default argument footgun if leaps_mtm_by_ticker is implemented as dict[str, float] = {} instead of a None sentinel.",
+      "severity": "medium",
+      "mitigation": "Use leaps_mtm_by_ticker: dict[str, float] | None = None; normalize to {} inside the function body. Never a mutable default argument.",
+      "linked_features": ["F-003"]
+    },
+    {
+      "id": "R-004",
+      "description": "Adding a ticker field to LeapsContract could be mistaken by a future contributor as implicit license to also lift the backtest engine's single-LEAPS-underlying constraint.",
+      "severity": "medium",
+      "mitigation": "_build_context's ValueError guard for >1 LEAPS underlying in target_weights is explicitly out of scope and must remain; M7 regression test enforces it stays untouched.",
+      "linked_features": ["F-008"]
+    },
+    {
+      "id": "R-005",
+      "description": "leaps_trim is keyed by bare ticker (e.g. 'IWM'), not the '<ticker>_LEAPS' key used by HoldingView/TradeOrder, which can confuse a caller who indexes it directly instead of going through leaps_trims_as_trade_orders.",
+      "severity": "low",
+      "mitigation": "leaps_trims_as_trade_orders encapsulates the key-naming translation. Documented in plan Known Assumption 2 for any caller bypassing that helper.",
+      "linked_features": ["F-004"]
+    }
+  ],
+  "implementation_phases": [
+    {
+      "phase": 0,
+      "name": "Tag the contract",
+      "description": "Add ticker: str = \"VTI\" to LeapsContract and build_leaps_contract.",
+      "feature_ids": ["F-001"]
+    },
+    {
+      "phase": 1,
+      "name": "Route greeks by ticker",
+      "description": "compute_portfolio_greeks takes spot/iv dicts routed by contract.ticker; add leaps_mtm_by_ticker.",
+      "feature_ids": ["F-002"]
+    },
+    {
+      "phase": 2,
+      "name": "Fix per-ticker NAV and drift",
+      "description": "Add leaps_nav_by_ticker; wire actual per-ticker exposure into holdings view and rebalance plan; per-ticker leaps_trim.",
+      "feature_ids": ["F-003"]
+    },
+    {
+      "phase": 3,
+      "name": "Rename the trim helper",
+      "description": "leaps_trim_as_trade_order -> leaps_trims_as_trade_orders, dict-based, multi-order return.",
+      "feature_ids": ["F-004"]
+    },
+    {
+      "phase": 4,
+      "name": "Display",
+      "description": "Add ticker column to format_contract_greeks_table.",
+      "feature_ids": ["F-005"]
+    },
+    {
+      "phase": 5,
+      "name": "Update examples",
+      "description": "Multi-underlying demo in manual_leaps_review.py; dict-wrapping call-site updates in backtest_bridge.py.",
+      "feature_ids": ["F-006", "F-007"]
+    },
+    {
+      "phase": 6,
+      "name": "Tests and docs",
+      "description": "Update unit tests for new signatures; docstrings; mypy/ruff clean; full-suite non-regression check.",
+      "feature_ids": ["F-008"]
+    }
+  ]
+}
