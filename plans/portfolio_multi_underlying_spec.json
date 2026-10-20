@@ -378,7 +378,7 @@
       "description": "Multi-underlying demo: fetch price/vol data for VTI + IWM + GLD, tag contracts per ticker, add one *_LEAPS target_weights key per underlying, use leaps_mtm_by_ticker and leaps_trims_as_trade_orders.",
       "phase": 5,
       "priority": 6,
-      "status": "planned",
+      "status": "pending_judge",
       "layer": "python",
       "dependencies": ["F-001", "F-002", "F-003", "F-004", "F-005"],
       "linked_schemas": ["DS-001", "DS-002", "DS-003"],
