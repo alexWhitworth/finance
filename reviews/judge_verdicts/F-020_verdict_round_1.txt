@@ -1,0 +1,125 @@
+VERDICT: CONDITIONAL_PASS
+
+================================================================================
+SUMMARY
+================================================================================
+
+F-020 (Bug 3 fix: _apply_contribution drops leaps_monthly on Long month-ends) is
+substantially correct — it fixes the bug, passes all applicable tests, and satisfies
+the I2 invariant. However, the implementation DEVIATES from the spec's stated
+acceptance criteria and accounting oracle on a single but literal point: on Long
+month-end days the Actor credits leaps_VALUE instead of leaps_POOL.
+
+The deviation is architecturally defensible (leaps_value is in the NAV formula, so
+I2 is satisfied), but it contradicts: (1) the text of AC-1, (2) the text of AC-2
+label/intent, (3) the F-020 accounting_oracle field, (4) the "single-line change"
+description in F-020, and (5) the edge case 2 text. One test that should cover edge
+case 2 (gtt_active=False + use_leaps=True contribution path) is entirely absent.
+
+================================================================================
+SCORECARDS
+================================================================================
+
+Acceptance Criteria: 3/4 MET (AC-1 DEVIANT, AC-2 MET, AC-3 MET, AC-4 DEFERRED)
+Test Suite: 581 passed / 582 total (1 pre-existing failure: F-023 unrelated to F-020)
+Coverage: 97.66% total (full suite, ignoring test_gtt_fetch.py)
+Mutation Testing: SKIPPED (not required at verdict stage per spec)
+
+AC-1: DEVIANT (but functionally equivalent — see FINDINGS)
+  Spec text: "leaps_pool_out == leaps_pool_in + leaps_monthly within 1e-9 (Long month-end)"
+  Implementation: leaps_value += leaps_monthly on Long days (not leaps_pool)
+  Test asserts: result.leaps_value - (state.leaps_value + 100.0) < 1e-9  [PASSES]
+  The test verifies the implementation's behavior, NOT the spec's stated outcome.
+
+AC-2: MET
+  Spec text: "leaps_pool_out == leaps_pool_in + leaps_monthly within 1e-9 (defensive month-end)"
+  Implementation: new_pool += ctx.leaps_monthly when regime_t == 0 and use_leaps. CORRECT.
+  Test: test_contribution_month_end_defensive_leaps_pool_receives_monthly asserts
+  result.leaps_pool == 50.0 + 100.0. PASSES.
+
+AC-3: MET
+  Spec text: "use_leaps=False: leaps_pool unchanged"
+  Test: test_contribution_use_leaps_false_pool_unchanged. PASSES.
+  Correctly short-circuits on `if ctx.use_leaps`.
+
+AC-4: DEFERRED (as expected — depends on F-021/F-022 real-corpus fixture)
+
+================================================================================
+FINDINGS
+================================================================================
+
+[ADVISORY] src/finance/_backtest_steps.py:811-815 — The spec F-020 description
+says "add leaps_monthly to leaps_pool unconditionally" and the acceptance criteria
+say "leaps_pool_out == leaps_pool_in + leaps_monthly" for Long month-ends. The
+implementation instead branches: regime_t==0 -> leaps_pool, regime_t==1 ->
+leaps_value. This is a LITERAL spec deviation on AC-1. The NAV I2 invariant is
+still satisfied because leaps_value is included in total_nav (same formula). The
+Actor's docstring comment ("On Long days: credit leaps_value directly — contracts
+already purchased by run_leaps_simulation; this makes NAV reflect the cash inflow")
+provides a coherent economic rationale for the deviation.
+
+Architectural consequence: by routing Long-day LEAPS contribution to leaps_value
+instead of leaps_pool, the Actor avoids a potential double-count at re-entry
+(_apply_gtt_reentry uses leaps_pool in its rebalance total). If leaps_monthly were
+added to leaps_pool on Long days, it would be swept into the rebalance total on
+re-entry — that may or may not be the correct economic treatment depending on spec
+intent. The Actor's choice is at least internally consistent with how re-entry math
+works. This merits confirmation from the spec author before being marked a hard
+failure.
+
+[ADVISORY] tests/test_backtest_steps.py:1239-1287 — Edge case 2 ("GTT inactive
+(gtt_active=False) but use_leaps=True: leaps_pool still receives leaps_monthly on
+month-end") is NOT TESTED. The spec explicitly calls this out in the edge_cases
+array. The implementation routes no-GTT Long days (regime_t=1) to leaps_value, so
+if the spec intent is leaps_pool, this edge case is both untested AND silently
+violated. A test for gtt_active=False + use_leaps=True + regime_t=1 contribution
+would immediately expose the deviation.
+
+[ADVISORY] tests/test_backtest_integration.py:402 — The F-018 Scenario B test for
+GTT+LEAPS deliberately uses a WEAKER bound ("implied delta > 0 on month-ends")
+instead of the exact I2 oracle. This is documented in the test ("weaker but still
+tight bound") but means it does NOT directly verify that the exact leaps_monthly
+dollar amount flows through on Long month-ends. A tighter test asserting
+implied_delta == monthly_contribution within 1e-6 on Long month-ends would
+provide definitive verification of AC-1/AC-4.
+
+[ADVISORY] tests/test_backtest_steps.py:1253 — The AC-1 test name says
+"credits_leaps_value" but the spec says leaps_POOL. The test name accurately
+describes the implementation but the test name misaligns with the spec language.
+This is a traceability gap.
+
+================================================================================
+REGRESSION CHECK
+================================================================================
+
+test_all_long_gtt_leaps_equals_no_gtt_leaps: PASSED (pre-F-020 regression held)
+test_reentry_creation_iv_matches_mtm_iv_no_gap: FAILED (pre-existing F-023 failure,
+  unrelated to F-020 — this test was already failing before this feature)
+
+================================================================================
+REQUIRED ACTIONS FOR CONDITIONAL_PASS TO BECOME PASS
+================================================================================
+
+1. CONFIRM INTENT: Spec author must confirm whether AC-1 should use leaps_value
+   (Actor's implementation) or leaps_pool (spec's literal text) on Long month-ends.
+   If leaps_value is the correct target, update F-020 acceptance_criteria[0] and
+   accounting_oracle text in gtt_debug_spec.json to reflect this. If leaps_pool is
+   truly required, the Actor must revert to the spec's "single-line change" approach
+   (unconditionally add to leaps_pool) and verify re-entry accounting doesn't break.
+
+2. ADD EDGE CASE 2 TEST: Add a test for gtt_active=False + use_leaps=True +
+   regime_t=1 (no-GTT but LEAPS active, Long day, month-end). Assert the correct
+   target field (either leaps_pool or leaps_value per spec intent confirmation above).
+
+3. ADVISORY (not blocking): Add exact I2 test for GTT+LEAPS Long month-ends that
+   verifies implied_delta == monthly_contribution (not just > 0). This closes the
+   gap in F-018 Scenario B coverage noted above.
+
+================================================================================
+BUILD AND INFRASTRUCTURE
+================================================================================
+
+Build: uv pip install -e . PASSES (finance==1.0.9 installed without error)
+Coverage: 97.66% total (well above 80% floor)
+The one failing test (test_reentry_creation_iv_matches_mtm_iv_no_gap) predates
+F-020 and is scoped to F-023. It does not affect this verdict.

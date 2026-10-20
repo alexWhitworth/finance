@@ -1,0 +1,95 @@
+================================================================================
+JUDGE VERDICT — F-013: compute_gtt_status (I/O boundary)
+Round: 1  |  Date: 2026-08-12
+================================================================================
+
+VERDICT: CONDITIONAL_PASS
+
+--------------------------------------------------------------------------------
+SCORECARD
+--------------------------------------------------------------------------------
+Acceptance Criteria:
+  [MET]    GttStatus.regime ∈ {0, 1} — verified via mock smoke test.
+  [MET]    GttStatus.price_vs_sma200 ∈ {'above', 'below', 'warming_up'} —
+           verified via mock smoke test.
+  [MET]    warming_up path exercised when equity_prices has < 200 rows.
+  [MET]    GttStatus is a frozen dataclass.
+  [MET]    All field types are correct (Timestamp, int, float, str, GttSignalData).
+  [MET]    pragma: no cover placed on function definition line — coverage
+           correctly excludes all lines inside function body.
+  [MET]    Module-level `import yfinance as yf` enables patch-based mocking.
+
+Test Coverage: Function body excluded from coverage (pragma: no cover). 5 smoke
+               tests with mocked fetch_gtt_signal_data and yf.download.
+Mutation testing: skipped per spec (I/O boundary, pragma: no cover) and per
+                  user instruction (light review).
+Python static analysis: mypy strict PASS; ruff I001/E501/C420 in same file
+                        (see F-011 verdict A1–A3).
+
+--------------------------------------------------------------------------------
+FINDINGS
+--------------------------------------------------------------------------------
+
+A1  [ADVISORY]  Double VTI download when equity_prices=None.
+
+    File: src/finance/portfolio_manager.py, lines 492–496 and 519–522.
+
+    When equity_prices is not supplied:
+      1. fetch_gtt_signal_data(equity_prices=None) → downloads VTI internally
+         (yfinance call inside fetch_gtt_signal_data).
+      2. Lines 519–522: `if equity_prices is None: yf.download('VTI', ...)`
+         downloads VTI a second time.
+
+    Total: 2 VTI downloads, 1 VIX download = 3 network calls instead of 2.
+
+    Fix: capture the equity_prices returned/used internally by
+    fetch_gtt_signal_data (or restructure to pass equity_prices through),
+    or accept the inefficiency and document it. Given this is an I/O boundary
+    function, the fix is low-priority but easy: fetch VTI once before calling
+    fetch_gtt_signal_data when equity_prices=None.
+
+A2  [ADVISORY]  The vix_current extraction at lines 510–515 fetches ^VIX via
+    a separate yf.download call. But fetch_gtt_signal_data already downloads
+    ^VIX internally (to compute vix_signal). The raw VIX series could be
+    reused if GttSignalData exposed it, but it currently does not.
+
+    Impact: 1 redundant ^VIX download per call.
+    Fix: Low-priority. Accept the extra call or (longer-term) extend
+    GttSignalData to expose the raw VIX series.
+
+A3  [ADVISORY]  Tests do not verify that vix_current is the correctly scaled
+    decimal value (e.g. 21.0 / 100.0 = 0.21). The mock supplies vix_close
+    as raw values (e.g. 21.0) and the code divides by 100.0, but no test
+    asserts `status.vix_current ≈ 0.21`. This leaves the /100 conversion
+    undetected by tests if mutated.
+
+    Fix: add one assertion: `assert abs(status.vix_current - expected_decimal) < 1e-6`.
+
+A4  [ADVISORY]  No test covers the `price_vs_sma200 == 'below'` branch
+    (price < SMA200). Only 'above' (constant price, long history) and
+    'warming_up' (short history) are exercised.
+
+    Fix: add one test using equity_prices = [200, 200, ..., 200, 100] pattern
+    to drive price_at < sma_at.
+
+--------------------------------------------------------------------------------
+REQUIRED ACTIONS (for Actor before re-judge)
+--------------------------------------------------------------------------------
+
+1. Add vix_current decimal assertion to one F-013 test (A3 — weakest coverage
+   gap for a correctness-critical field).
+
+2. Add a 'below' SMA200 smoke test (A4).
+
+3. Fix ruff violations from F-011 A1–A3 (same file). No other code changes
+   required for F-013 logic.
+
+4. A1 and A2 (double downloads) are advisory only. Document in the docstring
+   that equity_prices=None incurs 2 VTI downloads when not pre-supplied, or
+   fix the redundancy. Not required for re-judge.
+
+--------------------------------------------------------------------------------
+SPEC STATUS UPDATE
+--------------------------------------------------------------------------------
+F-013 status: complete (pending minor test additions A3/A4 and ruff cleanup,
+              bundled with F-011 fix round)

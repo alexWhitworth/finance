@@ -1,0 +1,48 @@
+================================================================================
+JUDGE VERDICT — F-013: compute_gtt_status (I/O boundary)
+Round: 2  |  Date: 2026-08-12  |  Mode: Lightweight (no mutmut/hypothesis)
+================================================================================
+
+VERDICT: PASS
+
+--------------------------------------------------------------------------------
+SCORECARD
+--------------------------------------------------------------------------------
+Acceptance Criteria:
+  [MET]    GttStatus.regime ∈ {0, 1}.
+  [MET]    GttStatus.price_vs_sma200 ∈ {'above', 'below', 'warming_up'}.
+  [MET]    warming_up path exercised (< 200 days of equity history).
+  [MET]    GttStatus is a frozen dataclass.
+  [MET]    All field types correct.
+
+Full-suite coverage: 98.45% (879 passed)
+Ruff: 0 violations
+mypy: strict PASS
+
+--------------------------------------------------------------------------------
+ROUND-1 REQUIRED ACTIONS — STATUS
+--------------------------------------------------------------------------------
+
+A3  [RESOLVED]  vix_current decimal assertion added:
+    test_gtt_status_vix_current_decimal_value verifies raw 21.0 → 0.21 ± 1e-6.
+    monkeypatch approach is clean; /100 conversion is now mutation-detectable. ✓
+
+A4  [RESOLVED]  'below' SMA200 path covered:
+    test_gtt_status_price_vs_sma200_below uses [200.0 × 499, 100.0] price series
+    against a 200-day SMA ≈ 200 → price_at = 100 < SMA → 'below' asserted. ✓
+
+Ruff  [RESOLVED]  Violations cleaned bundled with F-011.
+
+A1/A2 (double downloads) remain advisory/deferred per round-1 judgement.
+    Not required for PASS.
+
+--------------------------------------------------------------------------------
+FINDINGS
+--------------------------------------------------------------------------------
+
+None. All required actions satisfied. No new findings.
+
+--------------------------------------------------------------------------------
+SPEC STATUS UPDATE
+--------------------------------------------------------------------------------
+F-013 status: complete (no change — already complete)

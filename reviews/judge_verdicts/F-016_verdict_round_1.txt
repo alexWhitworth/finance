@@ -1,0 +1,47 @@
+F-016 — Phase 6: Public surface and __init__.py exports
+Judge round: 1 (lightweight — mutmut and hypothesis property testing explicitly skipped per request)
+Commit reviewed: c2a4fcf497f490e7ee0318611854ebb9807ed235
+
+VERDICT: PASS
+
+--- Scorecard ---
+Acceptance criteria: 2/2 MET
+  - "All types and functions listed in §4h importable from finance directly": MET
+  - "uv run mypy src/ exits 0 in strict mode": MET
+Test suite: 926 passed, 1 skipped (pre-existing skip, unrelated), 0 failed
+Coverage: 98.46% total (repo threshold: 80%)
+Ruff: clean on all changed files (src/finance/__init__.py, tests/test_init.py)
+Mutation testing: SKIPPED (spec marks F-016 property_based_testing.enabled=false and
+  mutation_testing.enabled=false — "re-export surface, no logic to mutate"; consistent
+  with the round's explicit no-mutmut/no-hypothesis instruction)
+
+--- Verification performed ---
+1. Build: `uv pip install -e .` succeeded cleanly.
+2. Diffed src/finance/__init__.py (commit c2a4fcf) against plans/portfolio_management.md
+   §4h line-by-line. All 24 names present, none extra, none missing:
+   BacktestResult, PortfolioConfig, PortfolioState, GttConfig, run_backtest,
+   LivePortfolio, NavBreakdown, HoldingView, RebalancePlan, TradeOrder,
+   VolatilityReport, GttStatus, as_live_portfolio, compute_nav_breakdown,
+   compute_holdings_view, compute_rebalance_plan, compute_volatility_report,
+   compute_gtt_status, ContractGreeks, PortfolioGreeks, compute_contract_greeks,
+   compute_portfolio_greeks, LeapsDcaSignal, compute_leaps_dca_signal.
+3. Ran `import finance; inspect.getdoc(...)` over every name in `finance.__all__` —
+   24/24 have non-empty docstrings at their source definition.
+4. Re-ran `uv run mypy src/` independently: "Success: no issues found in 16 source files".
+5. Re-ran `uv run pytest` independently (full suite, not just test_init.py): all green,
+   coverage 98.46%, gate (80%) satisfied.
+6. Reviewed tests/test_init.py: not tautological — asserts hasattr() over both the
+   live __all__ list and a hard-coded expected-name set transcribed from spec §4h,
+   so it would fail if any required name were dropped or renamed.
+7. Scope check via `git show --stat c2a4fcf`: touches exactly
+   src/finance/__init__.py (+64/-1), tests/test_init.py (new, +42), and a single-line
+   status flip in plans/portfolio_management_spec.json. No unrelated logic changes,
+   no drive-by edits to portfolio_manager.py / greeks.py / dca_signal.py.
+
+--- Findings ---
+None blocking. None advisory.
+
+--- Required Actions ---
+None.
+
+Status update: features[F-016].status → "complete" in plans/portfolio_management_spec.json.

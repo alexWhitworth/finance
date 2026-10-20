@@ -1,0 +1,60 @@
+================================================================================
+JUDGE VERDICT — F-011: compute_rebalance_plan
+Round: 2  |  Date: 2026-08-12  |  Mode: Lightweight (no mutmut/hypothesis)
+================================================================================
+
+VERDICT: PASS
+
+--------------------------------------------------------------------------------
+SCORECARD
+--------------------------------------------------------------------------------
+Acceptance Criteria:
+  [MET]    sum(t.trade_amount) ≈ 0.0 within 1e-6 when trades non-empty (I3)
+           — NOW verified for both normal and stray-holding paths.
+           Live check: holdings={VTI:70k, EXTRA:30k}, target={VTI:1.0}
+           → trades=[('VTI', +30000.0), ('EXTRA', -30000.0)], sum=0.0. ✓
+  [MET]    would_trigger=False / trigger_reason='not_triggered' when QUARTERLY
+           and is_rebal_date=False (I8).
+  [MET]    trades is empty tuple when would_trigger=False.
+
+Test coverage (portfolio_manager.py, full suite): 96%
+Full-suite coverage: 98.45% (879 passed, 1 skipped)
+Ruff: 0 violations (import sort, E501, C420 all clean)
+mypy: strict PASS
+
+--------------------------------------------------------------------------------
+ROUND-1 REQUIRED ACTIONS — STATUS
+--------------------------------------------------------------------------------
+
+B1  [RESOLVED]  Stray holdings now receive a zero-target sell order in the
+    second loop (lines 359–374). Trade conservation (I3) verified analytically:
+      target loop contributes  sum(tgt_val - cur_val) for base_target_keys
+      stray loop contributes   sum(0 - cur_val)       for stray keys
+      total = sum(tgt_val) - sum(all cur_val) = base_nav - base_nav = 0.0  ✓
+
+    New tests added and passing:
+      test_rebalance_plan_stray_holding_sell_order_conserves_i3  ✓
+      test_rebalance_plan_stray_holding_sell_order_fields        ✓
+
+A1  [RESOLVED]  Import sort (I001) fixed — pandas/yfinance merged into one block.
+A2  [RESOLVED]  E501 line 335 wrapped across two lines.
+A3  [RESOLVED]  C420 dict.fromkeys() applied at lines 339 and 427.
+
+--------------------------------------------------------------------------------
+FINDINGS
+--------------------------------------------------------------------------------
+
+A1  [ADVISORY]  Minor: the stray-holding loop uses `portfolio.holdings.items()`
+    which iterates in insertion order. LEAPS keys that accidentally appear in
+    holdings (not via leaps_contracts) would be silently skipped by the
+    `.endswith(LEAPS_KEY_SUFFIX)` guard. This is correct behaviour but worth
+    noting — no action required.
+
+A2  [ADVISORY]  Uncovered lines 338–339 are the `leaps_weight = 0.0` branch
+    (total_nav == 0 in DRIFT mode) and the DRIFT early-exit when not month-end.
+    Not blocking for round-2; degenerate state.
+
+--------------------------------------------------------------------------------
+SPEC STATUS UPDATE
+--------------------------------------------------------------------------------
+F-011 status: complete

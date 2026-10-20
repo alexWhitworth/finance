@@ -1,0 +1,145 @@
+================================================================================
+JUDGE VERDICT — F-010: Phase 4b: compute_nav_breakdown and compute_holdings_view
+Round: 1  |  Date: 2026-08-11  |  Reviewer: Judge Agent (Lightweight)
+================================================================================
+
+VERDICT: PASS
+
+NOTE: Mutation testing (mutmut) and hypothesis execution skipped per reviewer
+instructions. Tests reviewed for mutation-resistance by structural inspection.
+
+────────────────────────────────────────────────────────────────────────────────
+SCORECARD
+────────────────────────────────────────────────────────────────────────────────
+Acceptance Criteria:      2/2 MET
+Tests Passing:            51/51 (all portfolio_manager tests)
+Module Coverage:          portfolio_manager.py = 98% (one uncovered line is
+                          F-005 raise guard, not F-010 code; F-010 is 100%)
+Mutation Score (manual):  Resistant — arithmetic sum tested with all four
+                          independent components; drift tested with over/under
+                          weight cases; relative_drift=None when target=0 tested
+Rust Layer:               N/A
+FFI:                      N/A
+I11 Clarification Note:   RESOLVED — two integration tests added and passing
+
+────────────────────────────────────────────────────────────────────────────────
+ACCEPTANCE CRITERIA AUDIT
+────────────────────────────────────────────────────────────────────────────────
+[MET] "NavBreakdown.total_nav == base_nav + leaps_nav + defensive_sleeve +
+       leaps_pool within 1e-9 (I1)"
+      portfolio_manager.py:126 — total_nav is computed as the direct arithmetic
+      sum. The identity is structurally guaranteed (not just numerically tested):
+      total_nav := base_nav + leaps_mtm + defensive_sleeve + leaps_pool, and all
+      four fields of NavBreakdown are populated from those same values.
+      Unit tests:
+        test_nav_breakdown_total_nav_identity_no_extras — base only
+        test_nav_breakdown_leaps_mtm_included — leaps_nav component
+        test_nav_breakdown_defensive_sleeve_included — defensive component
+        test_nav_breakdown_leaps_pool_included — pool component
+        test_nav_breakdown_all_components — all four simultaneously
+      Property test:
+        test_nav_breakdown_total_nav_identity_property (100 examples) ✓
+
+[MET] "sum(h.actual_weight for h in holdings_view) <= 1.0 + 1e-9 (I2)"
+      portfolio_manager.py:154 — actual_w = value / total_nav. Since
+      sum(holdings.values()) = base_nav ≤ total_nav (defensive_sleeve ≥ 0,
+      leaps_pool ≥ 0, leaps_nav ≥ 0), the sum of actual weights ≤ base_nav /
+      total_nav ≤ 1.0. The bound is mathematically guaranteed.
+      Unit tests:
+        test_holdings_view_actual_weight_sum_le_one — base-only portfolio
+        test_holdings_view_actual_weight_lt_one_with_defensive_sleeve — sum < 1
+      Property test:
+        test_holdings_view_weight_sum_le_one_property (100 examples) ✓
+
+────────────────────────────────────────────────────────────────────────────────
+CLARIFICATION NOTE RESOLUTION (from spec F-010.clarification_notes)
+────────────────────────────────────────────────────────────────────────────────
+The spec carried a note from F-005 judge round 2:
+  "once compute_nav_breakdown is implemented, add an integration test to
+   test_portfolio_manager_integration.py verifying
+   compute_nav_breakdown(lp, leaps_mtm=...).total_nav ≈ nav_series.iloc[-1]
+   within 1e-6 (I11)"
+
+RESOLVED: Two integration tests added:
+  test_integration_nav_breakdown_total_nav_matches_nav_series_no_leaps ✓
+    → tolerance: abs(nb.total_nav - expected) < 1e-6; PASSED
+  test_integration_nav_breakdown_total_nav_matches_nav_series_with_leaps ✓
+    → uses result.final_state.leaps_value as leaps_mtm; PASSED
+
+────────────────────────────────────────────────────────────────────────────────
+EDGE CASE COVERAGE
+────────────────────────────────────────────────────────────────────────────────
+[COVERED] defensive_sleeve > 0: actual_weight sum < 1.0 ✓
+[COVERED] Zero-value asset: actual_weight=0.0, no division error ✓
+[COVERED] Ticker absent from target_weights: target_weight=0.0, rel=None ✓
+[COVERED] relative_drift=None when target_weight==0 ✓
+[COVERED] frozen enforcement on NavBreakdown ✓
+[COVERED] frozen enforcement on HoldingView ✓
+[COVERED] Return type is tuple[HoldingView, ...] ✓
+
+────────────────────────────────────────────────────────────────────────────────
+ARITHMETIC LOGIC VERIFICATION
+────────────────────────────────────────────────────────────────────────────────
+compute_nav_breakdown:
+  base_nav = sum(holdings.values())                          ✓
+  total_nav = base_nav + leaps_mtm + defensive + leaps_pool ✓ (identity)
+
+compute_holdings_view:
+  actual_w = value / total if total > 0.0 else 0.0          ✓ (zero guard)
+  target_w = target_weights.get(ticker, 0.0)                ✓ (absent key)
+  drift     = actual_w - target_w                            ✓ signed
+  rel       = drift / target_w if target_w != 0 else None   ✓ None guard
+
+Weight drift test (test_holdings_view_weight_drift_computation):
+  VTI:  actual=0.80, target=0.60, drift=+0.20 ✓ (overweight)
+  VXUS: actual=0.20, target=0.40, drift=-0.20 ✓ (underweight)
+
+Relative drift test (test_holdings_view_relative_drift_computed_correctly):
+  VTI:  0.20/0.60 = 0.3333... ✓
+  VXUS: -0.20/0.40 = -0.5 ✓
+
+────────────────────────────────────────────────────────────────────────────────
+FINDINGS
+────────────────────────────────────────────────────────────────────────────────
+[ADVISORY — A1] total_nav == 0 path in compute_holdings_view not tested
+  File: src/finance/portfolio_manager.py:154
+        tests/test_portfolio_manager.py
+  The branch `else 0.0` in `value / total if total > 0.0 else 0.0` fires only
+  when total_nav == 0, which requires all of: holdings all-zero, leaps_mtm=0,
+  defensive_sleeve=0, leaps_pool=0.
+  test_nav_breakdown_zero_holdings covers the base_nav=0 case but passes
+  leaps_mtm=5000, so total_nav=5000 and the else branch is not reached in
+  compute_holdings_view.
+  The `test_holdings_view_zero_value_asset` test has a non-zero holding (VTI=
+  100_000), so total_nav=100_000.
+  The guard is correct (returns 0.0 and drift = -target_w which is mathematically
+  sound), but the `else 0.0` branch has no test coverage.
+  Action: None required for PASS. Actor may add a test in a future cleanup.
+
+[ADVISORY — A2] Empty holdings dict in compute_holdings_view not tested
+  File: tests/test_portfolio_manager.py
+  When portfolio.holdings == {}, the for-loop body never executes and an empty
+  tuple is returned. This is correct but untested for compute_holdings_view
+  specifically (test_nav_breakdown_zero_holdings only tests compute_nav_breakdown).
+  Action: None required for PASS.
+
+[INFORMATIONAL] Project-wide 48% total coverage failure is pre-existing
+  greeks.py (0%), metrics.py (0%), volatility.py (0%) are entirely untested at
+  the project level. portfolio_manager.py itself is at 98%. The coverage gate
+  failure is not introduced by F-009 or F-010 and should not block these features.
+
+────────────────────────────────────────────────────────────────────────────────
+REQUIRED ACTIONS
+────────────────────────────────────────────────────────────────────────────────
+None. Feature is complete and correct.
+
+────────────────────────────────────────────────────────────────────────────────
+FINAL DECISION
+────────────────────────────────────────────────────────────────────────────────
+F-010 status → complete
+
+Both acceptance criteria are MET with value-asserting tests on specific numeric
+results. The I11 integration requirement (carried from F-005 judge round 2) is
+now fully satisfied. I1 identity is structurally guaranteed by the implementation.
+Module coverage for F-010 code is 100%.
+================================================================================

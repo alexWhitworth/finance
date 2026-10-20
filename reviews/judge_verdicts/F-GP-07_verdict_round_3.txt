@@ -1,0 +1,74 @@
+================================================================================
+JUDGE VERDICT — F-GP-07
+Feature: _apply_rebalance dynamic target_w source for DRIFT + glide path
+Round: 3
+Date: 2026-08-09
+Reviewer: Judge Agent (light/mid-weight; no mutmut/hypothesis)
+================================================================================
+
+VERDICT: PASS
+
+--------------------------------------------------------------------------------
+SCORECARD
+--------------------------------------------------------------------------------
+Acceptance Criteria:
+  [MET]       _should_rebalance called with dynamic_target_weights when gp active
+  [MET]       Fallback to ctx.w when gp=None — no regression to existing behavior
+  [MET]       NAV conserved within 1e-6 across any DRIFT rebalance
+  [MET]       LEAPS topped up (not just trimmed) when below dynamic target — two-sided confirmed
+  [MET]       Existing DRIFT and QUARTERLY test suite passes without modification
+
+Test Coverage: 98.52% total (full suite); _backtest_steps.py 98%
+Tests Passing: 696/696 (0 failures, 1 skipped — unrelated)
+Mutation Testing: Not run (per scope)
+Build: clean (uv pip install -e .)
+
+Previously-failing integration regressions:
+  TestRealCorpusI2::test_i2_all_days                         PASS
+  TestRealCorpusI2::test_f020_gate_long_monthend_residual_exact  PASS
+
+--------------------------------------------------------------------------------
+FINDINGS
+--------------------------------------------------------------------------------
+
+No blocking or advisory findings.
+
+The one-line fix from Round 2 (adding `and state.dynamic_target_weights is not None`
+to the elif at src/finance/_backtest_steps.py line 1070) is correct and complete:
+
+  Before: elif leaps_value < target_leaps_now:
+  After:  elif leaps_value < target_leaps_now and state.dynamic_target_weights is not None:
+
+This scopes the top-up branch exclusively to glide-path portfolios (where
+target_leaps_now was derived from dynamic_target_weights), preserving all
+non-glide-path DRIFT behavior exactly.
+
+NAV conservation verified analytically for both trim and top-up paths:
+  trim:   (base + proceeds) + target_leaps = total ✓
+  top-up: (base - shortage) + (leaps + shortage) = total ✓
+Both reduce to total_val = base_val + leaps_value (unchanged) within 1e-9.
+
+Guard correctness: when dynamic_target_weights is None, elif_fires = False — the
+non-glide-path DRIFT path is untouched.
+
+[NOTE] Line 1054 (_backtest_steps.py) — the `base_target_sum == 0` defensive
+fallback in the DRIFT redistribution path — remains uncovered. This is unreachable
+with any valid PortfolioConfig (base_target_sum == 0 requires all base assets to
+have weight 0, which __post_init__ rejects). Acceptable as defensive dead code.
+
+--------------------------------------------------------------------------------
+REQUIRED ACTIONS
+--------------------------------------------------------------------------------
+None.
+
+--------------------------------------------------------------------------------
+NOTES
+--------------------------------------------------------------------------------
+- All 6 F-GP-07 unit tests pass with specific value assertions (assert_allclose
+  with atol=1e-6, leaps_value > leaps_val_low, base holdings shrink).
+  test_leaps_topped_up_when_below_dynamic_target no longer passes vacuously.
+- The Round 1 advisory (LEAPS current_weights computed via ctx.w[k]/ctx.leaps_fraction
+  rather than target_w at lines 1037-1039) remains low-risk for single-LEAPS
+  portfolios and does not block this feature.
+- No FFI. Python-only feature.
+================================================================================

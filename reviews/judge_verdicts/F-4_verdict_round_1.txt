@@ -1,0 +1,89 @@
+VERDICT: CONDITIONAL_PASS
+
+ACCEPTANCE CRITERIA SCORECARD:
+  AC-1: MET — portfolio.py:555 correctly checks `underlying in price_data.vol_prices.columns`
+        (not a literal '^VIX'). The dynamic-IV backtest produces NAV that differs from the
+        constant-IV baseline on >= 1 date (test_inv5_dynamic_iv_differs_from_constant PASSES
+        with n_different >= 1). The absent-column path yields constant IV: confirmed by
+        test_vol_prices_does_not_contain_underlying (constant-IV fixture asserts 'VTI' absent)
+        and test_leaps_empty_vol_prices_falls_back_to_config_iv.
+
+  AC-2: BRITTLE — The production fix correctly uses `underlying` (variable) not a hardcoded
+        ticker. The integration fixture keys vol_prices as {'VTI': vix}, which is the correct
+        asset-ticker convention. HOWEVER, the spec requires AC-2 be "verified by a non-'VTI'
+        underlying engaging its own column" — no such test exists anywhere in the suite. All
+        vol_prices-keyed tests exclusively use 'VTI' as the underlying. A regression to
+        hardcoded 'VTI' in the lookup would not be caught. AC-2 is structurally satisfied by
+        the production code but lacks the specified non-VTI verification.
+
+  AC-3: MET — test_dynamic_iv_changes_mtm_vs_constant exists and passes (both constant-IV
+        and dynamic-IV runs verified within INV-4 bounds; INV-4 plausibility assertions all
+        pass under dynamic IV). Fixture is keyed by asset ticker {'VTI': vix} at line 645
+        (test_integration.py). Warm-up fallback is tested in test_inv5_warmup_no_nan, which
+        checks that nav_series.iloc[:VIX_MTM_WINDOW] is NaN-free and positive.
+
+EDGE CASE COVERAGE:
+  EC-1 (warm-up NaNs): MET — The mechanism is correct: .rolling(VIX_MTM_WINDOW).mean()
+        produces NaN for the first VIX_MTM_WINDOW-1 rows, and .ffill() does NOT eliminate
+        these leading NaNs (verified: 29 NaNs remain with a 30-day window). The `pd.notna(smoothed)`
+        guard in portfolio.py:679,778 is what actually implements the floor fallback — when
+        smoothed is NaN, `day_iv` remains `iv` (the config floor). This is correct. The
+        test_inv5_warmup_no_nan test validates the observable outcome (NAV is finite/positive)
+        across the first VIX_MTM_WINDOW days, which transitively confirms the floor. The test
+        does not probe `mtm_iv_series` directly, but the indirect validation is sufficient.
+        Note: the comment in portfolio.py line 554 ("config.iv is the floor throughout") and the
+        .ffill() call imply the series is NaN-free after construction; this is misleading but
+        harmless since the pd.notna guard is still present. Advisory only.
+
+  EC-2 (empty vs missing-column): MET — Both paths tested. Empty vol_prices: confirmed by
+        vol_prices.empty check at portfolio.py:555 AND test_leaps_empty_vol_prices_falls_back_to_config_iv.
+        Missing underlying column (vol_prices present but 'VTI' absent): confirmed by
+        TestLeapsLifecycle.test_vol_prices_does_not_contain_underlying asserting the constant-IV
+        fixture lacks the 'VTI' key, and test_inv5_constant_iv_fixture_yields_constant_nav
+        showing the constant-IV baseline remains valid.
+
+TEST SCORECARD:
+  Tests run: 444 passed / 448 total (4 pre-existing failures)
+  New F-4 tests: 9 passed (TestDynamicIV), 3 passed (test_portfolio.py vix tests) = 12 new tests
+  Pre-existing failures (NOT attributable to F-4):
+    - tests/test_gtt_config.py::test_gtt_constants_exact_values_and_types
+    - tests/test_gtt_config.py::test_gttconfig_defaults
+    - tests/test_integration.py::TestFullBacktestPipeline::test_report_full_period_present
+    - tests/test_metrics.py::test_build_performance_report_full_period_label
+  All 4 failures reproduced on pre-F-4 parent commit c6eb78f; F-4 commit message acknowledges them.
+
+FINDINGS:
+  [BLOCKING] FIN-1: AC-2 non-VTI verification absent. The spec explicitly requires the lookup
+        be "verified by a non-'VTI' underlying engaging its own column" (leaps_debug_spec.json
+        F-4 acceptance_criteria[1]). No test in the suite uses a non-VTI underlying (e.g., 'GLD'
+        or 'VXUS') with a matching vol_prices column. A test using GLD_LEAPS + {"GLD": vix_series}
+        in vol_prices would close this gap and prove the underlying variable — not a hardcoded
+        string — drives the lookup. Required action to reach PASS.
+
+  [ADVISORY] FIN-2: Stale docstring at portfolio.py:414-415 still reads: 'Dynamic IV: when
+        price_data.vol_prices has a "^VIX" column, raw VIX drives contract creation...' and
+        'Absent "^VIX", config.leaps_config.iv is used everywhere.' The column key is now the
+        LEAPS underlying ticker, not "^VIX". This creates a misleading public contract for
+        readers of run_backtest. Should be updated to reflect the asset-ticker convention.
+
+  [ADVISORY] FIN-3: .ffill() on mtm_iv_series (portfolio.py:557) implies the series is NaN-free
+        after construction, but ffill cannot eliminate leading NaNs when the entire warm-up
+        window has no prior value. The pd.notna guard (lines 679, 779) is what actually handles
+        the warm-up correctly. The .ffill() call only helps if a reindex gap appears mid-series.
+        No behavioral defect; the logic is correct. Worth clarifying in a comment.
+
+  [ADVISORY] FIN-4: test_inv5_warmup_no_nan checks nav_series indirectly rather than asserting
+        mtm_iv_series itself contains no NaN post-warm-up (which it does, by design). The
+        existing check is sufficient for the spec requirement but would not catch a regression
+        where NaN in mtm_iv_series propagated to NAV (e.g., if pd.notna guard were removed).
+        Low risk; current test coverage is acceptable.
+
+REQUIRED ACTIONS (for CONDITIONAL_PASS → PASS):
+  RA-1: Add a unit test verifying the `underlying`-variable lookup with a non-'VTI' underlying.
+        Suggested approach in tests/test_portfolio.py:
+            - Create a config with a GLD_LEAPS key (underlying = 'GLD')
+            - Build a PriceData where vol_prices = pd.DataFrame({"GLD": <vix_level>}, index=...)
+            - Run backtest and assert leaps_ledger is not None (run completes without KeyError)
+            - Assert the resulting premium_paid differs from a no-vol-prices run (confirms GLD
+              column was read, not VTI or '^VIX')
+        This directly falsifies a regression to hardcoded 'VTI' in the lookup.

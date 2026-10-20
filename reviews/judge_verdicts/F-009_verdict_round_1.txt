@@ -1,0 +1,29 @@
+F-009 JUDGE VERDICT — Round 1
+==============================
+Date: 2026-08-02
+Feature: F-009 — _apply_returns and _apply_defensive_compounding extraction
+
+VERDICT: PASS
+
+CRITERIA
+--------
+1. Flat returns (day_ret[a]=0.0): holdings unchanged within 1e-14: PASS
+   - TestApplyReturns::test_flat_returns_holdings_unchanged PASSED
+2. Defensive day with def_gross_return=r: defensive_sleeve_out == defensive_sleeve_in * (1+r): PASS
+   - TestApplyDefensiveCompounding::test_defensive_day_compounds_sleeve_and_pool PASSED
+3. Re-entry day earns one final defensive return before redeploy: PASS
+   - TestApplyDefensiveCompounding::test_reentry_day_earns_one_final_defensive_return PASSED
+
+COVERAGE: 100% (13/13 statements)
+mypy: PASS (--strict, no issues)
+Tests: 11/11 pass (7 for _apply_returns, 7 for _apply_defensive_compounding)
+
+FINDINGS
+--------
+None. Both functions are pure, correct, and fully covered.
+The re-entry compounding (prev_regime==0, regime_t==1) fires correctly before
+_apply_gtt_reentry redeployment.
+
+REQUIRED ACTIONS
+----------------
+None.

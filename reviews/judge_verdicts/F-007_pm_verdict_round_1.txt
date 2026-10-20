@@ -1,0 +1,83 @@
+================================================================================
+JUDGE VERDICT — F-007: ContractGreeks/PortfolioGreeks dataclasses + compute_contract_greeks
+Spec: plans/portfolio_management_spec.json
+Round: 1
+Evaluated: 2026-08-11
+================================================================================
+
+VERDICT: CONDITIONAL_PASS
+
+--------------------------------------------------------------------------------
+SCORECARDS
+--------------------------------------------------------------------------------
+
+Acceptance Criteria:
+  AC1  ContractGreeks.price matches bs_call_price() within 1e-9 (I7)     MET
+  AC2  ContractGreeks.delta ∈ (0, 1) for any valid LEAPS call (I4)       MET
+  AC3  ContractGreeks.gamma > 0 for long call (I5)                        MET
+  AC4  ContractGreeks.theta < 0 for long call with T > TIME_FLOOR (I6)   MET
+
+Schema Compliance:
+  DS-008 ContractGreeks frozen=True, all 17 fields present                MET
+  DS-009 PortfolioGreeks frozen=True, all 8 fields present                MET
+
+API Contract (AC-007):
+  Signature: compute_contract_greeks(contract, spot, iv, as_of_date,
+             risk_free_rate=0.0, leaps_scale=1.0)                        MET
+  Pure function (no I/O)                                                   MET
+  Complexity: O(1) per contract                                            MET
+
+Test Coverage (greeks.py module): 100% line coverage
+Full suite: 824 passed, 1 skipped — 0 regressions
+Lint (ruff): CLEAN
+
+--------------------------------------------------------------------------------
+FINDINGS
+--------------------------------------------------------------------------------
+
+ADVISORY — A1
+File: tests/test_greeks.py:240-241
+The test-local _d1() helper (used only for the Hypothesis pre-filter) omits
+the dividend yield q parameter.  This is intentional — _make_contract
+defaults to dividend_yield=0.0, so q=0 for every generated contract in the
+property tests.  However, the omission is silent and would produce wrong
+pre-filter results if the helper were reused with non-zero q contracts.
+Add an inline comment documenting that this helper assumes q=0.
+
+ADVISORY — A2
+File: src/finance/greeks.py:196-197 (nested def _position_scale inside
+compute_portfolio_greeks)
+The inner def is re-created on every call.  Negligible for correctness, but
+a module-level private function would be cleaner and avoids repeated object
+allocation in hot paths.  Not blocking — O(k) behaviour is unaffected.
+
+ADVISORY — A3
+File: tests/test_greeks.py — property tests for I5 (gamma > 0) and I6
+(theta < 0) do not apply the abs(d1) < 8 saturation guard that I4 uses.
+Gamma and theta do not saturate to exactly 0 or -(−0.0) as dramatically as
+delta, but at extreme moneyness gamma → 0 in float64, which could produce
+a flaky failure.  The tests currently pass because the moneyness bounds
+(0.4–2.5×) and iv_min=0.10 guard is sufficient — but the defence is not
+documented.  A comment noting the coverage rationale would improve
+maintainability.
+
+--------------------------------------------------------------------------------
+BLOCKING FINDINGS
+--------------------------------------------------------------------------------
+None.
+
+--------------------------------------------------------------------------------
+REQUIRED ACTIONS (for next Actor pass, if desired)
+--------------------------------------------------------------------------------
+A1 (ADVISORY): Add comment to _d1() noting q=0 assumption.
+A2 (ADVISORY): Consider hoisting _position_scale to module-level private.
+A3 (ADVISORY): Add comment to test_property_gamma_positive and
+               test_property_theta_negative explaining why the saturation
+               guard is not needed for their assertions.
+
+None of A1–A3 are blocking.  The implementation is correct and complete
+against all F-007 acceptance criteria.
+
+================================================================================
+STATUS UPDATE: features[F-007].status → complete
+================================================================================

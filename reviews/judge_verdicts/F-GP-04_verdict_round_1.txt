@@ -1,0 +1,93 @@
+================================================================================
+JUDGE VERDICT — F-GP-04: PortfolioState hurdle_contributed and dynamic_target_weights fields
+Spec: plans/glide_path_rebalance_spec.json
+Round: 1
+Effort: light/mid
+================================================================================
+
+VERDICT: PASS
+
+--------------------------------------------------------------------------------
+SCORECARD
+--------------------------------------------------------------------------------
+Acceptance Criteria:          4 / 4 MET
+Tests (F-GP-04 scope):       13 / 13 PASSED
+Schema correctness:           VERIFIED (probes confirm init, freeze, replace)
+Mutation testing:             SKIPPED per user directive
+FFI:                          N/A (pure Python)
+
+--------------------------------------------------------------------------------
+ACCEPTANCE CRITERIA VERIFICATION
+--------------------------------------------------------------------------------
+
+[MET] _build_initial_state with glide_path_config=None sets hurdle_contributed ==
+      initial_nav within 1e-9 and dynamic_target_weights is None.
+      Probe diff: 0.0e+00. Both no-GP/DRIFT and no-GP/QUARTERLY paths verified.
+
+[MET] _build_initial_state with glide_path_config set initializes dynamic_target_weights
+      to config.target_weights (VTI=0.0) within 1e-12 for all keys.
+      Probe: all 7 keys diff = 0.0e+00. test_build_initial_state_with_glide_path_dynamic_weights_identity.
+
+[MET] PortfolioState with both new fields constructs and freezes correctly.
+      FrozenInstanceError raised on both hurdle_contributed and dynamic_target_weights.
+
+[MET] hurdle_contributed never decreases across 12 monthly steps with non-negative rfr
+      and contributions.
+      Three formula tests: ZIRP, zero-contribution, closed-form (12 months, within 1e-6).
+
+--------------------------------------------------------------------------------
+SCHEMA AUDIT
+--------------------------------------------------------------------------------
+PortfolioState (src/finance/_portfolio_types.py:285–327):
+  hurdle_contributed: float = 0.0     # dataclass structural default
+  dynamic_target_weights: pd.Series | None = None
+
+_build_initial_state (src/finance/_backtest_steps.py:553–571):
+  hurdle_contributed = ctx.config.initial_nav         # always set to initial_nav
+  dynamic_target_weights = None                       # non-glide-path default
+  if gp is not None:
+      dynamic_target_weights = compute_glide_target_weights(1.0, ctx.config, gp)
+  return PortfolioState(..., hurdle_contributed=hurdle_contributed,
+                             dynamic_target_weights=dynamic_target_weights)
+
+This is correct. The dataclass default of 0.0 is never observed in practice since
+_build_initial_state always explicitly sets the field. The only construction of
+PortfolioState in a test that uses the default (test_portfolio_state_new_fields_default)
+correctly asserts 0.0 as the structural sentinel — not the initialized value.
+
+dataclasses.replace: verified — both fields carry forward independently and immutably.
+
+--------------------------------------------------------------------------------
+INTEGRATION TEST SCOPE NOTE
+--------------------------------------------------------------------------------
+The spec's integration requirement ("verify hurdle_contributed accumulates correctly
+over at least 12 monthly steps") is met by three formula-simulation tests that directly
+apply the recurrence and compare to closed-form geometric series. This is appropriate
+for F-GP-04, which owns field initialization and carry-forward only.
+
+The full backtest-loop integration (actual _apply_contribution driving hurdle through
+the loop) is owned by F-GP-06 (status: not_started). F-GP-04 does not need to
+pre-validate F-GP-06's behavior.
+
+--------------------------------------------------------------------------------
+ADVISORY FINDINGS
+--------------------------------------------------------------------------------
+
+[ADVISORY — 1]
+The spec says "dynamic_target_weights is None iff glide_path_config is None." A test
+asserting that dynamic_target_weights is NOT None when glide_path_config IS set is
+present (test_build_initial_state_with_glide_path_dynamic_weights_identity). The
+converse (None when config is None) is also tested. Both directions covered.
+
+[ADVISORY — 2]
+The F-GP-01 BLOCKING gap (VTI value not checked as 0.0 in PortfolioConfig.__post_init__)
+propagates here: if a caller constructs with VTI=0.10, _build_initial_state calls
+compute_glide_target_weights(1.0, ...) which produces a weight vector summing to 0.90.
+This is mitigated once F-GP-01 blocking fix is applied.
+
+--------------------------------------------------------------------------------
+STATUS UPDATE
+--------------------------------------------------------------------------------
+features["F-GP-04"].status: complete
+Note: Contingent on F-GP-01 BLOCKING fix being applied.
+================================================================================

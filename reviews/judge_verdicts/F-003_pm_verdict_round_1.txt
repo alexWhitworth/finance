@@ -1,0 +1,54 @@
+================================================================================
+JUDGE VERDICT — F-003: Phase 1a: Add BacktestResult.final_state field
+Round: 2  |  Date: 2026-08-10  |  Judge: Senior Staff Engineer (Adversarial)
+Spec: portfolio_management_spec.json
+================================================================================
+
+VERDICT: CONDITIONAL_PASS
+
+--------------------------------------------------------------------------------
+SCORECARDS
+--------------------------------------------------------------------------------
+Acceptance Criteria:
+  [MET]   BacktestResult has final_state attribute accessible post-construction
+            → _portfolio_types.py:292 — field present as required type PortfolioState
+  [MET]   uv run pytest passes unchanged (non-regression I13)
+            → 787 passed, 1 skipped (pre-existing), 0 failures
+
+Complexity Budget: O(1) — field addition, no computation. MET.
+Mutation Testing: DISABLED per spec (field addition, no logic). ACCEPTED.
+Property-Based Testing: DISABLED per spec. ACCEPTED.
+
+Module Coverage (targeted):
+  _portfolio_types.py:  81%  (uncovered = PortfolioConfig validators, pre-existing)
+  portfolio.py:         98%  (line 131 = GTT weight fillna, unrelated to F-003)
+
+Edge Cases:
+  [MET]   Single-date backtest: final_state populated
+            → test_run_backtest_final_state_single_date passes
+
+--------------------------------------------------------------------------------
+FINDINGS
+--------------------------------------------------------------------------------
+
+ADVISORY [A1] — Spec field name mismatch: "as_of_date" vs actual "prev_date_ts"
+  File: plans/portfolio_management_spec.json  F-003/acceptance_criteria and F-004
+  Spec says "final_state.as_of_date" but PortfolioState has no as_of_date field.
+  The correct field is prev_date_ts (set by _advance_state at loop end).
+  Implementation is correct; spec language is imprecise. No code fix needed.
+  Recommend annotating the spec for future reviewers.
+
+ADVISORY [A2] — Forward reference reliance on `from __future__ import annotations`
+  File: src/finance/_portfolio_types.py:7, 292
+  BacktestResult (line 272) references PortfolioState (line 295) which is defined
+  below it. This is safe because `from __future__ import annotations` defers all
+  annotation evaluation. Should this import ever be removed, a NameError would
+  result at class definition time. Low risk with Python 3.14; document if order
+  is ever refactored.
+
+--------------------------------------------------------------------------------
+REQUIRED ACTIONS FOR ACTOR
+--------------------------------------------------------------------------------
+None. Both findings are advisory. Implementation is structurally correct.
+
+================================================================================

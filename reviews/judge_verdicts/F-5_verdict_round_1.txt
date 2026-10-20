@@ -1,0 +1,31 @@
+VERDICT: PASS
+
+ACCEPTANCE CRITERIA SCORECARD:
+  AC-1: MET — `uv run pytest` 449/449 passed; `uv run ruff check src/ tests/` clean; `uv run mypy src/` 0 issues.
+  AC-2: MET — Coverage 98.46% vs 80% threshold; outputs/figures/leaps_tax_drag.png regenerated (55K, Jul 31 09:01);
+        before/after metrics table present in commit d1dd08a body with Phase-0/Phase-2/Phase-4 data.
+
+TEST SCORECARD:
+  Tests: 449 passed / 449 total
+  Coverage: 98.46%  (threshold: 80%)
+  INV-1: PASS — 3 no-lookahead unit tests (test_leverage.py lines 996, 1183 sections) + 1 hypothesis property test
+  INV-2: PASS — test_inv2_day1_nav_near_initial
+  INV-3: PASS — test_inv3_nav_series_positive_and_finite, test_inv3_return_series_finite, test_inv3_leaps_ledger_populated
+  INV-4: PASS (hard CI gates) — test_inv4_max_single_day_abs_return, test_inv4_annualized_return_in_range,
+          test_inv4_abs_skewness, test_inv4_excess_kurtosis, test_inv4_terminal_nav_multiple
+  INV-5: PASS — 9 tests covering vol_prices, constant vs dynamic IV, plausibility bounds, warmup NaN
+
+FINDINGS:
+  ADVISORY FIN-1: ResourceWarning: unclosed sqlite3.Connection in TestFullBacktestPipeline::test_nav_series_length
+    (3 occurrences, via pandas/core/indexers/utils.py:425). Pre-existing issue unrelated to F-5; does not affect
+    correctness or test outcomes. Origin is in the pandas/yfinance SQLite cache layer, not project code.
+  ADVISORY FIN-2: RuntimeWarning: Precision loss (catastrophic cancellation) in metrics.py lines 241/256 during
+    test_compute_metrics_returns_dataclass and test_compute_metrics_period_label. Triggered by near-identical
+    synthetic input data in those tests; not a production-data risk. Pre-existing.
+  ADVISORY FIN-3: Commit cf00411 (applied after d1dd08a) updated two test assertion sets — GTT defensive weights
+    (KMLM 0.25→0.50, GLD 0.25→0.00) and period_label exact-equality→startswith — to match production constants
+    changed in commit 3568f85. The changes correctly track the source of truth (consts.py). Not a weakening of
+    test semantics, but reviewers should note these assertions now only verify prefix, not the full label string.
+
+REQUIRED ACTIONS:
+  None. All blocking criteria met. ADVISORY items may be addressed in a follow-up cleanup.

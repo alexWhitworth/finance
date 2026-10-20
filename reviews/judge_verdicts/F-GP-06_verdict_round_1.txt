@@ -1,0 +1,92 @@
+================================================================================
+JUDGE VERDICT — F-GP-06
+Feature: _apply_contribution atomic hurdle + dynamic_target_weights update
+Round: 1
+Date: 2026-08-09
+Reviewer: Judge Agent (light/mid-weight; no mutmut/hypothesis)
+================================================================================
+
+VERDICT: CONDITIONAL_PASS
+
+--------------------------------------------------------------------------------
+SCORECARD
+--------------------------------------------------------------------------------
+Acceptance Criteria:
+  [MET]   On month-end with gp: hurdle == old*(1+rfr)^(1/12)+monthly within 1e-9
+  [MET]   On month-end with gp: dynamic_target_weights.sum() == 1.0 within 1e-12
+  [MET]   Month-end without gp: hurdle_contributed unchanged
+  [MET]   Non-month-end with gp: both fields unchanged
+  [MET]   hurdle monotonically non-decreases across 24 months (positive rfr/contrib)
+
+Test Coverage: 98% (_backtest_steps.py); 99% total suite
+Tests Passing: 695/695 (+0 regressions)
+Mutation Testing: Not run (per scope)
+
+--------------------------------------------------------------------------------
+FINDINGS
+--------------------------------------------------------------------------------
+
+[ADVISORY] Tautological test: test_hurdle_matches_analytic_single_step
+  File: tests/test_glide_path_contribution.py, lines 238-247
+
+  This test does NOT call `_apply_contribution`. It assigns `computed` and
+  `expected` using identical expressions on consecutive lines, then asserts
+  allclose between them. The assertion can never fail regardless of production
+  code behavior. It provides zero coverage of the formula correctness inside
+  _apply_contribution.
+
+  Fix: Replace with a call that passes a known state through _apply_contribution
+  and asserts the returned hurdle_contributed against the expected value, e.g.:
+
+      state_after = _apply_contribution(state, inputs, ctx, nav_before)
+      expected = old_hurdle * (1 + rfr) ** (1/12) + monthly
+      np.testing.assert_allclose(state_after.hurdle_contributed, expected, atol=1e-9)
+
+  Note: test_hurdle_updated_on_month_end_with_glide_path already covers this
+  correctly against _INITIAL_NAV. The tautological test is redundant AND wrong;
+  it should be deleted or rewritten.
+
+[ADVISORY] Uncovered branch: no-base-assets early-return path with gp
+  File: src/finance/_backtest_steps.py, lines 938-944 (coverage miss: line 940)
+
+  The branch `if not ctx.base_assets: if gp is not None: return replace(...)`
+  has no test exercising a glide-path portfolio with zero base_assets. This is
+  an edge case but the coverage report flags it (line 940 uncovered). Low risk
+  in practice since a valid glide-path config always has base assets; still a
+  minor coverage gap.
+
+[ADVISORY] monotonicity tests exercise formula in isolation, not production code
+  File: tests/test_glide_path_contribution.py, lines 227-266
+
+  test_hurdle_monotone_over_24_months, test_hurdle_zirp_grows_by_contribution_only,
+  and test_hurdle_no_contribution_pure_rf all simulate the hurdle recurrence
+  formula directly without calling _apply_contribution. They are not tautologies
+  (they do check mathematical properties) but they would pass even if the
+  production code used a different formula entirely. Consider supplementing with
+  a multi-step integration test that chains _apply_contribution calls.
+
+--------------------------------------------------------------------------------
+REQUIRED ACTIONS
+--------------------------------------------------------------------------------
+1. [ACTOR] Delete or replace test_hurdle_matches_analytic_single_step with a
+   test that actually invokes _apply_contribution and asserts the returned
+   hurdle_contributed against the analytic formula.
+
+2. [ACTOR] Optionally: add a test that calls _apply_contribution over 12 monthly
+   steps (chaining state) and checks final hurdle against the geometric-series
+   closed form within 1e-6, mirroring the approach in test_glide_path_state_fields.py
+   (test_hurdle_analytic_12_month_closed_form there operates on the formula only,
+   not the function). This would replace the three formula-in-isolation tests with
+   a production-wiring check.
+
+--------------------------------------------------------------------------------
+NOTES
+--------------------------------------------------------------------------------
+- Atomicity invariant (single dataclasses.replace) is correctly implemented:
+  both hurdle_contributed and dynamic_target_weights are set in one replace call
+  at line 972-980.
+- Non-glide-path guard at line 922 correctly short-circuits on non-month-end.
+- The `if new_hurdle > 0.0 else 1.0` guard on m at line 935 is correct; avoids
+  division by zero in degenerate edge cases.
+- No FFI layer. No Rust. Python-only feature.
+================================================================================

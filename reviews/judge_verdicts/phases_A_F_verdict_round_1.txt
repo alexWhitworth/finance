@@ -1,0 +1,203 @@
+================================================================================
+JUDGE VERDICT — Phases A–F (Lightweight Survey) — Round 1
+Files evaluated: src/finance/consts.py, src/finance/data.py, src/finance/returns.py,
+                 src/finance/leverage.py (non-G portions), src/finance/metrics.py,
+                 src/finance/volatility.py, src/finance/figures.py
+Date: 2026-07-25
+Model: Claude Sonnet 4.6
+================================================================================
+
+VERDICT: CONDITIONAL_PASS
+
+All 289 tests pass with 0 failures and 98.32% global coverage, well above the 80%
+floor. Every dataclass in the codebase uses @dataclass(frozen=True); all core
+business logic is pure (no I/O outside data.py boundary functions). Two advisory
+findings are noted: (1) figures.py format_performance_table silently omits the
+skewness and excess_kurtosis fields added in Sub-phase E — the table is visually
+incomplete but functionally harmless; (2) the MIN_PREMIUM guard test in
+test_leverage.py is a known pre-existing gap carried forward from the Phase G
+verdict (lines 389-390 uncovered). No blocking issues were found.
+
+================================================================================
+PER-MODULE SCORECARD
+================================================================================
+
+Module              | Coverage% | Test count | Key findings
+--------------------|-----------|------------|---------------------------------------------
+consts.py (A)       |   100%    |     0      | Constants-only module; no functions to test.
+                    |           |            | All downstream modules import from here — no
+                    |           |            | duplicate constant definitions found.
+--------------------|-----------|------------|---------------------------------------------
+data.py (B)         |    92%    |    13      | Lines 300-301 (MUB dividend assignment inside
+                    |           |            | mock-disabled path) and 306-311 (fetch_vol_
+                    |           |            | indices=True branch) are uncovered. Network I/O
+                    |           |            | functions correctly marked # pragma: no cover.
+                    |           |            | splice() is thoroughly tested (seam-zero,
+                    |           |            | value-preservation, error paths). PriceData
+                    |           |            | vol_prices field present and correct.
+--------------------|-----------|------------|---------------------------------------------
+returns.py (C)      |    98%    |    18      | Line 166 (rfr=non-None branch) uncovered in
+                    |           |            | isolation but exercised indirectly via
+                    |           |            | test_portfolio.py. _decompose_mub_return alias
+                    |           |            | tested. tey_tickers loop generalization tested.
+                    |           |            | ReturnData immutability confirmed.
+--------------------|-----------|------------|---------------------------------------------
+leverage.py (D/E/F) |    98%    |    72      | Lines 389-390 (MIN_PREMIUM guard — pre-existing
+                    |           |            | gap, carried from Phase G verdict A-3a).
+                    |           |            | Lines 605-606 (compute_leaps_mtm — dead code,
+                    |           |            | pre-existing gap from Phase G verdict A-3b).
+                    |           |            | All Phase F additions (partial_close_leaps,
+                    |           |            | compute_terminal_nav, compute_leaps_tax_summary,
+                    |           |            | _live_contracts, TerminalNav, LeapsTaxSummary,
+                    |           |            | LeapsPartialCloseEvent) are well-covered.
+                    |           |            | All dataclasses use frozen=True.
+--------------------|-----------|------------|---------------------------------------------
+metrics.py (E/F)    |    99%    |    50      | Line 182 (sortino_ratio: downside_std==0.0
+                    |           |            | branch) uncovered — benign edge case.
+                    |           |            | sharpe/sortino/omega all accept pd.Series RFR
+                    |           |            | (not scalar). return_skewness and
+                    |           |            | return_excess_kurtosis correctly delegate to
+                    |           |            | scipy.stats. RuntimeWarning on near-identical
+                    |           |            | data in 2 tests — expected, not a bug.
+                    |           |            | PerformanceReport.terminal_nav / tax_summary
+                    |           |            | None-handling tested.
+--------------------|-----------|------------|---------------------------------------------
+volatility.py (D)   |    98%    |    42      | Lines 185 (port_var <= 0 guard) and 290
+                    |           |            | (rho_vti fallback for asset not in rolling_corr)
+                    |           |            | uncovered — defensive edge cases.
+                    |           |            | VOL_INDEX_TICKERS exclusion in
+                    |           |            | build_volatility_model explicitly tested.
+                    |           |            | VolatilityModel uses frozen=True.
+--------------------|-----------|------------|---------------------------------------------
+figures.py (A/F)    |    99%    |    24      | Line 260 (drag_label="" fallback for empty
+                    |           |            | common index in plot_leaps_tax_drag) uncovered
+                    |           |            | — trivial edge case.
+                    |           |            | CRISIS_PERIODS correctly imported from
+                    |           |            | finance.consts (not finance.metrics).
+                    |           |            | ADVISORY: format_performance_table / _metrics_
+                    |           |            | to_row omit skewness and excess_kurtosis fields
+                    |           |            | added in Sub-phase E. Sub-phase H roadmap item
+                    |           |            | explicitly defers this — not a regression.
+
+================================================================================
+FINDINGS
+================================================================================
+
+BLOCKING
+--------
+None.
+
+ADVISORY
+--------
+
+A-1: figures.py format_performance_table omits skewness / excess_kurtosis
+File: src/finance/figures.py lines 316, 340-348
+-----------------------------------------------------------------------
+_metrics_to_row() builds a 7-column row (ann_return through omega) and
+format_performance_table assigns exactly 7 col_labels. The PerformanceMetrics
+dataclass has 9 scalar fields — skewness and excess_kurtosis are silently dropped.
+This is explicitly deferred to Sub-phase H ("Update format_performance_table to
+include skewness, excess_kurtosis rows") and is therefore expected. No test
+exercises these fields in the table output. The omission means the console report
+is incomplete but does not produce incorrect output or test failures.
+
+Recommended fix (Sub-phase H): add skewness and excess_kurtosis rows to
+_metrics_to_row and extend col_labels accordingly. Add a test asserting both
+field names appear in format_performance_table output.
+
+A-2: data.py lines 300-301 and 306-311 lack unit test coverage [ADVISORY]
+File: src/finance/data.py
+-----------------------------------------------------------------------
+Lines 300-301 (MUB dividend population inside if not mub_divs.empty) are skipped
+because test_data.py mocks fetch_dividends to return an empty Series. The branch
+where real dividends are reindexed and written is never executed.
+Lines 306-311 (fetch_vol_indices=True path calling fetch_volatility_index) have
+no test exercising the True branch; only the False branch (vol_prices = empty
+DataFrame) is tested.
+Both gaps are in the build_price_data I/O orchestrator, not in logic functions.
+Network functions are correctly excluded via pragma: no cover.
+
+Recommended fix: add two tests using mocked fetch_volatility_index and a non-empty
+fetch_dividends return value to exercise these branches.
+
+A-3: Pre-existing leverage.py coverage gaps (carried from Phase G verdict)
+File: src/finance/leverage.py lines 389-390, 605-606
+-----------------------------------------------------------------------
+These gaps were documented in Phase G verdict A-3 and required actions items 1
+and 2. They remain unresolved as of this survey. Reproducing here for completeness:
+  - Lines 389-390: MIN_PREMIUM guard in create_leaps_contract — test inputs do not
+    force premium below MIN_PREMIUM_PER_SHARE, so the guard branch is unreachable.
+  - Lines 605-606: compute_leaps_mtm() is a public function with no tests and no
+    callers in the production code path (dead code).
+
+ESCALATION
+----------
+None.
+
+================================================================================
+DESIGN-PATTERN AUDIT
+================================================================================
+
+Frozen dataclass compliance: PASS
+  All 14 @dataclass decorators across the codebase use frozen=True. No mutable
+  dataclasses found.
+  Affected classes: PriceData, ReturnData, VolatilityModel, LeapsConfig,
+  LeapsContract, LeapsRollEvent, LeapsPartialCloseEvent, LeapsLedger, TerminalNav,
+  LeapsTaxSummary, PerformanceMetrics, PerformanceReport, PortfolioConfig,
+  BacktestResult.
+
+Pure function boundary: PASS
+  Network I/O (yfinance) is confined to data.py (fetch_prices, fetch_dividends,
+  fetch_risk_free_rate, fetch_volatility_index) — all correctly marked
+  # pragma: no cover. No network imports appear in returns.py, metrics.py,
+  leverage.py, volatility.py, portfolio.py, or consts.py.
+  Filesystem I/O in figures.py is gated by output_path parameter — passing
+  output_path=None suppresses all writes. All tests use output_path=None.
+
+Module-level mutable state: PASS
+  No mutable globals found in any pure-logic module. All module-level names in
+  consts.py are primitives, tuples, or frozensets (immutable by construction).
+  The two mutable dict constants (SPLICE_MAP, VXUS_VOL_BLEND, ASSET_VOL_INDEX,
+  CRISIS_PERIODS) are module-level configuration — no callers mutate them.
+
+================================================================================
+REQUIRED ACTIONS
+================================================================================
+
+For CONDITIONAL_PASS to be upgraded to PASS, the following actions are required:
+
+1. [ADVISORY A-3a — leverage.py:389-390] Fix the MIN_PREMIUM guard test.
+   (Carried from Phase G verdict A-3 required action 1 — still unresolved.)
+   In test_leverage.py, test_create_leaps_zero_contracts_when_premium_below_floor,
+   use inputs that force premium below MIN_PREMIUM_PER_SHARE (e.g. spot=0.0001,
+   iv=0.0001, capital_to_deploy=100.0). Assert c.n_contracts == 0.0 directly
+   without a conditional guard.
+
+2. [ADVISORY A-3b — leverage.py:605-606] Address compute_leaps_mtm dead code.
+   (Carried from Phase G verdict A-3 required action 2 — still unresolved.)
+   Either add a test or mark with # pragma: no cover and remove if truly unused.
+
+3. [ADVISORY A-1 — figures.py:316-348] Implement Sub-phase H table update:
+   add skewness and excess_kurtosis rows to _metrics_to_row; extend col_labels.
+   This is pre-planned work, not a surprise defect — no timeline pressure.
+
+Items 1-2 address pre-existing coverage gaps. Item 3 is deferred Sub-phase H work.
+None are blocking for A-F phase correctness given the 98.32% global coverage and
+289/289 tests passing.
+
+================================================================================
+CONFIDENCE STATEMENT
+================================================================================
+
+Phase G received CONDITIONAL_PASS with 23/23 acceptance criteria met and
+289 passing tests. Because G depends on A-F as upstream foundations, and G's
+passing tests exercise A-F code extensively (portfolio.py alone runs 54 tests
+that invoke leverage.py, returns.py, volatility.py, and metrics.py), the A-F
+modules have significant indirect test coverage beyond what their own test files
+provide. The pure-function design pattern is correctly applied throughout, the
+immutability invariant holds across all 14 dataclasses, and the I/O boundary
+is clean. This survey finds A-F to be in good health with only advisory-level gaps.
+
+================================================================================
+END OF VERDICT
+================================================================================

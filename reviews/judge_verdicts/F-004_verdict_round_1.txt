@@ -1,0 +1,36 @@
+F-004 JUDGE VERDICT — Round 1
+==============================
+Date: 2026-08-02
+Feature: F-004 — _build_context extraction
+
+VERDICT: CONDITIONAL_PASS
+
+CRITERIA
+--------
+1. All existing run_backtest ValueError guard tests pass when routed through _build_context: PARTIAL
+   - Tests present: gtt_signal_without_gtt_config_raises, missing_asset_in_return_data_raises,
+     leaps_keys_without_leaps_config_raises, multiple_leaps_underlyings_raises → all PASS
+   - MISSING: Test for "defensive_weights tickers absent from return_data" (lines 73-80 are uncovered)
+   - MISSING: No test exercises gtt_signal present + valid gtt_config path (lines 130-142 are uncovered)
+     This means the GTT series alignment path (_gtt_governed_keys, _reindex_position_mask,
+     _defensive_gross_return, _long_windows) is not exercised by _build_context tests.
+2. mtm_iv_series causality spot-check within 1e-12: PASS
+   - test_mtm_iv_series_causality verifies this within 1e-10.
+
+COVERAGE: 81% (lines 73-80, 130-133, 136-142, 163 uncovered)
+mypy: PASS (--strict, no issues)
+Ruff: ADVISORY ONLY — EN DASH in docstring (RUF002), import sort (I001) — fixable
+
+FINDINGS
+--------
+ADVISORY: Lines 73-80 (defensive_weights missing-ticker check) and 130-142 (GTT active
+path) are not exercised by the test suite for _build_context. The spec acceptance criterion
+states "All existing run_backtest ValueError guard tests pass when routed through
+_build_context" — the defensive_weights absent case is a ValueError guard that is missing.
+This is not a correctness bug (the logic is present) but a coverage gap.
+
+REQUIRED ACTIONS
+----------------
+ADVISORY: Add test for defensive_weights tickers absent (lines 73-80).
+ADVISORY: Add test for gtt_signal+gtt_config fully specified path (lines 130-142).
+ADVISORY: Fix ruff: EN DASH → hyphen in module docstring, sort imports.

@@ -1,0 +1,170 @@
+F-019 JUDGE VERDICT — Round 1
+==============================
+Feature : Whipsaw multi-regime lifecycle integration test (Scenario C)
+Reviewer: Judge-Agent (adversarial midweight review)
+Date    : 2026-08-03
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+VERDICT: CONDITIONAL_PASS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+All 4 F-019 tests pass. The primary invariants are correctly checked via
+direct ledger inspection (not NAV proxies). One spec edge case is unexercised
+(month-end re-entry coincidence). One pre-existing test failure exists in the
+broader suite that is unrelated to F-019 but must be noted.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SCORECARDS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+AC-1 — Cross-Window Contract Isolation (I3)
+  Method        : DIRECT — uses _live_contracts(ledger, d) at every date in
+                  window-2 (indices 110–199, 90 dates total)
+  Implementation: test_i3_no_window1_contracts_live_in_window2 (line 565)
+                  - Identifies window-1 contracts via purchase_date < reentry1_date
+                  - Iterates all 90 window-2 dates; stops at 5 leakage hits
+                  - Verified at runtime: 0 leakage dates out of 90
+  Mechanism     : _live_contracts() excludes contracts via gtt_close_events.
+                  All 4 window-1 contracts appear in gtt_close_events with
+                  close_date=2018-03-27 (the day the first defensive window
+                  begins). Exclusion is sound.
+  Two windows?  : YES — mask[60:110]=0 and mask[200:260]=0 confirmed.
+                  4 window-1 contracts (purchased Jan–Mar 2018) all closed.
+  Score         : PASS
+
+AC-2 — No Return Spike Day After Re-entry
+  Bound         : < 0.05 (5%) — matches spec exactly
+  Both checked? : YES — indices _REENTRY_1+1=111 and _REENTRY_2+1=261
+  Actual values : |r[111]| = 0.012213, |r[261]| = 0.020155 (both well under 0.05)
+  VIX stress    : YES — VIX drops from 0.50 (defensive) to 0.15 (long) at both
+                  re-entries. Maximum raw/smoothed divergence scenario correctly
+                  implemented.
+  Score         : PASS
+
+Test Pass/Fail Summary:
+  test_i3_no_window1_contracts_live_in_window2  PASS
+  test_no_return_spike_day_after_reentry         PASS
+  test_nav_return_identity_at_reentry_days       PASS
+  test_gtt_close_events_count                    PASS
+
+Full suite (591 tests): 590 PASS, 1 FAIL (unrelated — see Findings)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+FINDINGS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+FINDING-1 [ADVISORY] — Spec Edge Case R4 Interaction Not Exercised
+  File: tests/test_backtest_integration.py, lines 505–509 (corpus spec comment)
+  Spec says: "Second re-entry coincides with month-end — tests R4 interaction"
+  Reality: re-entry 2 is index 260 = 2019-01-02 (Wednesday, first trading day
+  of January 2019). This is NOT a month-end.
+  Root cause: The corpus uses pd.bdate_range which does NOT skip public holidays.
+  2019-01-01 (New Year's Day) is included as a synthetic trading day at index 259,
+  which is the last defensive day. The re-entry falls on 2019-01-02 instead of
+  the intended month-end. December 31 2018 (a real month-end) is at index 258,
+  which is inside the defensive window.
+  Impact: The R4 interaction (re-entry coinciding with month-end, where a
+  contribution would normally be deposited) is NOT stress-tested. This edge
+  case could hide a contribution-on-re-entry-day accounting error.
+  Severity: ADVISORY (tests still pass; the stated behavior is correct for the
+  corpus as constructed, but the corpus does not match the spec's stated edge case)
+
+FINDING-2 [ADVISORY] — Boundary Condition in I3 Check Uses Strict Less-Than
+  File: tests/test_backtest_integration.py, line 585
+  Code: frozenset(c for c in ledger.contracts if pd.Timestamp(c.purchase_date) < reentry1_date)
+  The strict < means a contract purchased ON reentry1_date (2018-06-06) is NOT
+  classified as a window-1 contract. One such contract exists in the ledger
+  (purchased 2018-06-06, also in gtt_close_events with close_date=2018-10-09).
+  This is CORRECT behavior: the re-entry day's new contract is a window-2
+  contract, not a window-1 contract. The < boundary is semantically right.
+  However: that same contract IS in gtt_close_events (closed at second
+  defensive window start 2018-10-09). If someone introduced a bug where
+  re-entry-day contracts were incorrectly classified as window-1 contracts,
+  the test would not catch it. This is a theoretical gap, not a real bug.
+  Severity: ADVISORY (no code change needed; add a comment clarifying the
+  boundary semantics would be sufficient)
+
+FINDING-3 [BLOCKING — PRE-EXISTING, UNRELATED TO F-019] — Failing Test in Suite
+  File: tests/test_gtt_backtest.py, line 859
+  Test: test_reentry_creation_iv_matches_mtm_iv_no_gap
+  Failure: LEAPS weight at re-entry = 0.5202 but expected 0.50 ± 1e-6.
+  This test checks that freshly created re-entry contracts are priced at
+  creation IV (not smoothed IV), so leaps_value == capital_deployed and
+  weight == target_fraction exactly. The assertion fails with a 4% deviation
+  (0.5202 vs 0.50).
+  This is NOT an F-019 test failure, but it IS a real correctness failure in
+  the re-entry IV consistency logic that F-019's AC-2 is supposed to stress.
+  The fact that F-019's AC-2 (< 0.05 bound) passes while this test fails
+  suggests: either (a) the IV gap is small enough to produce a sub-5% return
+  spike but still violates the weight identity, or (b) the two tests exercise
+  different code paths/configs.
+  The failing test uses AccountType.TAX_SHELTERED and leaps_fraction=0.5.
+  F-019 uses AccountType.TAXABLE and leaps_fraction=0.15.
+  This pre-existing failure must be resolved before declaring the full
+  Bug 2 fix complete.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ADVERSARIAL PROBE RESULTS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Q: Could NAV numbers pass I3 even with stale contracts being double-counted?
+A: No — the test does NOT use NAV as a proxy. It directly calls
+   _live_contracts(ledger, d) for each of 90 window-2 dates and computes
+   the set intersection with window1_contracts. This is the gold-standard
+   direct check. A stale contract appearing in the live set would be caught
+   on the date it first appears.
+
+Q: Are the returns plausibly low, or suspiciously low (i.e., corpus too gentle)?
+A: The max absolute daily return across all 504 days is 0.029 (2.9%). This is
+   consistent with the rng.normal(0.0003, 0.01) daily return distribution.
+   The VIX drop from 0.50→0.15 at re-entry is present and would stress Bug 2
+   (if it existed). The corpus is not pathologically gentle; it simply does not
+   produce large enough organic returns to hit the 5% bound under correct code.
+
+Q: Does window-2 also get checked for window-2 contract leakage into window-3?
+A: NOT in the F-019 test. The test only checks window-1 leakage into window-2.
+   However, manual inspection confirms window-2 contracts live in window-3 = 0/244
+   dates. The absence of a second-isolation test (I3 for window-2 → window-3)
+   is a minor gap but not blocking given the 0/244 empirical result.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+REQUIRED ACTIONS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+REQUIRED (blocks merge):
+  1. Fix tests/test_gtt_backtest.py::test_reentry_creation_iv_matches_mtm_iv_no_gap
+     [FINDING-3]. The Bug 2 fix is incomplete for the TAX_SHELTERED + 0.5
+     leaps_fraction scenario. Investigate why LEAPS weight = 0.5202 instead
+     of 0.50 at re-entry. This is the direct Bug 2 regression test and it
+     is currently failing.
+
+RECOMMENDED (not blocking F-019 specifically):
+  2. Fix the month-end re-entry edge case [FINDING-1]. Shift the second
+     defensive window so that re-entry-2 falls on a month-end. Options:
+     - Use mask[200:258]=0 so re-entry=258 falls on Dec 31 2018 (month-end).
+     - Or add a separate focused test for re-entry-on-month-end.
+
+  3. Add a brief comment at line 585 clarifying why < (strict) is correct
+     for the window-1 contract boundary [FINDING-2].
+
+  4. Optionally extend test_i3_no_window1_contracts_live_in_window2 to also
+     verify window-2 contract isolation from window-3 dates (indices 260–503).
+     Not blocking given 0/244 empirical result, but would complete the I3 story.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+EVIDENCE SUMMARY
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Test file     : tests/test_backtest_integration.py (lines 487–699)
+Corpus        : _build_f019_corpus() — 504 days, seed=99, two defensive windows
+                Window-1 def: mask[60:110]=0, returns_idx[60–109] = 2018-03-28 to 2018-06-05
+                Window-2 def: mask[200:260]=0, returns_idx[200–259] = 2018-10-10 to 2019-01-01
+Re-entry 1    : index 110 = 2018-06-06 (not month-end)
+Re-entry 2    : index 260 = 2019-01-02 (not month-end — see FINDING-1)
+VIX at def    : 0.50 (elevated); VIX at re-entry: 0.15 (maximum divergence)
+Ledger        : 23 contracts total, 10 gtt_close_events (4 at 2018-03-27, 6 at 2018-10-09)
+Window-1 conts: 4 (purchased Jan–Mar 2018), all in gtt_close_events — isolation confirmed
+I3 leakage    : 0/90 window-2 dates with window-1 contract leakage
+|r[111]|      : 0.012213 (< 0.05 — AC-2 check 1 passes with 4x headroom)
+|r[261]|      : 0.020155 (< 0.05 — AC-2 check 2 passes with 2.5x headroom)
+Full suite    : 590/591 pass; 1 failure in test_gtt_backtest.py (pre-existing, unrelated)

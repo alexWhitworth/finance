@@ -1,0 +1,37 @@
+F-007 JUDGE VERDICT — Round 1
+==============================
+Date: 2026-08-02
+Feature: F-007 — _apply_gtt_open extraction
+
+VERDICT: CONDITIONAL_PASS
+
+CRITERIA
+--------
+1. After _apply_gtt_open on defensive day: holdings[k]==0.0 for k in governed_base: PASS
+2. After _apply_gtt_open on Long day: state unchanged (identity): PASS
+3. Accounting invariant A-open: sum(new_holdings + new_sleeve) == sum(old_holdings + old_sleeve): PASS
+   - Both explicit test and Hypothesis property test cover this.
+
+COVERAGE: 100% (11/11 statements)
+mypy: PASS (--strict, no issues)
+Tests: 6/6 pass including Hypothesis
+
+FINDINGS
+--------
+STRUCTURAL ADVISORY: _step_f007.py imports PortfolioState, DayInputs, BacktestContext from
+`finance._portfolio_types` (line 14: `from finance._portfolio_types import BacktestContext, DayInputs, PortfolioState`).
+All other step functions (F-008 through F-015) import from `finance.portfolio`.
+These are structurally identical but DISTINCT Python classes (A is B → False verified at
+runtime). This inconsistency means:
+- Type annotations in _step_f007.py reference different classes than the rest of the pipeline.
+- If called from a run_backtest orchestrator that constructs states from finance.portfolio,
+  the type annotations will be mismatched (mypy would catch this at the call site, but
+  each file is checked in isolation only).
+- dataclasses.replace() is safe at runtime because it uses type(obj), not the annotation.
+
+REQUIRED ACTIONS
+----------------
+BLOCKING (for Phase 3/F-016 correctness): Change _step_f007.py line 14:
+FROM: from finance._portfolio_types import BacktestContext, DayInputs, PortfolioState
+TO:   from finance.portfolio import BacktestContext, DayInputs, PortfolioState
+This must match all other step functions before the loop body is wired in F-016.

@@ -1,0 +1,102 @@
+================================================================================
+JUDGE VERDICT — F-008: compute_portfolio_greeks
+Spec: plans/portfolio_management_spec.json
+Round: 1
+Evaluated: 2026-08-11
+================================================================================
+
+VERDICT: CONDITIONAL_PASS
+
+--------------------------------------------------------------------------------
+SCORECARDS
+--------------------------------------------------------------------------------
+
+Acceptance Criteria:
+  AC1  Empty leaps_contracts → PortfolioGreeks with all net_ = 0.0        MET
+  AC2  net_delta ∈ (0, n_total * CONTRACT_MULTIPLIER) for live LEAPS (I12) MET
+
+Schema Compliance:
+  DS-001 LivePortfolio consumed correctly (leaps_contracts tuple iteration) MET
+  DS-009 PortfolioGreeks fields: net_vanna/net_charm aggregated correctly   MET
+
+API Contract (AC-008):
+  Signature: compute_portfolio_greeks(portfolio, spot, iv,
+             risk_free_rate=0.0)                                           MET
+  Returns zero-valued PortfolioGreeks when leaps_contracts is empty        MET
+  Delegates per-contract computation to compute_contract_greeks            MET
+  Pure function (no I/O)                                                   MET
+  Complexity: O(k) where k = active contracts                              MET
+
+Test Coverage:
+  tests/test_greeks.py (unit, F-008 section): 10 tests — empty portfolio,
+    single/multi contract, differing scale values, property-based I12 sum  PASS
+  tests/test_greeks_integration.py: 7 integration tests — DITM domain
+    bounds, partial scale reduction, create_leaps_contract round-trip       PASS
+  greeks.py module-level coverage: 100%
+  Full suite: 824 passed, 0 regressions
+  Lint (ruff): CLEAN
+
+Aggregation Correctness (spot-checked):
+  net_delta = sum(position_delta)                                          VERIFIED
+  net_vega  = sum(position_vega)                                           VERIFIED
+  net_gamma = sum(gamma * n * 100 * scale)                                 VERIFIED
+  net_theta = sum(position_theta)                                          VERIFIED
+  net_vanna = sum(vanna * n * 100 * scale)                                 VERIFIED
+  net_charm = sum(charm * n * 100 * scale)                                 VERIFIED
+
+--------------------------------------------------------------------------------
+FINDINGS
+--------------------------------------------------------------------------------
+
+ADVISORY — A1
+File: tests/test_greeks_integration.py:87
+The import of numpy is placed inline inside the test method
+(test_partial_scale_reduces_net_delta), inconsistent with the rest of the
+file's module-level imports.  No functional impact, but should be hoisted.
+
+ADVISORY — A2
+File: tests/test_greeks_integration.py:87 (same location)
+The import is also flagged by ruff I001 in isolation (though it passed the
+full ruff check on this run).  Move to top of file with module imports.
+
+ADVISORY — A3
+File: src/finance/greeks.py:196-197
+The _position_scale inner def is defined inside compute_portfolio_greeks,
+meaning it is re-created on every call to compute_portfolio_greeks that
+reaches the non-empty branch.  This is consistent with A2 from F-007
+verdict.  Hoist to module-level private if compute_portfolio_greeks is
+called in a tight loop.
+
+ADVISORY — A4
+File: tests/test_greeks_integration.py:101-123 (test_net_theta_negative)
+The test correctly avoids the q>0 / r=0 positive-theta edge case by using
+dividend_yield=0.0 and risk_free_rate=0.04.  The comment documenting this
+choice is good.  However, there is no test verifying the positive-theta
+case for deep-ITM q>0 / r=0 contracts (which the integration helper
+_make_contract uses).  This is not a failing — the positive-theta case is
+mathematically correct — but a note in the test docstring that the helper's
+dividend_yield=0.013 is intentionally excluded from the theta-sign assertion
+would prevent future confusion.
+
+--------------------------------------------------------------------------------
+BLOCKING FINDINGS
+--------------------------------------------------------------------------------
+None.
+
+--------------------------------------------------------------------------------
+REQUIRED ACTIONS
+--------------------------------------------------------------------------------
+A1/A2 (ADVISORY): Move numpy import to module level in
+                  tests/test_greeks_integration.py.
+A3    (ADVISORY): Hoist _position_scale to module-level private (shared
+                  with F-007 A2).
+A4    (ADVISORY): Add comment clarifying the dividend_yield=0.0 choice in
+                  test_net_theta_negative.
+
+None of A1–A4 are blocking.  The implementation satisfies all F-008
+acceptance criteria and the I12 invariant is verified both numerically and
+via integration round-trip.
+
+================================================================================
+STATUS UPDATE: features[F-008].status → complete
+================================================================================

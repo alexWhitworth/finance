@@ -1,0 +1,73 @@
+================================================================================
+JUDGE VERDICT — F-012: compute_volatility_report
+Round: 1  |  Date: 2026-08-12
+================================================================================
+
+VERDICT: CONDITIONAL_PASS
+
+--------------------------------------------------------------------------------
+SCORECARD
+--------------------------------------------------------------------------------
+Acceptance Criteria:
+  [MET]    VolatilityReport.portfolio_vol > 0 for any non-trivial portfolio.
+  [MET]    ValueError propagated from build_volatility_model when return_data
+           does not cover portfolio.as_of_date.
+  [MET]    VolatilityReport is a frozen dataclass.
+  [MET]    contribution_table has correct columns (sigma_tilde, sigma_hat,
+           rho_VTI, contrib).
+  [MET]    weights_used sums to 1.0 for base-only portfolio.
+  [MET]    vol_model is a VolatilityModel instance.
+
+Test Coverage (portfolio_manager.py isolated): 96%
+Full-suite coverage: 98.45%
+Mutation testing: skipped per user instruction (light review)
+Python static analysis: mypy strict PASS; ruff violations in same file (see F-011 A1–A3).
+
+--------------------------------------------------------------------------------
+FINDINGS
+--------------------------------------------------------------------------------
+
+A1  [ADVISORY]  Spec invariant mismatch: spec §F-012 plausibility_range states
+    "contribution_table.contrib.sum() ≈ portfolio_vol". This is incorrect in
+    the implementation (and the underlying volatility.py). Contributions are
+    unit-normed fractions summing to 1.0, not to portfolio_vol.
+
+    Evidence:
+        portfolio_vol = 0.115105
+        contribution_table['contrib'].sum() = 1.000000
+
+    The implementation correctly follows compute_vol_contributions() which
+    returns fractions (docstring: "By construction, contributions sum to
+    exactly 1.0"). The spec invariant is wrong — it should read
+    "contribution_table.contrib.sum() ≈ 1.0".
+
+    Action: The Actor need not change code. This is a spec documentation
+    error. The human should correct the spec's plausibility_range for F-012.
+
+A2  [ADVISORY]  compute_volatility_report builds weights_used only from base
+    holdings (LEAPS excluded). The docstring says "LEAPS excluded from
+    weights_used" which is correct, but the function passes weights_used
+    (base-only, normalized) to build_vol_contribution_table(). The resulting
+    contribution_table rows correspond only to base asset tickers. This is
+    consistent with the spec but worth documenting explicitly in the docstring
+    as a known limitation.
+
+A3  [ADVISORY]  No test for the zero-holdings edge case (base_nav == 0):
+    lines 425–426 (equal-weight fallback) are uncovered. Not blocking since
+    this is a degenerate portfolio state unlikely in practice.
+
+--------------------------------------------------------------------------------
+REQUIRED ACTIONS (for Actor before re-judge)
+--------------------------------------------------------------------------------
+
+1. Fix ruff violations A1–A3 from F-011 verdict (same file). These affect
+   this feature's file and must be clean before F-016 final surface review.
+
+2. No code changes required for F-012 logic itself — all acceptance criteria
+   are MET. The spec's contrib.sum() invariant is a documentation error in the
+   spec, not the implementation.
+
+--------------------------------------------------------------------------------
+SPEC STATUS UPDATE
+--------------------------------------------------------------------------------
+F-012 status: complete (pending ruff clean-up bundled with F-011 fix)

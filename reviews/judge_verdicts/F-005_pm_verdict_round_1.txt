@@ -1,0 +1,108 @@
+================================================================================
+JUDGE VERDICT — F-005: Phase 1c: Implement as_live_portfolio bridge
+Round: 2  |  Date: 2026-08-10  |  Judge: Senior Staff Engineer (Adversarial)
+Spec: portfolio_management_spec.json
+================================================================================
+
+VERDICT: CONDITIONAL_PASS
+
+--------------------------------------------------------------------------------
+SCORECARDS
+--------------------------------------------------------------------------------
+Acceptance Criteria:
+  [MET]   Returns LivePortfolio with target_weights summing to 1.0 ± 1e-6
+            → test_as_live_portfolio_target_weights_sum_to_one (unit)
+            → test_integration_no_leaps_target_weights_sum_one (integration, 756 days)
+            → test_integration_leaps_target_weights_sum_one (integration, 756 days, LEAPS)
+            → All pass
+
+  [UNMET] compute_nav_breakdown(result).total_nav ≈ result.nav_series.iloc[-1] (I11)
+            → compute_nav_breakdown and NavBreakdown are F-010 (not yet implemented).
+              The integration test docstring references I11 but only tests target_weight
+              sum. No test reconstructs NAV from LivePortfolio components.
+              This is a spec-acknowledged deferred dependency, not an Actor error.
+              Mark as DEFERRED pending F-010.
+
+Temporal Invariant:
+  [MET]   as_of_date = final_state date; contracts filtered to expiry > that date
+            → test_integration_leaps_live_contracts_all_active verifies
+              contract.expiry_date > lp.as_of_date for all returned contracts.
+
+Edge Cases:
+  [MET]   final_state.leaps_ledger is None → empty leaps_contracts
+            → test_as_live_portfolio_leaps_none_ledger_returns_empty PASSES
+  [PARTIAL] all contracts in ledger are expired → empty leaps_contracts
+            → get_live_contracts already filters expired contracts (tested in
+              test_leverage.py via F-001). No dedicated test for this path via
+              as_live_portfolio with a ledger where all contracts are post-expiry.
+              Low risk: relies on well-tested get_live_contracts.
+
+Complexity Budget: O(k) where k = active contracts. MET (single get_live_contracts call).
+
+Property-Based Testing:
+  [PARTIAL] Spec requires: "Property: when backtest has no LEAPS, leaps_contracts is empty"
+            → test_as_live_portfolio_no_leaps_empty_contracts covers this (unit, not
+              hypothesis-based). Hypothesis weight-sum invariant is present in unit tests
+              but the specific "no-LEAPS → empty" property is not hypothesis-driven.
+              Acceptable for lightweight review.
+
+Module Coverage:
+  portfolio_manager.py:  97% (line 92 = prev_date_ts is None guard, unreachable in practice)
+
+--------------------------------------------------------------------------------
+FINDINGS
+--------------------------------------------------------------------------------
+
+BLOCKING [B1] — I11 accounting oracle untestable until F-010; integration test label misleading
+  File: tests/test_portfolio_manager_integration.py:1 (docstring references I11),
+        plans/portfolio_management_spec.json F-005/acceptance_criteria[1]
+  The acceptance criterion "compute_nav_breakdown(result).total_nav ≈ nav_series.iloc[-1]"
+  cannot be satisfied until NavBreakdown and compute_nav_breakdown (F-010) exist.
+  The integration test file's module docstring claims to cover I11 but the actual tests
+  do not verify the NAV identity. This is misleading.
+  Action (deferred): Add the NAV oracle test once F-010 is implemented. Raise as B1 to
+  track, but this is a spec ordering issue rather than an Actor logic defect.
+
+ADVISORY [A1] — "all contracts expired" edge case not directly tested via as_live_portfolio
+  File: tests/test_portfolio_manager.py
+  The spec edge case "all contracts in ledger are expired — returns empty leaps_contracts
+  tuple" is not covered by a test that builds a ledger with only expired contracts and
+  calls as_live_portfolio. The code relies on get_live_contracts to filter (correct), but
+  a direct test would provide explicit regression protection.
+
+ADVISORY [A2] — leaps_scale default=1.0 fallback: semantically sound but untested
+  File: src/finance/portfolio_manager.py:105
+  `state.leaps_scale.get(c, 1.0)` correctly assigns scale=1.0 to contracts not in
+  leaps_scale (i.e. full position, not partially closed). Empirically verified: QUARTERLY
+  backtest produces leaps_scale={} (all contracts at full scale), DRIFT produces non-empty
+  leaps_scale. The fallback is correct but there is no test explicitly asserting the
+  1.0-default path vs. the non-1.0 scale path in the same test.
+
+ADVISORY [A3] — gtt_active=True with non-GTT backtest returns prev_regime=1
+  File: src/finance/portfolio_manager.py:108
+  When caller passes gtt_active=True on a non-GTT backtest, gtt_regime is set from
+  state.prev_regime (which is 1 after any normal Long-only backtest). This is a
+  caller-contract issue (gtt_active must match the backtest), not a defect. Docstring
+  should explicitly warn callers that gtt_active=True on a non-GTT backtest produces
+  a meaningless regime value.
+
+ADVISORY [A4] — leaps_contracts tuple type vs. DS-001 spec type
+  File: src/finance/portfolio_manager.py:46
+  DS-001 specifies leaps_contracts type as `tuple[tuple[LeapsContract, float], ...]`.
+  Implementation uses that exact type. The inner tuple is unnamed (not a NamedTuple).
+  The spec does not require a NamedTuple, so this is conformant.
+
+--------------------------------------------------------------------------------
+REQUIRED ACTIONS FOR ACTOR
+--------------------------------------------------------------------------------
+[B1] When F-010 (NavBreakdown/compute_nav_breakdown) is implemented, add an integration
+     test to test_portfolio_manager_integration.py verifying:
+       compute_nav_breakdown(lp, leaps_mtm=lp_mtm).total_nav ≈ result.nav_series.iloc[-1]
+       within 1e-6 (I11).
+     The current integration test module docstring incorrectly claims to cover I11.
+
+[A3-FIX] Add a one-line docstring note to as_live_portfolio: "Pass gtt_active=True only
+         when the backtest was configured with a gtt_signal; otherwise gtt_regime will
+         reflect the final Long regime of a non-GTT backtest and be semantically wrong."
+
+================================================================================

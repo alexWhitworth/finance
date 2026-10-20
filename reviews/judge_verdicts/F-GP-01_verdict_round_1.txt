@@ -1,0 +1,112 @@
+================================================================================
+JUDGE VERDICT — F-GP-01: GlidepathConfig dataclass and PortfolioConfig extension
+Spec: plans/glide_path_rebalance_spec.json
+Round: 1
+Effort: light/mid
+================================================================================
+
+VERDICT: CONDITIONAL_PASS
+
+--------------------------------------------------------------------------------
+SCORECARD
+--------------------------------------------------------------------------------
+Acceptance Criteria:          7 / 7 MET
+Tests (F-GP-01 scope):       19 / 19 PASSED
+_portfolio_types.py coverage: 94% (missing: GttConfig __post_init__ + target_weights
+                               sum guard — tested in other suites, not F-GP-01 scope)
+Mutation testing:             SKIPPED per user directive (no mutmut)
+FFI:                          N/A (pure Python)
+
+--------------------------------------------------------------------------------
+FINDINGS
+--------------------------------------------------------------------------------
+
+[BLOCKING — 1]
+
+Title: VTI target_weights value is NOT validated to be 0.0
+File:  src/finance/_portfolio_types.py:170–173
+
+The spec states:
+  "target_weights must include 'VTI' with value 0.0"
+  "PortfolioConfig with glide_path_config set and 'VTI' absent from target_weights raises ValueError."
+
+The __post_init__ checks only presence:
+    if "VTI" not in self.target_weights:  # line 170
+
+It does NOT check `self.target_weights["VTI"] == 0.0`.
+
+Downstream consequence (confirmed by probe): when a caller constructs
+PortfolioConfig with `"VTI": 0.10` and glide_path_config set,
+`compute_glide_target_weights` silently overwrites VTI with
+`vti_alpha * w_freed`, discarding the 0.10 entirely. This causes
+`result.sum() ≈ 0.90` at all m values — breaking the core sum==1.0 invariant
+(accounting_oracle in F-GP-03 and F-GP-04). The broken sum propagates silently
+into _apply_contribution and _apply_rebalance.
+
+Probe reproducer (uv run python):
+    weights = {"VTI": 0.10, "VTI_LEAPS": 0.40, "VXUS": 0.20, "GLD": 0.10,
+               "MUB": 0.10, "KMLM": 0.05, "VGIT": 0.05}   # sums to 1.0
+    cfg = PortfolioConfig(..., glide_path_config=GlidepathConfig())
+    # constructs WITHOUT error
+    result = compute_glide_target_weights(1.0, cfg, GlidepathConfig())
+    result.sum()  # => 0.9000  (not 1.0)
+
+Required fix (src/finance/_portfolio_types.py, after line 173):
+    vti_val = self.target_weights["VTI"]
+    if abs(vti_val) > 1e-9:
+        raise ValueError(
+            f"glide_path_config requires 'VTI' in target_weights with value 0.0; "
+            f"got {vti_val}"
+        )
+
+Required companion test (tests/test_glide_path_config.py):
+    def test_portfolio_config_glide_path_vti_nonzero_raises() -> None:
+        """VTI present but value != 0.0 raises ValueError."""
+        weights = {"VTI": 0.10, "VTI_LEAPS": 0.40, "VXUS": 0.20,
+                   "GLD": 0.10, "MUB": 0.10, "KMLM": 0.05, "VGIT": 0.05}
+        with pytest.raises(ValueError, match="value 0.0"):
+            _make_config(weights=weights)
+
+--------------------------------------------------------------------------------
+ADVISORY FINDINGS (non-blocking)
+--------------------------------------------------------------------------------
+
+[ADVISORY — 1]
+Test test_portfolio_config_glide_path_floor_equals_leaps_fraction_raises is a
+duplicate of test_portfolio_config_glide_path_floor_gte_leaps_fraction_raises
+(both use floor=0.40 == leaps_fraction). The "equals" case is tested but the
+"> leaps_fraction" case (e.g. floor=0.45) is not explicitly covered as its own
+parametrize row. Low risk since the `>=` guard covers both, but the test naming
+is misleading. Actor may add a `floor=0.45` parametrize row for clarity.
+
+[ADVISORY — 2]
+GlidepathConfig has no __post_init__ guard of its own (floor, half_life_multiple,
+vti_alpha). The current design defers all validation to PortfolioConfig.__post_init__.
+This is fine and intentional (GlidepathConfig is a passive value object), but it
+means a GlidepathConfig(half_life_multiple=-1.0) can be constructed in isolation
+without error. Callers who build a GlidepathConfig outside of PortfolioConfig and
+pass it directly to compute_glide_target_weights will get a ValueError from
+glide_path_leaps_weight instead. This is acceptable but worth documenting in the
+GlidepathConfig docstring as a design note.
+
+--------------------------------------------------------------------------------
+REQUIRED ACTIONS (for CONDITIONAL_PASS → PASS)
+--------------------------------------------------------------------------------
+
+1. [BLOCKING] Add the VTI value == 0.0 check to PortfolioConfig.__post_init__
+   immediately after the "VTI not in target_weights" guard (line 173).
+   Tolerance: abs(vti_val) > 1e-9.
+
+2. [BLOCKING] Add the companion test
+   test_portfolio_config_glide_path_vti_nonzero_raises to
+   tests/test_glide_path_config.py.
+
+3. [ADVISORY] Consider renaming or adding a floor > leaps_fraction test case
+   to make the parametrize table self-documenting.
+
+--------------------------------------------------------------------------------
+STATUS UPDATE
+--------------------------------------------------------------------------------
+features["F-GP-01"].status: pending (was: pending_judge)
+Reason: One blocking gap (VTI value validation) requires a 2-line fix before PASS.
+================================================================================
