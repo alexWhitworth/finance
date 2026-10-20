@@ -25,7 +25,6 @@ from finance.portfolio_manager import (
     HoldingView,
     LivePortfolio,
     NavBreakdown,
-    TradeOrder,
     _leaps_actual_weights_by_key,
     as_live_portfolio,
     compute_gtt_status,
@@ -704,7 +703,8 @@ def test_leaps_holdings_view_weight_drift_sign() -> None:
         leaps_contracts=(),
         gtt_regime=None,
     )
-    nb = compute_nav_breakdown(lp, leaps_mtm_by_ticker={"VTI": 60_000.0})  # total_nav=100k, leaps actual=0.60
+    # total_nav=100k, leaps actual=0.60
+    nb = compute_nav_breakdown(lp, leaps_mtm_by_ticker={"VTI": 60_000.0})
     view = compute_leaps_holdings_view(lp, nb)[0]
     assert view.weight_drift == pytest.approx(0.60 - 0.30, rel=1e-9)
 

@@ -54,7 +54,9 @@ class TestI12DomainBounds:
         """Single contract DITM LEAPS: net_delta in valid domain."""
         contract = _make_contract(strike=100.0, n_contracts=2.0, spot=200.0)
         portfolio = _make_portfolio(((contract, 1.0),))
-        pg = compute_portfolio_greeks(portfolio, spot={"VTI": 200.0}, iv={"VTI": 0.18}, risk_free_rate=0.04)
+        pg = compute_portfolio_greeks(
+            portfolio, spot={"VTI": 200.0}, iv={"VTI": 0.18}, risk_free_rate=0.04
+        )
 
         n_total = contract.n_contracts
         upper_bound = n_total * CONTRACT_MULTIPLIER
@@ -67,7 +69,9 @@ class TestI12DomainBounds:
         c2 = _make_contract(strike=130.0, n_contracts=2.0)
         portfolio = _make_portfolio(((c1, 1.0), (c2, 0.8)))
 
-        pg = compute_portfolio_greeks(portfolio, spot={"VTI": 200.0}, iv={"VTI": 0.18}, risk_free_rate=0.04)
+        pg = compute_portfolio_greeks(
+            portfolio, spot={"VTI": 200.0}, iv={"VTI": 0.18}, risk_free_rate=0.04
+        )
 
         # Upper bound: sum of (n_contracts * CONTRACT_MULTIPLIER) across all pairs
         n_total = c1.n_contracts + c2.n_contracts
@@ -119,7 +123,9 @@ class TestI12DomainBounds:
             dividend_yield=0.0,
         )
         portfolio = _make_portfolio(((contract, 1.0),))
-        pg = compute_portfolio_greeks(portfolio, spot={"VTI": 200.0}, iv={"VTI": 0.18}, risk_free_rate=0.04)
+        pg = compute_portfolio_greeks(
+            portfolio, spot={"VTI": 200.0}, iv={"VTI": 0.18}, risk_free_rate=0.04
+        )
         assert pg.net_theta < 0.0
 
     def test_contracts_count_matches_input(self) -> None:
@@ -150,7 +156,9 @@ class TestI12DomainBounds:
             leaps_contracts=((contract, 1.0),),
             gtt_regime=None,
         )
-        pg = compute_portfolio_greeks(portfolio, spot={"VTI": 220.0}, iv={"VTI": 0.20}, risk_free_rate=0.04)
+        pg = compute_portfolio_greeks(
+            portfolio, spot={"VTI": 220.0}, iv={"VTI": 0.20}, risk_free_rate=0.04
+        )
 
         assert pg.net_delta > 0.0
         assert pg.net_theta < 0.0

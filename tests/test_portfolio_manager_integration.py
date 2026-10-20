@@ -178,7 +178,7 @@ def test_integration_nav_breakdown_total_nav_matches_nav_series_no_leaps() -> No
 
 
 def test_integration_nav_breakdown_total_nav_matches_nav_series_with_leaps() -> None:
-    """I11: compute_nav_breakdown(lp, leaps_mtm_by_ticker={"VTI": leaps_value}).total_nav ≈ nav_series[-1]."""
+    """I11: compute_nav_breakdown(lp, leaps_mtm_by_ticker).total_nav ≈ nav_series[-1]."""
     rd, pd_obj = _make_rd_and_pd(756)
     leaps_cfg = LeapsConfig(account_type=AccountType.TAXABLE)
     cfg = _config(weights=dict(_LEAPS_WEIGHTS), leaps_config=leaps_cfg)

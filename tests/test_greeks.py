@@ -381,7 +381,9 @@ def test_single_contract_net_delta_equals_position_delta() -> None:
     """Single contract: net_delta == contracts[0].position_delta."""
     contract = _make_contract(strike=100.0, n_contracts=1.0)
     portfolio = _make_live_portfolio(leaps_contracts=((contract, 1.0),))
-    pg = compute_portfolio_greeks(portfolio, spot={"VTI": 200.0}, iv={"VTI": 0.20}, risk_free_rate=0.04)
+    pg = compute_portfolio_greeks(
+        portfolio, spot={"VTI": 200.0}, iv={"VTI": 0.20}, risk_free_rate=0.04
+    )
 
     assert len(pg.contracts) == 1
     np.testing.assert_allclose(pg.net_delta, pg.contracts[0].position_delta, rtol=1e-12)
@@ -552,7 +554,7 @@ def test_multi_ticker_missing_tickers_listed_all() -> None:
         leaps_contracts=((c_vti, 1.0), (c_iwm, 1.0), (c_gld, 1.0))
     )
 
-    with pytest.raises(ValueError, match="IWM.*GLD|GLD.*IWM"):
+    with pytest.raises(ValueError, match=r"IWM.*GLD|GLD.*IWM"):
         compute_portfolio_greeks(portfolio, spot={"VTI": 200.0}, iv={"VTI": 0.20})
 
 
