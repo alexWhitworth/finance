@@ -460,7 +460,7 @@ def _make_portfolio_greeks(n_contracts: float = 3.0) -> PortfolioGreeks:
         leaps_contracts=((contract, 1.0),),
         gtt_regime=None,
     )
-    return compute_portfolio_greeks(portfolio, spot=320.0, iv=0.18)
+    return compute_portfolio_greeks(portfolio, spot={"VTI": 320.0}, iv={"VTI": 0.18})
 
 
 class TestFormatContractGreeksTable:
@@ -490,7 +490,7 @@ class TestFormatContractGreeksTable:
             leaps_contracts=((contract_a, 1.0), (contract_b, 1.0)),
             gtt_regime=None,
         )
-        greeks = compute_portfolio_greeks(portfolio, spot=320.0, iv=0.18)
+        greeks = compute_portfolio_greeks(portfolio, spot={"VTI": 320.0}, iv={"VTI": 0.18})
         table = format_contract_greeks_table(greeks)
         assert table.count("2024-01-15") == 1
         assert table.count("2024-07-15") == 1

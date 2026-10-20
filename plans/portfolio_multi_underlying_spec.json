@@ -244,7 +244,7 @@
       "description": "compute_portfolio_greeks takes spot/iv as dict[str, float] and routes each contract by contract.ticker; add leaps_mtm_by_ticker helper.",
       "phase": 1,
       "priority": 2,
-      "status": "planned",
+      "status": "pending_judge",
       "layer": "python",
       "dependencies": ["F-001"],
       "linked_schemas": [],
