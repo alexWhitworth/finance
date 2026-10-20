@@ -347,7 +347,7 @@
       "description": "Add a ticker column to format_contract_greeks_table.",
       "phase": 4,
       "priority": 5,
-      "status": "planned",
+      "status": "pending_judge",
       "layer": "python",
       "dependencies": ["F-002"],
       "linked_schemas": ["DS-001"],

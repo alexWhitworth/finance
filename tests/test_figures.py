@@ -471,10 +471,41 @@ class TestFormatContractGreeksTable:
     def test_contains_expected_columns(self) -> None:
         table = format_contract_greeks_table(_make_portfolio_greeks())
         for col in (
-            "purchased", "expiry", "n_contracts", "delta", "gamma", "vega",
+            "ticker", "purchased", "expiry", "n_contracts", "delta", "gamma", "vega",
             "theta/day", "position_delta",
         ):
             assert col in table
+
+    def test_ticker_column_matches_contract_ticker(self) -> None:
+        """Each formatted row's ticker column equals cg.contract.ticker."""
+        contract_vti = build_leaps_contract(
+            pd.Timestamp("2024-01-15"), pd.Timestamp("2026-01-15"), 300.0, 2.0, ticker="VTI"
+        )
+        contract_iwm = build_leaps_contract(
+            pd.Timestamp("2024-01-15"), pd.Timestamp("2026-01-15"), 250.0, 2.0, ticker="IWM"
+        )
+        contract_gld = build_leaps_contract(
+            pd.Timestamp("2024-01-15"), pd.Timestamp("2026-01-15"), 200.0, 2.0, ticker="GLD"
+        )
+        portfolio = LivePortfolio(
+            as_of_date=pd.Timestamp("2025-06-01"),
+            holdings={},
+            target_weights={"VTI_LEAPS": 1.0},
+            leaps_contracts=((contract_vti, 1.0), (contract_iwm, 1.0), (contract_gld, 1.0)),
+            gtt_regime=None,
+        )
+        greeks = compute_portfolio_greeks(
+            portfolio,
+            spot={"VTI": 320.0, "IWM": 270.0, "GLD": 220.0},
+            iv={"VTI": 0.18, "IWM": 0.22, "GLD": 0.20},
+        )
+        table = format_contract_greeks_table(greeks)
+        assert "VTI" in table
+        assert "IWM" in table
+        assert "GLD" in table
+        # One data row per contract, all three tickers present in the ticker column.
+        lines = [ln for ln in table.splitlines() if ln.strip()]
+        assert len(lines) == 1 + len(greeks.contracts)  # header + 3 data rows
 
     def test_one_row_per_contract(self) -> None:
         contract_a = build_leaps_contract(

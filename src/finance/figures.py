@@ -552,6 +552,7 @@ def format_contract_greeks_table(greeks: PortfolioGreeks) -> str:
 
     rows = [
         {
+            "ticker": cg.contract.ticker,
             "purchased": cg.contract.purchase_date.date(),
             "expiry": cg.contract.expiry_date.date(),
             "n_contracts": cg.contract.n_contracts,
