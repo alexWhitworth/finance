@@ -409,7 +409,7 @@
       "description": "Wrap existing scalar leaps_mtm/spot/iv into single-key dicts at both call sites; backtest stays VTI-only.",
       "phase": 5,
       "priority": 7,
-      "status": "planned",
+      "status": "pending_judge",
       "layer": "python",
       "dependencies": ["F-002", "F-003"],
       "linked_schemas": [],

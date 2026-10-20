@@ -79,9 +79,12 @@ if __name__ == "__main__":
     )
 
     print("\n=== NAV Breakdown ===")
-    # leaps_mtm is caller-supplied (e.g. from a brokerage statement); here we reuse
-    # the backtest's own mark-to-market rather than recomputing it via greeks.
-    nav = compute_nav_breakdown(portfolio, leaps_mtm=result.final_state.leaps_value)
+    # leaps_mtm_by_ticker is caller-supplied (e.g. from a brokerage statement);
+    # here we reuse the backtest's own mark-to-market. The backtest is VTI-only,
+    # so wrap the scalar into a single-key dict.
+    nav = compute_nav_breakdown(
+        portfolio, leaps_mtm_by_ticker={"VTI": result.final_state.leaps_value}
+    )
     print(format_nav_breakdown_table(nav))
 
     print("\n=== Holdings Drift (base assets + LEAPS sleeve) ===")
@@ -101,7 +104,9 @@ if __name__ == "__main__":
     print("\n=== LEAPS Greeks ===")
     if portfolio.leaps_contracts:
         spot = float(price_data.prices["VTI"].iloc[-1])
-        greeks = compute_portfolio_greeks(portfolio, spot=spot, iv=FLOOR_IV)
+        greeks = compute_portfolio_greeks(
+            portfolio, spot={"VTI": spot}, iv={"VTI": FLOOR_IV}
+        )
         print(
             f"net_delta={greeks.net_delta:,.1f} sh  net_gamma={greeks.net_gamma:.4f}  "
             f"net_vega=${greeks.net_vega:,.0f}  net_theta=${greeks.net_theta:,.2f}/day"
