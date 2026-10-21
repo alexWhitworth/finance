@@ -229,7 +229,8 @@ def _fetch_fred_volatility_index(  # pragma: no cover
 
     Returns:
         Raw index-level Series (not yet ÷100). Empty Series when FRED_API_KEY
-        is not set or FRED returns no observations for the range.
+        is not set, the FRED fetch fails (e.g. maintenance/down, invalid key,
+        network error), or FRED returns no observations for the range.
     """
     import os
 
@@ -239,9 +240,14 @@ def _fetch_fred_volatility_index(  # pragma: no cover
     if not fred_key:
         return pd.Series(dtype=float, name=series_id)
     fred = Fred(api_key=fred_key)
-    series: pd.Series = fred.get_series(
-        series_id, observation_start=start_date, observation_end=end_date
-    )
+    try:
+        series: pd.Series = fred.get_series(
+            series_id, observation_start=start_date, observation_end=end_date
+        )
+    except Exception:
+        # FRED maintenance/down, an invalid key, or a malformed response all
+        # resolve to an empty series so the caller can fall back gracefully.
+        return pd.Series(dtype=float, name=series_id)
     if series.empty:
         return pd.Series(dtype=float, name=series_id)
     return series.rename(series_id)

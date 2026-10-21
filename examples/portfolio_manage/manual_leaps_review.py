@@ -17,6 +17,7 @@ back to ^VIX.
 """
 
 import pandas as pd
+from dotenv import load_dotenv
 
 from finance import (
     LivePortfolio,
@@ -35,6 +36,8 @@ from finance.figures import (
 from finance.greeks import leaps_mtm_by_ticker
 from finance.leverage import AccountType, RebalanceRule, build_leaps_contract
 from finance.portfolio_manager import compute_leaps_holdings_view, leaps_trims_as_trade_orders
+
+load_dotenv()
 
 # Target allocation: 40% total deep-ITM LEAPS sleeve across three underlyings
 # (VTI 20%, IWM 10%, GLD 10%), 60% diversifiers.

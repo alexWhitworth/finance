@@ -322,6 +322,20 @@ def test_fetch_fred_volatility_index_fetches_and_renames(monkeypatch: pytest.Mon
     np.testing.assert_allclose(out.to_numpy(), raw.to_numpy())
 
 
+def test_fetch_fred_volatility_index_returns_empty_on_fetch_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A FRED fetch exception resolves to an empty Series (graceful degrade)."""
+    monkeypatch.setenv("FRED_API_KEY", "test-key")
+    mock_fred = MagicMock()
+    mock_fred.get_series.side_effect = ValueError("maintenance page / invalid key")
+
+    with patch("fredapi.Fred", return_value=mock_fred):
+        out = _fetch_fred_volatility_index("RVXCLS", "2024-06-03", "2024-06-05")
+
+    assert out.empty
+
+
 def test_build_price_data_all_nan_raises() -> None:
     """Raises ValueError if all prices are NaN (e.g. yfinance API outage)."""
     start, end = "2021-06-01", "2022-12-31"
