@@ -55,6 +55,13 @@ VOL_INDEX_SCALAR: dict[str, float] = {
     "VXUS": 1.15,
 }
 
+# Fallback vol index (yfinance) used when the primary mapping is a FRED series
+# and the FRED fetch comes back empty (missing FRED_API_KEY, no data, etc.).
+# IWM (Russell 2000) ~ ^VIX when ^RVX (RVXCLS) is unreachable.
+VOL_INDEX_FALLBACK: dict[str, str] = {
+    "IWM": "^VIX",
+}
+
 TBILL_TICKER: str = "^IRX"
 
 NIIT_RATE: float = 0.408

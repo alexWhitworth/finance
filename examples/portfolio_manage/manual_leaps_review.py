@@ -9,10 +9,11 @@ routing spot/IV per contract ticker — then compares realized weights against
 target weights under the DRIFT rebalance rule.
 
 Usage:
-    FRED_API_KEY=... uv run examples/portfolio_manage/manual_leaps_review.py
+    uv run examples/portfolio_manage/manual_leaps_review.py
 
-Requires FRED_API_KEY (or .env) to fetch IWM's implied volatility from the
-CBOE Russell 2000 Volatility Index (^RVX) via FRED series RVXCLS.
+IWM's implied volatility comes from the CBOE Russell 2000 Volatility Index
+(^RVX) via FRED series RVXCLS when FRED_API_KEY is set; otherwise it falls
+back to ^VIX.
 """
 
 import pandas as pd

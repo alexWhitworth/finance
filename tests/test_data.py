@@ -279,11 +279,29 @@ def test_fetch_volatility_index_fred_path_forward_fills() -> None:
     np.testing.assert_allclose(out.to_numpy(), np.array([0.20, 0.20, 0.22, 0.22]), atol=1e-12)
 
 
-def test_fetch_fred_volatility_index_requires_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
-    """FRED path raises a clear ValueError when FRED_API_KEY is absent."""
+def test_fetch_fred_volatility_index_empty_without_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    """FRED path returns empty (does not raise) when FRED_API_KEY is absent."""
     monkeypatch.delenv("FRED_API_KEY", raising=False)
-    with pytest.raises(ValueError, match="FRED_API_KEY"):
-        _fetch_fred_volatility_index("RVXCLS", "2024-06-03", "2024-06-07")
+    out = _fetch_fred_volatility_index("RVXCLS", "2024-06-03", "2024-06-07")
+    assert out.empty
+
+
+def test_fetch_volatility_index_fred_falls_back_to_vix() -> None:
+    """Empty FRED fetch for IWM falls back to ^VIX with a warning."""
+    idx = pd.bdate_range("2024-06-03", periods=3)
+    vix_level = pd.Series([15.0, 16.0, 17.0], index=idx)
+    with (
+        patch(
+            "finance.data._fetch_fred_volatility_index",
+            return_value=pd.Series(dtype=float, name="RVXCLS"),
+        ),
+        patch("finance.data._fetch_yf_close", return_value=vix_level),
+    ):
+        with pytest.warns(UserWarning, match="falling back"):
+            out = fetch_volatility_index("IWM", "2024-06-03", "2024-06-05")
+
+    assert out.name == "IWM_IV"
+    np.testing.assert_allclose(out.to_numpy(), np.array([0.15, 0.16, 0.17]), atol=1e-12)
 
 
 def test_fetch_fred_volatility_index_fetches_and_renames(monkeypatch: pytest.MonkeyPatch) -> None:
