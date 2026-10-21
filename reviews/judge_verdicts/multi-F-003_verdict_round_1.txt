@@ -1,0 +1,58 @@
+F-003 JUDGE VERDICT — Round 1 (multi-underlying extension)
+==========================================================
+Feature: F-003 — Fix per-ticker NAV and drift (latent bug fix)
+Commit reviewed: be27ed3
+Spec: plans/portfolio_multi_underlying_spec.json
+
+VERDICT: CONDITIONAL_PASS
+
+CRITERIA
+--------
+1. leaps_nav == sum(leaps_nav_by_ticker.values()) within 1e-9 (M1): MET
+   - tests/test_portfolio_manager_multi_underlying_integration.py::test_m1_leaps_nav_equals_sum_of_by_ticker
+   - compute_nav_breakdown normalizes None → {} and copies the caller dict (no mutable default).
+2. Divergent-MTM two-sleeve fixture → unequal actual_weight, not target-proportional split (M4): MET
+   - …integration.py::test_m4_holdings_view_reflects_actual_per_ticker_exposure
+   - VTI 26k vs IWM 20k under equal 20% targets yields dollar_value 26k vs 20k (old code: 23k each).
+3. leaps_trim contains only actually-overweight tickers; absent otherwise (M5): MET
+   - …integration.py::test_m5_leaps_trim_contains_only_overweight_tickers (VTI overweight 4k
+     present, IWM underweight absent) and test_m5_leaps_trim_empty_when_none_overweight.
+
+SCORECARD
+---------
+Acceptance criteria: 3/3 MET
+Test coverage: 98.57% total; portfolio_manager.py at 97%
+Property-based testing: DECLARED but NOT IMPLEMENTED — spec property_based_testing.enabled
+  =true with strategy "Generate random leaps_nav_by_ticker and target_weights…"; only
+  deterministic unit tests were added.
+Mutation testing: NOT EXECUTABLE (mutmut absent from toolchain).
+
+VERIFICATION PERFORMED
+----------------------
+- Read src/finance/portfolio_manager.py: NavBreakdown gains leaps_nav_by_ticker; compute_
+  nav_breakdown signature swapped to leaps_mtm_by_ticker (dict | None); private
+  _leaps_actual_weights_by_key maps each "<ticker>_LEAPS" key to
+  leaps_nav_by_ticker.get(ticker, 0.0) / total_nav; compute_leaps_holdings_view and the DRIFT
+  branch of compute_rebalance_plan both consume it; leaps_trim computed per-ticker keyed by
+  bare ticker. Complexity O(k) over *_LEAPS keys (meets budget). All three new/changed types
+  remain @dataclass(frozen=True).
+- _leaps_actual_weights_by_key unit tests added (missing-ticker→0.0, zero-total-nav guard).
+- Integration test file test_portfolio_manager_multi_underlying_integration.py exercises the
+  NAV→holdings_view→rebalance_plan chain and the greeks→leaps_mtm_by_ticker→NAV chain.
+- `uv run mypy src/` clean.
+
+FINDINGS
+--------
+ADVISORY: spec property_based_testing.enabled=true for F-003, but no hypothesis property
+  test implements the declared strategy. The M4 regression oracle (actual per-ticker dollar
+  exposure, not target-weighted split) is directly asserted in the deterministic integration
+  test, so this is breadth-only.
+ADVISORY: mutation testing unavailable (mutmut not installed).
+
+REQUIRED ACTIONS
+----------------
+ADVISORY: Add a hypothesis property test over random leaps_nav_by_ticker + target_weights
+  asserting _leaps_actual_weights_by_key always derives from dollar exposure (matches the
+  per-ticker dollars), never the old target-proportional split (per spec strategy).
+
+Status update: features[F-003].status → "complete" (advisory tracked for optional round 2).

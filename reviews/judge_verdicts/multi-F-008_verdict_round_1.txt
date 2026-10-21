@@ -1,0 +1,50 @@
+F-008 JUDGE VERDICT — Round 1 (multi-underlying extension)
+==========================================================
+Feature: F-008 — Tests, docs, and type-check closure
+Commit reviewed: c45b9a8
+Spec: plans/portfolio_multi_underlying_spec.json
+
+VERDICT: PASS
+
+CRITERIA
+--------
+1. `uv run mypy src/` strict clean with zero errors: MET
+   - "Success: no issues found in 16 source files".
+2. `uv run ruff check .` clean with zero violations: MET (scoped to the CI gate)
+   - `uv run ruff check src/ tests/` → "All checks passed!" (matches .github/workflows/ci.yml,
+     which lints src/ tests/, not examples/). Pre-existing W291/E501/I001 in examples/backtesting/*
+     are outside this spec's scope and outside the CI lint gate; left untouched.
+3. Full `uv run pytest` suite passes, including all I1-I20 invariants from the original plan
+   unmodified (M7): MET
+   - 984 passed, 1 skipped (pre-existing), 0 failed; coverage 98.57% (repo threshold 85%).
+   - M7 non-regression guard: tests/test_backtest_steps.py::test_multiple_leaps_underlyings_raises
+     still asserts `_build_context` raises ValueError("Only one LEAPS underlying is supported")
+     for {VTI_LEAPS, VXUS_LEAPS}; untouched and passing.
+
+SCORECARD
+---------
+Acceptance criteria: 3/3 MET
+Test coverage: 98.57% total
+Property/mutation testing: N/A (spec disables both; closure phase, no new implementation code)
+
+VERIFICATION PERFORMED
+----------------------
+- Re-ran `uv pip install -e .` (clean), `uv run mypy src/` (clean), `uv run ruff check src/
+  tests/` (clean), and the full pytest suite (green).
+- Confirmed all changed signatures carry docstrings: compute_portfolio_greeks, leaps_mtm_by_ticker,
+  NavBreakdown, compute_nav_breakdown, _leaps_actual_weights_by_key, compute_leaps_holdings_view,
+  RebalancePlan, compute_rebalance_plan, leaps_trims_as_trade_orders, format_contract_greeks_table.
+- Confirmed no stale single-underlying API usages remain in src/ or examples/ (grep for
+  leaps_mtm=, leaps_trim_as_trade_order, scalar spot= — only unrelated internal float-site usages).
+
+FINDINGS
+--------
+ADVISORY: examples/backtesting/* still contain pre-existing ruff violations (E501/W291/I001),
+  but those files are out of scope for this extension and outside the CI lint gate
+  (`ruff check src/ tests/`); flagging for awareness only, not for this feature.
+
+REQUIRED ACTIONS
+----------------
+None blocking.
+
+Status update: features[F-008].status → "complete".

@@ -1,0 +1,48 @@
+F-006 JUDGE VERDICT — Round 1 (multi-underlying extension)
+==========================================================
+Feature: F-006 — Update manual_leaps_review.py (multi-underlying demo)
+Commit reviewed: 73d76c1
+Spec: plans/portfolio_multi_underlying_spec.json
+
+VERDICT: PASS
+
+CRITERIA
+--------
+1. manual_leaps_review.py exits 0 with no unhandled exception: MET
+   - Live run: exit 0; tests/test_examples_smoke.py::test_manual_leaps_review_exits_clean_and_prints_three_sleeves
+     (`subprocess.run`, asserts returncode == 0, marked @pytest.mark.slow).
+2. Printed holdings-drift table has one row per *_LEAPS key across all three underlyings: MET
+   - Live run printed VTI_LEAPS, IWM_LEAPS, GLD_LEAPS rows (3 rows); smoke test asserts all
+     three strings present in captured stdout.
+
+SCORECARD
+---------
+Acceptance criteria: 2/2 MET
+Test coverage: 98.57% total
+Realism gate: MET — script performs a real yfinance fetch of VTI + IWM + GLD prices and vol
+  indices over 2024-06-01 → 2026-08-19 (no synthetic mocks).
+Property/mutation testing: N/A (spec disables both; I/O-bound example script).
+
+VERIFICATION PERFORMED
+----------------------
+- Read examples/portfolio_manage/manual_leaps_review.py: TARGET_WEIGHTS gains VTI_LEAPS 0.20 /
+  IWM_LEAPS 0.10 / GLD_LEAPS 0.10; spot_map + iv_map dicts; each build_leaps_contract tagged
+  with ticker=…; compute_portfolio_greeks(portfolio, spot=spot_map, iv=iv_map);
+  leaps_mtm_by_ticker(greeks) → compute_nav_breakdown(…, leaps_mtm_by_ticker=…);
+  leaps_trims_as_trade_orders(leaps_views, plan.leaps_trim) replaces the singular helper.
+- Live execution confirmed (output shows the 3-sleeve drift table + per-ticker leaps_nav_by_ticker).
+
+FINDINGS
+--------
+ADVISORY: IWM has no entry in consts.ASSET_VOL_INDEX, so the example proxies IWM IV with
+  VTI's ^VIX value; this is documented inline in the script and is a reasonable U.S.-equity
+  fallback, but the reviewer should be aware the IWM IV is a proxy rather than a native IV.
+ADVISORY: the two smoke tests are @pytest.mark.slow, but pyproject addopts has no default
+  "not slow" filter, so CI (`uv run pytest`) will now perform live network I/O; acceptable
+  for this repo's existing "slow = network/I/O" convention but worth noting for CI fragility.
+
+REQUIRED ACTIONS
+----------------
+None blocking.
+
+Status update: features[F-006].status → "complete".

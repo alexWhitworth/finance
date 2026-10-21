@@ -1,0 +1,44 @@
+F-005 JUDGE VERDICT — Round 1 (multi-underlying extension)
+==========================================================
+Feature: F-005 — Display ticker column
+Commit reviewed: 5096bfd
+Spec: plans/portfolio_multi_underlying_spec.json
+
+VERDICT: PASS
+
+CRITERIA
+--------
+1. Each formatted row's ticker column equals cg.contract.ticker: MET
+   - tests/test_figures.py::test_ticker_column_matches_contract_ticker builds VTI/IWM/GLD
+     contracts and asserts each ticker string present in the formatted output.
+2. Table well-formed (no misalignment) for a 3-ticker portfolio: MET
+   - tests/test_figures.py::test_ticker_column_matches_contract_ticker asserts
+     len(lines) == 1 (header) + len(greeks.contracts), pinning one row per contract.
+   - Edge case: empty greeks.contracts still returns "No active LEAPS contracts." (existing
+     test_empty_contracts_returns_placeholder unchanged and passing).
+
+SCORECARD
+---------
+Acceptance criteria: 2/2 MET
+Test coverage: 98.57% total
+Property-based testing: N/A (spec property_based_testing.enabled=false, rationale "pure
+  string-formatting function; a fixed-case table test covers the behavior")
+Mutation testing: NOT EXECUTABLE (mutmut absent from toolchain; figures.py is code-cov
+  omitted per pyproject anyway).
+
+VERIFICATION PERFORMED
+----------------------
+- Read src/finance/figures.py::format_contract_greeks_table — "ticker" added as the first
+  row dict key, so pandas emits it as the leading column. Complexity O(n) over contracts.
+- Ran example scripts live: manual_leaps_review.py printed a 3-ticker ticker column with no
+  column misalignment.
+
+FINDINGS
+--------
+None blocking. None advisory.
+
+REQUIRED ACTIONS
+----------------
+None.
+
+Status update: features[F-005].status → "complete".

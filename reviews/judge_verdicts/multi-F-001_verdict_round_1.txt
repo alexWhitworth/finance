@@ -1,0 +1,53 @@
+F-001 JUDGE VERDICT — Round 1 (multi-underlying extension)
+==========================================================
+Feature: F-001 — Tag LeapsContract with ticker
+Commit reviewed: 9cc2def
+Spec: plans/portfolio_multi_underlying_spec.json
+
+VERDICT: PASS
+
+CRITERIA
+--------
+1. LeapsContract() without ticker → ticker == "VTI" (M8): MET
+   - tests/test_leverage.py::test_leaps_contract_ticker_defaults_to_vti
+   - tests/test_leverage.py::test_leaps_contract_ticker_explicit (explicit tag preserved)
+2. build_leaps_contract() without ticker → ticker == "VTI" (M8): MET
+   - tests/test_leverage.py::test_build_leaps_ticker_defaults_to_vti
+   - tests/test_leverage.py::test_build_leaps_ticker_explicit
+3. Full existing suite passes unchanged: MET
+   - Full suite: 984 passed, 1 skipped (pre-existing), 0 failed; coverage 98.57%
+
+SCORECARD
+---------
+Acceptance criteria: 3/3 MET
+Test coverage: 98.57% total (repo threshold 85%; leverage.py at 99%)
+Property-based testing: N/A (spec property_based_testing.enabled=false, rationale "simple
+  default-value field addition")
+Mutation testing: NOT EXECUTABLE — `uv run mutmut` fails ("No such file or directory");
+  mutmut is absent from pyproject.toml dev deps. See shared note below.
+
+VERIFICATION PERFORMED
+----------------------
+- `uv pip install -e .` rebuilt cleanly.
+- Read src/finance/leverage.py: LeapsContract gains `ticker: str = "VTI"` as the final
+  field (frozen dataclass preserved); build_leaps_contract gains `ticker: str = "VTI"`
+  kwarg forwarded into the constructor. `create_leaps_contract` untouched (backtest-only,
+  per Known Assumption 3), so no backtest/ledger behavior changes.
+- `uv run pytest tests/test_leverage.py` → 123 passed.
+- Field ordering keeps ticker last → all existing positional constructions in tests/fixtures
+  remain valid (no positional-arity break).
+
+FINDINGS
+--------
+ADVISORY (spec consistency, not code): features F-001..F-005 each carry
+`"mutation_testing": {"enabled": true}`, yet the same spec's tech_stack declares
+`mutation_framework: null` and mutation_notes states mutmut "is not present in this repo's
+pyproject.toml dev dependencies… marked disabled at the feature level". The feature-level
+flags contradict the tech_stack note. This is a spec-internal inconsistency to resolve at
+the authoring layer; it does not affect this feature's correctness.
+
+REQUIRED ACTIONS
+----------------
+None blocking.
+
+Status update: features[F-001].status → "complete".

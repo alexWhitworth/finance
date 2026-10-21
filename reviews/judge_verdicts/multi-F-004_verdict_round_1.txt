@@ -1,0 +1,47 @@
+F-004 JUDGE VERDICT — Round 1 (multi-underlying extension)
+==========================================================
+Feature: F-004 — Rename and pluralize the trim helper
+Commit reviewed: 10aeed4
+Spec: plans/portfolio_multi_underlying_spec.json
+
+VERDICT: PASS
+
+CRITERIA
+--------
+1. Two overweight sleeves in leaps_trim → exactly two TradeOrder entries (M6): MET
+   - tests/test_portfolio_manager.py::test_leaps_trims_as_trade_orders_count_matches_trim
+     (leaps_trim {"VTI":…, "IWM":…} → len(orders)==2, keys {VTI_LEAPS, IWM_LEAPS})
+2. Empty leaps_trim dict → empty tuple: MET
+   - tests/test_portfolio_manager.py::test_leaps_trims_as_trade_orders_empty_trim
+   - tests/test_portfolio_manager.py::test_leaps_trims_as_trade_orders_fields (per-ticker
+     field mapping, pytest.approx rel=1e-9)
+
+SCORECARD
+---------
+Acceptance criteria: 2/2 MET
+Test coverage: 98.57% total; portfolio_manager.py at 97%
+Property-based testing: N/A (spec property_based_testing.enabled=false, rationale "thin
+  mapping function; a single parametrized count-check covers the state space adequately")
+Mutation testing: NOT EXECUTABLE (mutmut absent from toolchain).
+
+VERIFICATION PERFORMED
+----------------------
+- Read src/finance/portfolio_manager.py: leaps_trim_as_trade_order (singular, float) replaced
+  by leaps_trims_as_trade_orders(leaps_views, leaps_trim: dict[str, float]) returning
+  tuple[TradeOrder, ...]. Maps bare ticker → "<ticker>_LEAPS" via ticker + LEAPS_KEY_SUFFIX
+  and looks up the matching HoldingView. Complexity O(k) over leaps_trim (meets budget).
+- grep confirms no remaining references to the old singular name in src/ or tests/ (only the
+  updated figures.py docstring reference to the new name).
+- test_figures.py::test_leaps_trim_row_combines_with_base_trades migrated to the plural
+  helper; `uv run pytest tests/test_portfolio_manager.py tests/test_figures.py`
+  tests/test_portfolio_manager_multi_underlying_integration.py → green.
+
+FINDINGS
+--------
+None blocking. None advisory (beyond shared mutation-tooling note carried in F-001).
+
+REQUIRED ACTIONS
+----------------
+None.
+
+Status update: features[F-004].status → "complete".

@@ -1,0 +1,59 @@
+F-002 JUDGE VERDICT — Round 1 (multi-underlying extension)
+==========================================================
+Feature: F-002 — Route portfolio greeks by ticker
+Commit reviewed: bc4e0f7
+Spec: plans/portfolio_multi_underlying_spec.json
+
+VERDICT: CONDITIONAL_PASS
+
+CRITERIA
+--------
+1. 2-contract, 2-ticker portfolio priced with each contract's own spot/iv (M3): MET
+   - tests/test_greeks.py::test_multi_ticker_routing_uses_own_spot_and_iv asserts each
+     ContractGreeks.spot/.iv equals spot[contract.ticker]/iv[contract.ticker].
+2. ValueError lists every missing ticker, not just the first (M2): MET
+   - tests/test_greeks.py::test_multi_ticker_missing_tickers_listed_all
+     (match=r"IWM.*GLD|GLD.*IWM" over a 3-ticker portfolio missing two tickers)
+   - tests/test_greeks.py::test_multi_ticker_missing_both_spot_and_iv (iv-only miss)
+3. leaps_mtm_by_ticker per-ticker sum matches manual sum within 1e-9: MET
+   - tests/test_greeks.py::test_leaps_mtm_by_ticker_sums_per_ticker (uses
+     np.testing.assert_allclose atol=1e-9)
+   - tests/test_greeks.py::test_leaps_mtm_by_ticker_empty_contracts
+   - tests/test_greeks.py::test_extra_unused_tickers_harmless (edge case)
+
+SCORECARD
+---------
+Acceptance criteria: 3/3 MET
+Test coverage: 98.57% total; greeks.py at 100%
+Property-based testing: DECLARED but NOT IMPLEMENTED — spec property_based_testing.enabled
+  =true with strategy "Generate N contracts across M distinct tickers…"; only deterministic
+  unit tests were added.
+Mutation testing: NOT EXECUTABLE (mutmut absent from toolchain).
+
+VERIFICATION PERFORMED
+----------------------
+- Read src/finance/greeks.py: compute_portfolio_greeks now takes dict[str, float] spot/iv,
+  builds `missing = sorted({ticker for … if ticker not in spot or ticker not in iv})` and
+  raises a single ValueError before pricing; per-contract fan-out routes spot[contract.ticker]
+  / iv[contract.ticker]. leaps_mtm_by_ticker sums price * n_contracts * CONTRACT_MULTIPLIER *
+  leaps_scale grouped by contract.ticker. Complexity O(n) over live contracts (meets budget).
+- Existing scalar call sites in test_greeks.py / test_greeks_integration.py / test_figures.py
+  mechanically wrapped as {"VTI": …} (correct: those fixtures tag ticker "VTI" by default).
+- `uv run mypy src/` clean with dict signature.
+
+FINDINGS
+--------
+ADVISORY: spec property_based_testing.enabled=true for F-002, but no hypothesis @given test
+  implements the declared strategy. The invariant is nevertheless directly asserted by
+  test_multi_ticker_routing_uses_own_spot_and_iv (M3 oracle is exercised), so this is a
+  test-breadth gap, not a correctness gap.
+ADVISORY: mutation testing unavailable (mutmut not installed); see F-001 note re spec
+  tech_stack vs feature-level inconsistency.
+
+REQUIRED ACTIONS
+----------------
+ADVISORY: Add a hypothesis property test generating N contracts across M tickers with random
+  spot/iv maps and asserting each ContractGreeks.spot/.iv equals the map value for its own
+  contract.ticker (per spec strategy).
+
+Status update: features[F-002].status → "complete" (advisory tracked for optional round 2).
