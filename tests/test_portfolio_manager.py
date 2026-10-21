@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 import pandas as pd
 import pytest
-from hypothesis import given, settings
+from hypothesis import assume, given, settings
 from hypothesis import strategies as st
 
 from finance._portfolio_types import PortfolioConfig, PortfolioState
@@ -789,6 +789,66 @@ def test_leaps_actual_weights_by_key_zero_total_nav() -> None:
     nb = compute_nav_breakdown(lp)
     weights = _leaps_actual_weights_by_key(lp, nb)
     assert weights == {"VTI_LEAPS": 0.0}
+
+
+# ---------------------------------------------------------------------------
+# Property-based: _leaps_actual_weights_by_key always matches dollar exposure
+# ---------------------------------------------------------------------------
+
+
+def _two_sleeve_dollar_exposure_fixture(
+    vti_mtm: float, iwm_mtm: float, base: float, w_vti: float, w_iwm: float
+) -> tuple[LivePortfolio, NavBreakdown]:
+    """Build a two-sleeve live portfolio whose LEAPS targets sum to the remainder."""
+    target_weights = {
+        "VXUS": 1.0 - w_vti - w_iwm,
+        "VTI_LEAPS": w_vti,
+        "IWM_LEAPS": w_iwm,
+    }
+    lp = LivePortfolio(
+        as_of_date=_AS_OF,
+        holdings={"VXUS": base},
+        target_weights=target_weights,
+        leaps_contracts=(),
+        gtt_regime=None,
+    )
+    nb = compute_nav_breakdown(lp, leaps_mtm_by_ticker={"VTI": vti_mtm, "IWM": iwm_mtm})
+    return lp, nb
+
+
+@given(
+    vti_mtm=st.floats(min_value=1.0, max_value=500_000.0, allow_nan=False, allow_infinity=False),
+    iwm_mtm=st.floats(min_value=1.0, max_value=500_000.0, allow_nan=False, allow_infinity=False),
+    base=st.floats(min_value=1.0, max_value=1_000_000.0, allow_nan=False, allow_infinity=False),
+    w_vti=st.floats(min_value=0.05, max_value=0.45, allow_nan=False, allow_infinity=False),
+    w_iwm=st.floats(min_value=0.05, max_value=0.45, allow_nan=False, allow_infinity=False),
+)
+@settings(max_examples=200)
+def test_property_leaps_actual_weights_match_dollar_exposure(
+    vti_mtm: float,
+    iwm_mtm: float,
+    base: float,
+    w_vti: float,
+    w_iwm: float,
+) -> None:
+    """Property: actual LEAPS weight == per-ticker MTM / total_nav, never the target split."""
+    assume(w_vti + w_iwm <= 0.90)
+    # Force the two sleeves' realized MTM to diverge from their target-weight ratio so
+    # the old target-proportional split would necessarily disagree with dollar exposure.
+    assume(abs(vti_mtm * w_iwm - iwm_mtm * w_vti) > 1e-3)
+
+    lp, nb = _two_sleeve_dollar_exposure_fixture(vti_mtm, iwm_mtm, base, w_vti, w_iwm)
+    weights = _leaps_actual_weights_by_key(lp, nb)
+
+    total_nav = nb.total_nav
+    assert weights["VTI_LEAPS"] == pytest.approx(vti_mtm / total_nav, rel=1e-9)
+    assert weights["IWM_LEAPS"] == pytest.approx(iwm_mtm / total_nav, rel=1e-9)
+
+    # Negative oracle: the old proportional split would disagree for this divergent fixture.
+    leaps_weight = nb.leaps_nav / total_nav
+    key_target_sum = lp.target_weights["VTI_LEAPS"] + lp.target_weights["IWM_LEAPS"]
+    old_vti = leaps_weight * lp.target_weights["VTI_LEAPS"] / key_target_sum
+    assert abs(weights["VTI_LEAPS"] - old_vti) > 1e-12
 
 
 # ---------------------------------------------------------------------------

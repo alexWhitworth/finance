@@ -606,3 +606,47 @@ def test_extra_unused_tickers_harmless() -> None:
     iv = {"VTI": 0.20, "IWM": 0.30, "GLD": 0.25}
     pg = compute_portfolio_greeks(portfolio, spot=spot, iv=iv)
     assert len(pg.contracts) == 1
+
+
+# ---------------------------------------------------------------------------
+# Property-based: per-contract spot/iv routing always uses the contract's own ticker
+# ---------------------------------------------------------------------------
+
+_UNDERLYING_TICKERS = ("VTI", "IWM", "GLD", "SPY", "QQQ")
+
+
+@st.composite
+def _multi_ticker_portfolio(draw):
+    """Draw a multi-ticker portfolio and its matching spot/iv maps.
+
+    Returns:
+        (portfolio, spot_map, iv_map) with 2-4 distinct tickers, each ticker
+        carrying 1-3 tagged contracts and its own random spot/iv values.
+    """
+    tickers = draw(
+        st.lists(st.sampled_from(_UNDERLYING_TICKERS), min_size=2, max_size=4, unique=True)
+    )
+    spot_map = {t: draw(_valid_spot) for t in tickers}
+    iv_map = {t: draw(_valid_iv) for t in tickers}
+
+    pairs = []
+    for ticker in tickers:
+        for _ in range(draw(st.integers(min_value=1, max_value=3))):
+            contract = _make_ticker_contract(
+                ticker, strike=draw(_valid_spot), n_contracts=draw(_valid_n)
+            )
+            pairs.append((contract, draw(_valid_scale)))
+    portfolio = _make_live_portfolio(leaps_contracts=tuple(pairs))
+    return portfolio, spot_map, iv_map
+
+
+@given(fixture=_multi_ticker_portfolio())
+@settings(max_examples=150)
+def test_property_multi_ticker_routing_uses_own_spot_and_iv(fixture) -> None:
+    """Property: each ContractGreeks.spot/.iv equals the map value for its own ticker."""
+    portfolio, spot_map, iv_map = fixture
+    pg = compute_portfolio_greeks(portfolio, spot=spot_map, iv=iv_map)
+
+    for cg in pg.contracts:
+        assert cg.spot == spot_map[cg.contract.ticker]
+        assert cg.iv == iv_map[cg.contract.ticker]
