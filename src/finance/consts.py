@@ -34,6 +34,9 @@ ASSET_VOL_INDEX: dict[str, str | None] = {
     "VXUS": "^VIX",
     "GLD": "^GVZ",
     "IAU": "^GVZ",
+    # IWM: CBOE Russell 2000 Volatility Index (^RVX) close, FRED series RVXCLS.
+    # ^RVX is not on yfinance; FRED carries it as RVXCLS (index level, ÷100 → decimal).
+    "IWM": "fred:RVXCLS",
     "MUB": "^MOVE",
     "KMLM": None,
     "VGIT": "^MOVE",

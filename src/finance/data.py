@@ -136,14 +136,19 @@ def fetch_volatility_index(  # pragma: no cover
     Fetches the single index defined in ASSET_VOL_INDEX for the given ticker.
     Returns an empty Series if no vol index is mapped for the asset.
 
+    Keys prefixed with ``"fred:"`` (e.g. ``"fred:RVXCLS"``) are fetched from the
+    FRED database via fredapi instead of yfinance; a bare key is treated as a
+    yfinance ticker. FRED series are index levels (e.g. 25.0 == 25%), so both
+    paths are divided by 100 to produce a decimal annualized volatility.
+
     Arguments:
-        asset_ticker: Asset ticker (e.g. "VTI", "VXUS").
+        asset_ticker: Asset ticker (e.g. "VTI", "VXUS", "IWM").
         start_date: Start date string in YYYY-MM-DD format.
         end_date: End date string in YYYY-MM-DD format.
 
     Returns:
         Series of annualized implied volatility (decimal), named "<asset>_IV".
-        Empty Series if no vol index is mapped.
+        Empty Series if no vol index is mapped or the fetch returns no data.
     """
     from finance.consts import ASSET_VOL_INDEX
 
@@ -151,14 +156,62 @@ def fetch_volatility_index(  # pragma: no cover
     if vol_key is None:
         return pd.Series(dtype=float, name=f"{asset_ticker}_IV")
 
-    raw = yf.download(vol_key, start=start_date, end=end_date, auto_adjust=True, progress=False)
-    if raw.empty:
-        return pd.Series(dtype=float, name=f"{asset_ticker}_IV")
+    if vol_key.startswith("fred:"):
+        raw_level = _fetch_fred_volatility_index(
+            vol_key[len("fred:"):], start_date, end_date
+        )
+        if raw_level.empty:
+            return pd.Series(dtype=float, name=f"{asset_ticker}_IV")
+    else:
+        raw = yf.download(vol_key, start=start_date, end=end_date, auto_adjust=True, progress=False)
+        if raw.empty:
+            return pd.Series(dtype=float, name=f"{asset_ticker}_IV")
+        raw_level = raw["Close"].squeeze()
+
     scalar = VOL_INDEX_SCALAR.get(asset_ticker, 1.0)
     result: pd.Series = (
-        (raw["Close"].squeeze() / 100.0 * scalar).ffill().rename(f"{asset_ticker}_IV")
+        (raw_level / 100.0 * scalar).ffill().rename(f"{asset_ticker}_IV")
     )
     return result
+
+
+def _fetch_fred_volatility_index(  # pragma: no cover
+    series_id: str,
+    start_date: str,
+    end_date: str,
+) -> pd.Series:
+    """Fetch a FRED volatility-index level series (e.g. RVXCLS).
+
+    Arguments:
+        series_id: FRED series identifier (without the "fred:" prefix).
+        start_date: Start date string in YYYY-MM-DD format.
+        end_date: End date string in YYYY-MM-DD format.
+
+    Returns:
+        Raw index-level Series (not yet ÷100). Empty Series when FRED returns
+        no observations for the range.
+
+    Raises:
+        ValueError: If FRED_API_KEY is not set (fredapi requires a key).
+    """
+    import os
+
+    from fredapi import Fred
+
+    fred_key = os.environ.get("FRED_API_KEY", "")
+    if not fred_key:
+        raise ValueError(
+            f"FRED_API_KEY is not set; it is required to fetch FRED series {series_id!r} "
+            "(CBOE Russell 2000 Volatility Index, used for IWM implied volatility). "
+            "Sign up for a free key at https://fred.stlouisfed.org/docs/api/api_key.html"
+        )
+    fred = Fred(api_key=fred_key)
+    series: pd.Series = fred.get_series(
+        series_id, observation_start=start_date, observation_end=end_date
+    )
+    if series.empty:
+        return pd.Series(dtype=float, name=series_id)
+    return series.rename(series_id)
 
 
 def splice(

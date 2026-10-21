@@ -9,7 +9,10 @@ routing spot/IV per contract ticker — then compares realized weights against
 target weights under the DRIFT rebalance rule.
 
 Usage:
-    uv run examples/portfolio_manage/manual_leaps_review.py
+    FRED_API_KEY=... uv run examples/portfolio_manage/manual_leaps_review.py
+
+Requires FRED_API_KEY (or .env) to fetch IWM's implied volatility from the
+CBOE Russell 2000 Volatility Index (^RVX) via FRED series RVXCLS.
 """
 
 import pandas as pd
@@ -76,13 +79,9 @@ if __name__ == "__main__":
         START, END, tickers=UNDERLYINGS, use_splice=False, fetch_vol_indices=True
     )
     as_of = price_data.prices.index[-1]
-    # IWM has no dedicated vol index; proxy it with VTI's (U.S. equity via ^VIX).
+    # IWM routes to the CBOE Russell 2000 Volatility Index (^RVX) via FRED RVXCLS.
     spot_map = {t: float(price_data.prices[t].iloc[-1]) for t in UNDERLYINGS}
-    iv_map = {
-        "VTI": float(price_data.vol_prices["VTI"].iloc[-1]),
-        "IWM": float(price_data.vol_prices["VTI"].iloc[-1]),
-        "GLD": float(price_data.vol_prices["GLD"].iloc[-1]),
-    }
+    iv_map = {t: float(price_data.vol_prices[t].iloc[-1]) for t in UNDERLYINGS}
     print(
         f"as_of={as_of.date()}  spot={ {k: round(v, 2) for k, v in spot_map.items()} }  "
         f"iv={ {k: f'{v:.1%}' for k, v in iv_map.items()} }"

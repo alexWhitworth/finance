@@ -1,6 +1,6 @@
 """Tests for data.py — splice logic and price validation."""
 
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pandas as pd
@@ -9,8 +9,10 @@ import pytest
 from finance.consts import SPLICE_MAP, TICKERS
 from finance.data import (
     PriceData,
+    _fetch_fred_volatility_index,
     _forward_fill_prices,
     build_price_data,
+    fetch_volatility_index,
     splice,
 )
 
@@ -247,6 +249,59 @@ def test_build_price_data_vol_prices_empty_when_not_requested() -> None:
         pd_obj = build_price_data(start, end, use_splice=False, fetch_vol_indices=False)
 
     assert pd_obj.vol_prices.empty
+
+
+# ---------------------------------------------------------------------------
+# fetch_volatility_index — FRED (fred:RVXCLS for IWM) path
+# ---------------------------------------------------------------------------
+
+
+def test_fetch_volatility_index_fred_path_divides_by_100() -> None:
+    """FRED RVXCLS levels are converted to decimal IV and renamed `<asset>_IV`."""
+    idx = pd.bdate_range("2024-06-03", periods=5)
+    levels = pd.Series([20.0, 22.0, 25.0, 24.0, 26.0], index=idx)
+    with patch("finance.data._fetch_fred_volatility_index", return_value=levels):
+        out = fetch_volatility_index("IWM", "2024-06-03", "2024-06-07")
+
+    assert out.name == "IWM_IV"
+    np.testing.assert_allclose(
+        out.to_numpy(), np.array([0.20, 0.22, 0.25, 0.24, 0.26]), atol=1e-12
+    )
+
+
+def test_fetch_volatility_index_fred_path_forward_fills() -> None:
+    """FRED series gaps are forward-filled for a contiguous daily IV series."""
+    idx = pd.bdate_range("2024-06-03", periods=4)
+    levels = pd.Series([20.0, float("nan"), 22.0, 22.0], index=idx)
+    with patch("finance.data._fetch_fred_volatility_index", return_value=levels):
+        out = fetch_volatility_index("IWM", "2024-06-03", "2024-06-06")
+
+    np.testing.assert_allclose(out.to_numpy(), np.array([0.20, 0.20, 0.22, 0.22]), atol=1e-12)
+
+
+def test_fetch_fred_volatility_index_requires_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    """FRED path raises a clear ValueError when FRED_API_KEY is absent."""
+    monkeypatch.delenv("FRED_API_KEY", raising=False)
+    with pytest.raises(ValueError, match="FRED_API_KEY"):
+        _fetch_fred_volatility_index("RVXCLS", "2024-06-03", "2024-06-07")
+
+
+def test_fetch_fred_volatility_index_fetches_and_renames(monkeypatch: pytest.MonkeyPatch) -> None:
+    """_fetch_fred_volatility_index returns the raw FRED series as-is (unscaled)."""
+    monkeypatch.setenv("FRED_API_KEY", "test-key")
+    idx = pd.bdate_range("2024-06-03", periods=3)
+    raw = pd.Series([20.0, 21.0, 22.0], index=idx)
+    mock_fred = MagicMock()
+    mock_fred.get_series.return_value = raw
+
+    with patch("fredapi.Fred", return_value=mock_fred):
+        out = _fetch_fred_volatility_index("RVXCLS", "2024-06-03", "2024-06-05")
+
+    assert out.name == "RVXCLS"
+    mock_fred.get_series.assert_called_once_with(
+        "RVXCLS", observation_start="2024-06-03", observation_end="2024-06-05"
+    )
+    np.testing.assert_allclose(out.to_numpy(), raw.to_numpy())
 
 
 def test_build_price_data_all_nan_raises() -> None:
