@@ -1,0 +1,44 @@
+F-007 JUDGE VERDICT — Round 1 (multi-underlying extension)
+==========================================================
+Feature: F-007 — Update backtest_bridge.py (single-key dict wrapping)
+Commit reviewed: de9f54a
+Spec: plans/portfolio_multi_underlying_spec.json
+
+VERDICT: PASS
+
+CRITERIA
+--------
+1. backtest_bridge.py exits 0 with no unhandled exception: MET
+   - Live run: exit 0; tests/test_examples_smoke.py::test_backtest_bridge_exits_clean
+     (asserts returncode == 0 and "would_trigger=" present in stdout).
+2. NAV and greeks output values numerically identical to pre-change behavior within 1e-9: MET
+   - Verified by code inspection: the only live LEAPS underlying is VTI, so wrapping scalars
+     as {"VTI": spot}/{"VTI": FLOOR_IV} routes contract.ticker "VTI" → the same scalar, and
+     leaps_mtm_by_ticker={"VTI": leaps_value} sums to leaps_value. Both are exact no-ops on
+     output values. compute_nav_breakdown remains I1-correct (leaps_nav = sum of dict).
+
+SCORECARD
+---------
+Acceptance criteria: 2/2 MET
+Test coverage: 98.57% total
+Property/mutation testing: N/A (spec disables both; I/O-bound example script).
+
+VERIFICATION PERFORMED
+----------------------
+- Read examples/portfolio_manage/backtest_bridge.py: the two call sites updated —
+  compute_nav_breakdown(portfolio, leaps_mtm_by_ticker={"VTI": result.final_state.leaps_value})
+  and compute_portfolio_greeks(portfolio, spot={"VTI": spot}, iv={"VTI": FLOOR_IV}).
+- Live execution confirmed end-to-end (backtest → bridge → NAV/holdings/rebalance/greeks/vol).
+
+FINDINGS
+--------
+ADVISORY: the smoke test asserts exit-clean and a trigger string but does not independently
+  assert the 1e-9 numeric-identity acceptance criterion. That criterion is satisfied trivially
+  (single-key dict wrapping is a no-op) and confirmed by inspection; a numeric regression
+  assertion could be added if desired but is not required for correctness.
+
+REQUIRED ACTIONS
+----------------
+None blocking.
+
+Status update: features[F-007].status → "complete".

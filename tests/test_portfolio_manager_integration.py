@@ -169,7 +169,7 @@ def test_integration_nav_breakdown_total_nav_matches_nav_series_no_leaps() -> No
     rd, pd_obj = _make_rd_and_pd(756)
     result = run_backtest(rd, pd_obj, _config())
     lp = as_live_portfolio(result)
-    nb = compute_nav_breakdown(lp, leaps_mtm=0.0)
+    nb = compute_nav_breakdown(lp, leaps_mtm_by_ticker={"VTI": 0.0})
     expected = float(result.nav_series.iloc[-1])
     assert abs(nb.total_nav - expected) < 1e-6, (
         f"I11 violation: nav_breakdown.total_nav={nb.total_nav} "
@@ -178,7 +178,7 @@ def test_integration_nav_breakdown_total_nav_matches_nav_series_no_leaps() -> No
 
 
 def test_integration_nav_breakdown_total_nav_matches_nav_series_with_leaps() -> None:
-    """I11: compute_nav_breakdown(lp, leaps_mtm=leaps_value).total_nav ≈ nav_series[-1]."""
+    """I11: compute_nav_breakdown(lp, leaps_mtm_by_ticker).total_nav ≈ nav_series[-1]."""
     rd, pd_obj = _make_rd_and_pd(756)
     leaps_cfg = LeapsConfig(account_type=AccountType.TAXABLE)
     cfg = _config(weights=dict(_LEAPS_WEIGHTS), leaps_config=leaps_cfg)
@@ -186,7 +186,7 @@ def test_integration_nav_breakdown_total_nav_matches_nav_series_with_leaps() -> 
     lp = as_live_portfolio(result)
     # leaps_value from final_state is the last MTM valuation used in the backtest
     leaps_mtm = result.final_state.leaps_value
-    nb = compute_nav_breakdown(lp, leaps_mtm=leaps_mtm)
+    nb = compute_nav_breakdown(lp, leaps_mtm_by_ticker={"VTI": leaps_mtm})
     expected = float(result.nav_series.iloc[-1])
     assert abs(nb.total_nav - expected) < 1e-6, (
         f"I11 violation: nav_breakdown.total_nav={nb.total_nav} "

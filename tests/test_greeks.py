@@ -4,11 +4,16 @@ import math
 
 import numpy as np
 import pandas as pd
+import pytest
 from hypothesis import assume, given, settings
 from hypothesis import strategies as st
 
 from finance.consts import CONTRACT_MULTIPLIER, TIME_FLOOR
-from finance.greeks import compute_contract_greeks, compute_portfolio_greeks
+from finance.greeks import (
+    compute_contract_greeks,
+    compute_portfolio_greeks,
+    leaps_mtm_by_ticker,
+)
 from finance.leverage import AccountType, LeapsContract, bs_call_price
 from finance.portfolio_manager import LivePortfolio
 
@@ -348,7 +353,7 @@ def _make_live_portfolio(
 def test_empty_portfolio_all_zero_net_fields() -> None:
     """Empty leaps_contracts → PortfolioGreeks with all net_ fields = 0.0."""
     portfolio = _make_live_portfolio(leaps_contracts=())
-    pg = compute_portfolio_greeks(portfolio, spot=200.0, iv=0.20)
+    pg = compute_portfolio_greeks(portfolio, spot={"VTI": 200.0}, iv={"VTI": 0.20})
 
     assert pg.net_delta == 0.0
     assert pg.net_vega == 0.0
@@ -363,7 +368,7 @@ def test_empty_portfolio_all_zero_net_fields() -> None:
 def test_empty_portfolio_contracts_tuple_empty() -> None:
     """Empty leaps_contracts → contracts tuple is empty."""
     portfolio = _make_live_portfolio()
-    pg = compute_portfolio_greeks(portfolio, spot=200.0, iv=0.20)
+    pg = compute_portfolio_greeks(portfolio, spot={"VTI": 200.0}, iv={"VTI": 0.20})
     assert len(pg.contracts) == 0
 
 
@@ -376,7 +381,9 @@ def test_single_contract_net_delta_equals_position_delta() -> None:
     """Single contract: net_delta == contracts[0].position_delta."""
     contract = _make_contract(strike=100.0, n_contracts=1.0)
     portfolio = _make_live_portfolio(leaps_contracts=((contract, 1.0),))
-    pg = compute_portfolio_greeks(portfolio, spot=200.0, iv=0.20, risk_free_rate=0.04)
+    pg = compute_portfolio_greeks(
+        portfolio, spot={"VTI": 200.0}, iv={"VTI": 0.20}, risk_free_rate=0.04
+    )
 
     assert len(pg.contracts) == 1
     np.testing.assert_allclose(pg.net_delta, pg.contracts[0].position_delta, rtol=1e-12)
@@ -388,7 +395,7 @@ def test_single_contract_as_of_date() -> None:
     """as_of_date on PortfolioGreeks matches portfolio.as_of_date."""
     contract = _make_contract(strike=100.0)
     portfolio = _make_live_portfolio(leaps_contracts=((contract, 1.0),))
-    pg = compute_portfolio_greeks(portfolio, spot=200.0, iv=0.20)
+    pg = compute_portfolio_greeks(portfolio, spot={"VTI": 200.0}, iv={"VTI": 0.20})
     assert pg.as_of_date == _AS_OF
 
 
@@ -402,7 +409,7 @@ def test_multi_contract_net_delta_is_sum() -> None:
     c1 = _make_contract(strike=100.0, n_contracts=2.0)
     c2 = _make_contract(strike=150.0, n_contracts=3.0)
     portfolio = _make_live_portfolio(leaps_contracts=((c1, 1.0), (c2, 0.75)))
-    pg = compute_portfolio_greeks(portfolio, spot=200.0, iv=0.20)
+    pg = compute_portfolio_greeks(portfolio, spot={"VTI": 200.0}, iv={"VTI": 0.20})
 
     expected_delta = sum(cg.position_delta for cg in pg.contracts)
     np.testing.assert_allclose(pg.net_delta, expected_delta, rtol=1e-12)
@@ -413,7 +420,7 @@ def test_multi_contract_net_vega_is_sum() -> None:
     c1 = _make_contract(strike=100.0, n_contracts=1.0)
     c2 = _make_contract(strike=120.0, n_contracts=2.0)
     portfolio = _make_live_portfolio(leaps_contracts=((c1, 1.0), (c2, 1.0)))
-    pg = compute_portfolio_greeks(portfolio, spot=200.0, iv=0.20)
+    pg = compute_portfolio_greeks(portfolio, spot={"VTI": 200.0}, iv={"VTI": 0.20})
 
     expected_vega = sum(cg.position_vega for cg in pg.contracts)
     np.testing.assert_allclose(pg.net_vega, expected_vega, rtol=1e-12)
@@ -424,7 +431,7 @@ def test_multi_contract_net_gamma_scaled() -> None:
     c1 = _make_contract(strike=100.0, n_contracts=2.0)
     c2 = _make_contract(strike=130.0, n_contracts=1.5)
     portfolio = _make_live_portfolio(leaps_contracts=((c1, 0.8), (c2, 0.5)))
-    pg = compute_portfolio_greeks(portfolio, spot=200.0, iv=0.20)
+    pg = compute_portfolio_greeks(portfolio, spot={"VTI": 200.0}, iv={"VTI": 0.20})
 
     expected_gamma = sum(
         cg.gamma * cg.contract.n_contracts * CONTRACT_MULTIPLIER * cg.leaps_scale
@@ -438,7 +445,7 @@ def test_multi_contract_net_theta_is_sum() -> None:
     c1 = _make_contract(strike=100.0, n_contracts=1.0)
     c2 = _make_contract(strike=150.0, n_contracts=1.0)
     portfolio = _make_live_portfolio(leaps_contracts=((c1, 1.0), (c2, 1.0)))
-    pg = compute_portfolio_greeks(portfolio, spot=200.0, iv=0.20)
+    pg = compute_portfolio_greeks(portfolio, spot={"VTI": 200.0}, iv={"VTI": 0.20})
 
     expected_theta = sum(cg.position_theta for cg in pg.contracts)
     np.testing.assert_allclose(pg.net_theta, expected_theta, rtol=1e-12)
@@ -449,7 +456,7 @@ def test_different_leaps_scales() -> None:
     c1 = _make_contract(strike=100.0, n_contracts=5.0)
     c2 = _make_contract(strike=100.0, n_contracts=5.0)
     portfolio = _make_live_portfolio(leaps_contracts=((c1, 1.0), (c2, 0.3)))
-    pg = compute_portfolio_greeks(portfolio, spot=200.0, iv=0.20)
+    pg = compute_portfolio_greeks(portfolio, spot={"VTI": 200.0}, iv={"VTI": 0.20})
 
     assert len(pg.contracts) == 2
     assert pg.contracts[0].leaps_scale == 1.0
@@ -495,6 +502,151 @@ def test_property_net_delta_equals_sum(
     c1 = _make_contract(strike=s1, n_contracts=n1)
     c2 = _make_contract(strike=s2, n_contracts=n2)
     portfolio = _make_live_portfolio(leaps_contracts=((c1, scale1), (c2, scale2)))
-    pg = compute_portfolio_greeks(portfolio, spot=spot, iv=iv)
+    pg = compute_portfolio_greeks(portfolio, spot={"VTI": spot}, iv={"VTI": iv})
     expected = sum(cg.position_delta for cg in pg.contracts)
     np.testing.assert_allclose(pg.net_delta, expected, rtol=1e-12)
+
+
+# ===========================================================================
+# F-002: multi-ticker routing and leaps_mtm_by_ticker
+# ===========================================================================
+
+
+def _make_ticker_contract(ticker: str, strike: float, n_contracts: float) -> LeapsContract:
+    """Build a minimal LeapsContract tagged with the given ticker."""
+    return LeapsContract(
+        purchase_date=pd.Timestamp("2024-01-15"),
+        expiry_date=_EXPIRY,
+        strike=strike,
+        spot_at_purchase=200.0,
+        premium_paid=45.0,
+        notional=200.0 * CONTRACT_MULTIPLIER,
+        n_contracts=n_contracts,
+        account_type=AccountType.TAXABLE,
+        dividend_yield=0.0,
+        ticker=ticker,
+    )
+
+
+def test_multi_ticker_routing_uses_own_spot_and_iv() -> None:
+    """M3: each contract is priced with spot/iv for its own contract.ticker."""
+    c_vti = _make_ticker_contract("VTI", strike=100.0, n_contracts=2.0)
+    c_iwm = _make_ticker_contract("IWM", strike=100.0, n_contracts=2.0)
+    portfolio = _make_live_portfolio(leaps_contracts=((c_vti, 1.0), (c_iwm, 1.0)))
+
+    spot = {"VTI": 200.0, "IWM": 180.0}
+    iv = {"VTI": 0.20, "IWM": 0.35}
+    pg = compute_portfolio_greeks(portfolio, spot=spot, iv=iv)
+
+    by_ticker = {cg.contract.ticker: cg for cg in pg.contracts}
+    assert by_ticker["VTI"].spot == 200.0
+    assert by_ticker["VTI"].iv == 0.20
+    assert by_ticker["IWM"].spot == 180.0
+    assert by_ticker["IWM"].iv == 0.35
+
+
+def test_multi_ticker_missing_tickers_listed_all() -> None:
+    """M2: ValueError lists every missing ticker, not just the first."""
+    c_vti = _make_ticker_contract("VTI", strike=100.0, n_contracts=1.0)
+    c_iwm = _make_ticker_contract("IWM", strike=100.0, n_contracts=1.0)
+    c_gld = _make_ticker_contract("GLD", strike=100.0, n_contracts=1.0)
+    portfolio = _make_live_portfolio(
+        leaps_contracts=((c_vti, 1.0), (c_iwm, 1.0), (c_gld, 1.0))
+    )
+
+    with pytest.raises(ValueError, match=r"IWM.*GLD|GLD.*IWM"):
+        compute_portfolio_greeks(portfolio, spot={"VTI": 200.0}, iv={"VTI": 0.20})
+
+
+def test_multi_ticker_missing_both_spot_and_iv() -> None:
+    """A ticker missing only from iv is still reported."""
+    c_vti = _make_ticker_contract("VTI", strike=100.0, n_contracts=1.0)
+    c_iwm = _make_ticker_contract("IWM", strike=100.0, n_contracts=1.0)
+    portfolio = _make_live_portfolio(leaps_contracts=((c_vti, 1.0), (c_iwm, 1.0)))
+
+    with pytest.raises(ValueError, match="IWM"):
+        compute_portfolio_greeks(portfolio, spot={"VTI": 200.0, "IWM": 180.0}, iv={"VTI": 0.20})
+
+
+def test_leaps_mtm_by_ticker_sums_per_ticker() -> None:
+    """leaps_mtm_by_ticker's per-ticker sum matches a manual per-ticker sum."""
+    c_vti = _make_ticker_contract("VTI", strike=100.0, n_contracts=2.0)
+    c_iwm = _make_ticker_contract("IWM", strike=100.0, n_contracts=3.0)
+    c_vti2 = _make_ticker_contract("VTI", strike=120.0, n_contracts=1.5)
+    portfolio = _make_live_portfolio(
+        leaps_contracts=((c_vti, 1.0), (c_iwm, 0.8), (c_vti2, 1.0))
+    )
+    spot = {"VTI": 210.0, "IWM": 180.0}
+    iv = {"VTI": 0.20, "IWM": 0.30}
+    pg = compute_portfolio_greeks(portfolio, spot=spot, iv=iv)
+
+    mtm = leaps_mtm_by_ticker(pg)
+
+    expected: dict[str, float] = {}
+    for cg in pg.contracts:
+        value = cg.price * cg.contract.n_contracts * CONTRACT_MULTIPLIER * cg.leaps_scale
+        expected[cg.contract.ticker] = expected.get(cg.contract.ticker, 0.0) + value
+    assert set(mtm) == {"VTI", "IWM"}
+    np.testing.assert_allclose(mtm["VTI"], expected["VTI"], atol=1e-9)
+    np.testing.assert_allclose(mtm["IWM"], expected["IWM"], atol=1e-9)
+
+
+def test_leaps_mtm_by_ticker_empty_contracts() -> None:
+    """leaps_mtm_by_ticker returns an empty dict when contracts is empty."""
+    portfolio = _make_live_portfolio(leaps_contracts=())
+    pg = compute_portfolio_greeks(portfolio, spot={"VTI": 200.0}, iv={"VTI": 0.20})
+    assert leaps_mtm_by_ticker(pg) == {}
+
+
+def test_extra_unused_tickers_harmless() -> None:
+    """spot/iv dicts with extra unused tickers are harmless."""
+    c_vti = _make_ticker_contract("VTI", strike=100.0, n_contracts=1.0)
+    portfolio = _make_live_portfolio(leaps_contracts=((c_vti, 1.0),))
+    spot = {"VTI": 200.0, "IWM": 180.0, "GLD": 170.0}
+    iv = {"VTI": 0.20, "IWM": 0.30, "GLD": 0.25}
+    pg = compute_portfolio_greeks(portfolio, spot=spot, iv=iv)
+    assert len(pg.contracts) == 1
+
+
+# ---------------------------------------------------------------------------
+# Property-based: per-contract spot/iv routing always uses the contract's own ticker
+# ---------------------------------------------------------------------------
+
+_UNDERLYING_TICKERS = ("VTI", "IWM", "GLD", "SPY", "QQQ")
+
+
+@st.composite
+def _multi_ticker_portfolio(draw):
+    """Draw a multi-ticker portfolio and its matching spot/iv maps.
+
+    Returns:
+        (portfolio, spot_map, iv_map) with 2-4 distinct tickers, each ticker
+        carrying 1-3 tagged contracts and its own random spot/iv values.
+    """
+    tickers = draw(
+        st.lists(st.sampled_from(_UNDERLYING_TICKERS), min_size=2, max_size=4, unique=True)
+    )
+    spot_map = {t: draw(_valid_spot) for t in tickers}
+    iv_map = {t: draw(_valid_iv) for t in tickers}
+
+    pairs = []
+    for ticker in tickers:
+        for _ in range(draw(st.integers(min_value=1, max_value=3))):
+            contract = _make_ticker_contract(
+                ticker, strike=draw(_valid_spot), n_contracts=draw(_valid_n)
+            )
+            pairs.append((contract, draw(_valid_scale)))
+    portfolio = _make_live_portfolio(leaps_contracts=tuple(pairs))
+    return portfolio, spot_map, iv_map
+
+
+@given(fixture=_multi_ticker_portfolio())
+@settings(max_examples=150)
+def test_property_multi_ticker_routing_uses_own_spot_and_iv(fixture) -> None:
+    """Property: each ContractGreeks.spot/.iv equals the map value for its own ticker."""
+    portfolio, spot_map, iv_map = fixture
+    pg = compute_portfolio_greeks(portfolio, spot=spot_map, iv=iv_map)
+
+    for cg in pg.contracts:
+        assert cg.spot == spot_map[cg.contract.ticker]
+        assert cg.iv == iv_map[cg.contract.ticker]

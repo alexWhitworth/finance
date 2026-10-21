@@ -86,7 +86,10 @@ class NavBreakdown:
 
     Attributes:
         base_nav: Sum of base asset holdings.
-        leaps_nav: Mark-to-market value of all active LEAPS contracts (caller-supplied).
+        leaps_nav: sum(leaps_nav_by_ticker.values()). Mark-to-market value of
+            all active LEAPS contracts (caller-supplied).
+        leaps_nav_by_ticker: Mark-to-market value per LEAPS underlying
+            (caller-supplied).
         defensive_sleeve: GTT-swept capital.
         leaps_pool: Parked force-closed LEAPS proceeds.
         total_nav: base_nav + leaps_nav + defensive_sleeve + leaps_pool.
@@ -94,6 +97,7 @@ class NavBreakdown:
 
     base_nav: float
     leaps_nav: float
+    leaps_nav_by_ticker: dict[str, float]
     defensive_sleeve: float
     leaps_pool: float
     total_nav: float
@@ -122,28 +126,62 @@ class HoldingView:
 
 def compute_nav_breakdown(
     portfolio: LivePortfolio,
-    leaps_mtm: float = 0.0,
+    leaps_mtm_by_ticker: dict[str, float] | None = None,
 ) -> NavBreakdown:
     """Decompose LivePortfolio NAV into base, LEAPS, defensive, and pool components.
 
     Arguments:
         portfolio: LivePortfolio whose holdings to decompose.
-        leaps_mtm: Current mark-to-market value of all active LEAPS contracts
-            (caller-supplied; not computed here). Defaults to 0.0.
+        leaps_mtm_by_ticker: Current mark-to-market value per LEAPS underlying
+            (caller-supplied; not computed here). None (default) normalizes to
+            an empty mapping, avoiding a mutable default argument.
 
     Returns:
         NavBreakdown with total_nav == base_nav + leaps_nav + defensive_sleeve
-        + leaps_pool within 1e-9 (I1).
+        + leaps_pool within 1e-9 (I1), and leaps_nav ==
+        sum(leaps_nav_by_ticker.values()) within 1e-9 (M1).
     """
+    mtm_by_ticker = dict(leaps_mtm_by_ticker) if leaps_mtm_by_ticker is not None else {}
     base_nav = sum(portfolio.holdings.values())
-    total_nav = base_nav + leaps_mtm + portfolio.defensive_sleeve + portfolio.leaps_pool
+    leaps_nav = sum(mtm_by_ticker.values())
+    total_nav = base_nav + leaps_nav + portfolio.defensive_sleeve + portfolio.leaps_pool
     return NavBreakdown(
         base_nav=base_nav,
-        leaps_nav=leaps_mtm,
+        leaps_nav=leaps_nav,
+        leaps_nav_by_ticker=mtm_by_ticker,
         defensive_sleeve=portfolio.defensive_sleeve,
         leaps_pool=portfolio.leaps_pool,
         total_nav=total_nav,
     )
+
+
+def _leaps_actual_weights_by_key(
+    portfolio: LivePortfolio,
+    nav: NavBreakdown,
+) -> dict[str, float]:
+    """Map each ``"<ticker>_LEAPS"`` key to its actual per-ticker exposure.
+
+    The actual weight of a LEAPS sleeve is its real per-ticker mark-to-market
+    (``nav.leaps_nav_by_ticker[<ticker>]``) divided by ``nav.total_nav`` — not the
+    target-weight-proportional split of the aggregate ``nav.leaps_nav``.
+
+    Arguments:
+        portfolio: LivePortfolio providing target_weights.
+        nav: NavBreakdown providing leaps_nav_by_ticker and total_nav.
+
+    Returns:
+        Mapping keyed by the full ``"<ticker>_LEAPS"`` target_weights key.
+        A ``*_LEAPS`` key with no matching ticker in ``nav.leaps_nav_by_ticker``
+        maps to 0.0 (100% underweight), matching existing untracked-key behavior.
+    """
+    total_nav = nav.total_nav
+    weights: dict[str, float] = {}
+    for key in portfolio.target_weights:
+        if key.endswith(LEAPS_KEY_SUFFIX):
+            ticker = key[: -len(LEAPS_KEY_SUFFIX)]
+            mtm = nav.leaps_nav_by_ticker.get(ticker, 0.0)
+            weights[key] = mtm / total_nav if total_nav > 0.0 else 0.0
+    return weights
 
 
 def compute_holdings_view(
@@ -189,15 +227,14 @@ def compute_leaps_holdings_view(
 
     compute_holdings_view() only covers portfolio.holdings (base assets) — the
     LEAPS sleeve is tracked separately via leaps_contracts/nav.leaps_nav and is
-    otherwise absent from a holdings-drift view. This uses the same key
-    detection (LEAPS_KEY_SUFFIX) and proportional-split logic
-    compute_rebalance_plan() applies internally for its own DRIFT check, so
-    callers can display LEAPS weight drift alongside base assets from
-    compute_holdings_view().
+    otherwise absent from a holdings-drift view. Each ``"<ticker>_LEAPS"`` row
+    reflects its own per-ticker exposure (``nav.leaps_nav_by_ticker[<ticker>]``
+    from ``_leaps_actual_weights_by_key``) rather than a target-weight-proportional
+    split of the aggregate LEAPS NAV.
 
     Arguments:
         portfolio: LivePortfolio providing target_weights.
-        nav: NavBreakdown providing leaps_nav and total_nav.
+        nav: NavBreakdown providing leaps_nav_by_ticker and total_nav.
 
     Returns:
         Tuple of HoldingView, one per key in target_weights ending with
@@ -207,20 +244,17 @@ def compute_leaps_holdings_view(
     if not leaps_keys:
         return ()
 
-    total_nav = nav.total_nav
-    leaps_weight = nav.leaps_nav / total_nav if total_nav > 0.0 else 0.0
-    key_target_sum = sum(portfolio.target_weights[k] for k in leaps_keys)
-
+    actual_by_key = _leaps_actual_weights_by_key(portfolio, nav)
     views = []
     for k in leaps_keys:
-        share = portfolio.target_weights[k] / key_target_sum if key_target_sum > 0.0 else 0.0
-        actual_w = leaps_weight * share
+        actual_w = actual_by_key[k]
         target_w = portfolio.target_weights[k]
+        ticker = k[: -len(LEAPS_KEY_SUFFIX)]
         drift = actual_w - target_w
         views.append(
             HoldingView(
                 ticker=k,
-                dollar_value=nav.leaps_nav * share,
+                dollar_value=nav.leaps_nav_by_ticker.get(ticker, 0.0),
                 actual_weight=actual_w,
                 target_weight=target_w,
                 weight_drift=drift,
@@ -260,8 +294,9 @@ class RebalancePlan:
         would_trigger: Whether the rebalance rule fires at this date.
         trigger_reason: One of: quarterly_scheduled | drift_threshold | not_triggered.
         trades: Per-asset buy/sell instructions. Empty tuple if not triggered.
-        leaps_trim: Dollar reduction to LEAPS (positive = LEAPS partially closed).
-            Non-zero only when DRIFT rule fires and LEAPS overweight.
+        leaps_trim: Per-underlying dollar overshoot keyed by bare ticker
+            (positive = LEAPS partially closed). Non-empty only when a sleeve
+            is overweight relative to its target fraction.
         holdings_view: Per-asset drift breakdown before rebalance.
     """
 
@@ -269,7 +304,7 @@ class RebalancePlan:
     would_trigger: bool
     trigger_reason: str
     trades: tuple[TradeOrder, ...]
-    leaps_trim: float
+    leaps_trim: dict[str, float]
     holdings_view: tuple[HoldingView, ...]
 
 
@@ -293,12 +328,13 @@ def compute_rebalance_plan(
     the base_nav is fixed, the sum of target_values equals the sum of current
     values, so trades cancel exactly.
 
-    leaps_trim is the dollar overshoot of the LEAPS sleeve relative to its
-    target fraction of total_nav. Non-zero whenever the rebalance actually
-    fires (QUARTERLY or DRIFT) and the LEAPS sleeve is overweight — QUARTERLY
-    has no tolerance band, so it trims LEAPS back to target on every scheduled
-    date, while DRIFT only fires (and therefore only trims) once drift exceeds
-    the band.
+    leaps_trim is a per-ticker mapping keyed by bare ticker (not the
+    "<ticker>_LEAPS" target_weights key) whose values are the dollar overshoot
+    of that sleeve relative to its target fraction of total_nav. Non-empty
+    whenever the rebalance actually fires (QUARTERLY or DRIFT) and a sleeve is
+    overweight — QUARTERLY has no tolerance band, so it trims every overweight
+    sleeve back to target on each scheduled date, while DRIFT only fires (and
+    therefore only trims) once drift exceeds the band.
 
     Arguments:
         portfolio: LivePortfolio providing holdings, target_weights, and
@@ -316,10 +352,11 @@ def compute_rebalance_plan(
         and holdings_view populated.
 
     Notes:
-        LEAPS weight in the drift check is computed as leaps_nav / total_nav,
-        and the target LEAPS fraction is the sum of target_weights for any key
-        ending with '_LEAPS'. leaps_trim reports the dollar overshoot only;
-        no scale update is simulated (R-007).
+        LEAPS weight in the drift check is the actual per-ticker exposure
+        (leaps_nav_by_ticker[<ticker>] / total_nav) via
+        _leaps_actual_weights_by_key, keyed by the "<ticker>_LEAPS"
+        target_weights key. leaps_trim reports the per-ticker dollar overshoot
+        only; no scale update is simulated (R-007).
     """
     holdings_view = compute_holdings_view(portfolio, nav)
     base_nav = nav.base_nav
@@ -335,26 +372,12 @@ def compute_rebalance_plan(
             trigger_reason = "quarterly_scheduled"
     else:  # DRIFT
         if is_month_end:
-            # Build current and target weight Series over base + LEAPS
+            # Build current and target weight Series over base + LEAPS, using
+            # actual per-ticker LEAPS exposure rather than a target-proportional split.
             weights_now: dict[str, float] = {
                 h.ticker: h.actual_weight for h in holdings_view
             }
-            if total_nav > 0.0:
-                leaps_weight = nav.leaps_nav / total_nav
-            else:
-                leaps_weight = 0.0
-            # Add a synthetic LEAPS key if LEAPS present
-            leaps_keys = [
-                k for k in portfolio.target_weights if k.endswith(LEAPS_KEY_SUFFIX)
-            ]
-            for k in leaps_keys:
-                weights_now[k] = (
-                    leaps_weight * (portfolio.target_weights[k] / sum(
-                        portfolio.target_weights[lk] for lk in leaps_keys
-                    ))
-                    if leaps_keys and sum(portfolio.target_weights[lk] for lk in leaps_keys) > 0
-                    else 0.0
-                )
+            weights_now.update(_leaps_actual_weights_by_key(portfolio, nav))
             current_w = pd.Series(weights_now)
             target_w = pd.Series(portfolio.target_weights)
             if should_rebalance(current_w, target_w, RebalanceRule.DRIFT, DRIFT_BAND_RELATIVE):
@@ -367,7 +390,7 @@ def compute_rebalance_plan(
             would_trigger=False,
             trigger_reason="not_triggered",
             trades=(),
-            leaps_trim=0.0,
+            leaps_trim={},
             holdings_view=holdings_view,
         )
 
@@ -375,9 +398,6 @@ def compute_rebalance_plan(
     base_target_keys = [
         k for k in portfolio.target_weights if not k.endswith(LEAPS_KEY_SUFFIX)
     ]
-    leaps_target_fraction = sum(
-        v for k, v in portfolio.target_weights.items() if k.endswith(LEAPS_KEY_SUFFIX)
-    )
     # Base target weights normalized over base assets only
     base_target_sum = sum(portfolio.target_weights[k] for k in base_target_keys)
     if base_target_sum > 0.0:
@@ -424,13 +444,17 @@ def compute_rebalance_plan(
         )
 
     # leaps_trim: applies whenever the rebalance actually fires — QUARTERLY or
-    # DRIFT — when the LEAPS sleeve is overweight relative to its target
-    # fraction. would_trigger is unconditionally True past this point.
-    leaps_trim = 0.0
-    leaps_nav = nav.leaps_nav
-    target_leaps_nav = total_nav * leaps_target_fraction
-    if leaps_nav > target_leaps_nav:
-        leaps_trim = leaps_nav - target_leaps_nav
+    # DRIFT — for each sleeve overweight relative to its own target fraction.
+    # would_trigger is unconditionally True past this point.
+    leaps_trim: dict[str, float] = {}
+    for key in portfolio.target_weights:
+        if not key.endswith(LEAPS_KEY_SUFFIX):
+            continue
+        ticker = key[: -len(LEAPS_KEY_SUFFIX)]
+        target_ticker_nav = total_nav * portfolio.target_weights[key]
+        actual_ticker_nav = nav.leaps_nav_by_ticker.get(ticker, 0.0)
+        if actual_ticker_nav > target_ticker_nav:
+            leaps_trim[ticker] = actual_ticker_nav - target_ticker_nav
 
     return RebalancePlan(
         as_of_date=portfolio.as_of_date,
@@ -442,39 +466,47 @@ def compute_rebalance_plan(
     )
 
 
-def leaps_trim_as_trade_order(
-    leaps_view: HoldingView,
-    leaps_trim: float,
-) -> TradeOrder | None:
-    """Represent a RebalancePlan's leaps_trim as a TradeOrder for display.
+def leaps_trims_as_trade_orders(
+    leaps_views: tuple[HoldingView, ...],
+    leaps_trim: dict[str, float],
+) -> tuple[TradeOrder, ...]:
+    """Represent a RebalancePlan's per-ticker leaps_trim as TradeOrders for display.
 
-    compute_rebalance_plan() reports LEAPS overweight only as a dollar
-    overshoot (RebalancePlan.leaps_trim) — not as an entry in plan.trades —
-    because a partial LEAPS close isn't a simple buy/sell of a base asset and
-    the freed proceeds are not redistributed to other trades (R-007). This is
-    a read-only convenience for combining the LEAPS sleeve with base-asset
-    trades in a single display table; the result is not part of plan.trades
-    and does not participate in the trade-conservation invariant (I3).
+    compute_rebalance_plan() reports LEAPS overweight only as a per-ticker
+    dollar overshoot (RebalancePlan.leaps_trim, keyed by bare ticker) — not as
+    entries in plan.trades — because a partial LEAPS close isn't a simple
+    buy/sell of a base asset and the freed proceeds are not redistributed to
+    other trades (R-007). This is a read-only convenience for combining the
+    LEAPS sleeves with base-asset trades in a single display table; the results
+    are not part of plan.trades and do not participate in the trade-conservation
+    invariant (I3).
 
     Arguments:
-        leaps_view: HoldingView for the LEAPS sleeve, from
-            compute_leaps_holdings_view().
-        leaps_trim: RebalancePlan.leaps_trim from the same evaluation.
+        leaps_views: HoldingView rows for the LEAPS sleeves, from
+            compute_leaps_holdings_view(). Each ticker is "<ticker>_LEAPS".
+        leaps_trim: RebalancePlan.leaps_trim from the same evaluation, keyed
+            by bare ticker.
 
     Returns:
-        TradeOrder representing the LEAPS partial close, or None when
-        leaps_trim is 0.0.
+        One TradeOrder per ticker in leaps_trim, keyed by "<ticker>_LEAPS".
+        Empty tuple when leaps_trim is empty.
     """
-    if leaps_trim <= 0.0:
-        return None
-    return TradeOrder(
-        ticker=leaps_view.ticker,
-        current_value=leaps_view.dollar_value,
-        target_value=leaps_view.dollar_value - leaps_trim,
-        trade_amount=-leaps_trim,
-        current_weight=leaps_view.actual_weight,
-        target_weight=leaps_view.target_weight,
-    )
+    view_by_key = {v.ticker: v for v in leaps_views}
+    orders = []
+    for ticker, trim in leaps_trim.items():
+        key = ticker + LEAPS_KEY_SUFFIX
+        view = view_by_key[key]
+        orders.append(
+            TradeOrder(
+                ticker=key,
+                current_value=view.dollar_value,
+                target_value=view.dollar_value - trim,
+                trade_amount=-trim,
+                current_weight=view.actual_weight,
+                target_weight=view.target_weight,
+            )
+        )
+    return tuple(orders)
 
 
 @dataclass(frozen=True)

@@ -4,13 +4,14 @@ This module is the I/O boundary for all market data. Everything in here touches
 the network; all downstream modules receive pure DataFrames.
 """
 
+import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import pandas as pd
 import yfinance as yf
 
-from finance.consts import SPLICE_MAP, TBILL_TICKER, TICKERS, VOL_INDEX_SCALAR
+from finance.consts import SPLICE_MAP, TBILL_TICKER, TICKERS, VOL_INDEX_FALLBACK, VOL_INDEX_SCALAR
 
 
 @dataclass(frozen=True)
@@ -136,14 +137,24 @@ def fetch_volatility_index(  # pragma: no cover
     Fetches the single index defined in ASSET_VOL_INDEX for the given ticker.
     Returns an empty Series if no vol index is mapped for the asset.
 
+    Keys prefixed with ``"fred:"`` (e.g. ``"fred:RVXCLS"``) are fetched from the
+    FRED database via fredapi instead of yfinance; a bare key is treated as a
+    yfinance ticker. FRED series are index levels (e.g. 25.0 == 25%), so both
+    paths are divided by 100 to produce a decimal annualized volatility.
+
+    When a FRED fetch comes back empty (missing ``FRED_API_KEY`` or no data),
+    the closest yfinance fallback from ``VOL_INDEX_FALLBACK`` is used and a
+    warning is emitted.
+
     Arguments:
-        asset_ticker: Asset ticker (e.g. "VTI", "VXUS").
+        asset_ticker: Asset ticker (e.g. "VTI", "VXUS", "IWM").
         start_date: Start date string in YYYY-MM-DD format.
         end_date: End date string in YYYY-MM-DD format.
 
     Returns:
         Series of annualized implied volatility (decimal), named "<asset>_IV".
-        Empty Series if no vol index is mapped.
+        Empty Series if no vol index is mapped and no fallback is available,
+        or the final fetch returns no data.
     """
     from finance.consts import ASSET_VOL_INDEX
 
@@ -151,14 +162,95 @@ def fetch_volatility_index(  # pragma: no cover
     if vol_key is None:
         return pd.Series(dtype=float, name=f"{asset_ticker}_IV")
 
-    raw = yf.download(vol_key, start=start_date, end=end_date, auto_adjust=True, progress=False)
-    if raw.empty:
+    if vol_key.startswith("fred:"):
+        raw_level = _fetch_fred_volatility_index(
+            vol_key[len("fred:"):], start_date, end_date
+        )
+        if raw_level.empty:
+            fallback = VOL_INDEX_FALLBACK.get(asset_ticker)
+            if fallback is None:
+                return pd.Series(dtype=float, name=f"{asset_ticker}_IV")
+            warnings.warn(
+                f"{vol_key} unavailable for {asset_ticker}; "
+                f"falling back to {fallback}.",
+                stacklevel=2,
+            )
+            raw_level = _fetch_yf_close(fallback, start_date, end_date)
+    else:
+        raw_level = _fetch_yf_close(vol_key, start_date, end_date)
+
+    if raw_level.empty:
         return pd.Series(dtype=float, name=f"{asset_ticker}_IV")
     scalar = VOL_INDEX_SCALAR.get(asset_ticker, 1.0)
     result: pd.Series = (
-        (raw["Close"].squeeze() / 100.0 * scalar).ffill().rename(f"{asset_ticker}_IV")
+        (raw_level / 100.0 * scalar).ffill().rename(f"{asset_ticker}_IV")
     )
     return result
+
+
+def _fetch_yf_close(  # pragma: no cover
+    ticker: str,
+    start_date: str,
+    end_date: str,
+) -> pd.Series:
+    """Download a yfinance Close series, normalized to a non-empty Series.
+
+    Arguments:
+        ticker: yfinance ticker (e.g. "^VIX").
+        start_date: Start date string in YYYY-MM-DD format.
+        end_date: End date string in YYYY-MM-DD format.
+
+    Returns:
+        Close Series (index level, not yet ÷100). Empty Series when yfinance
+        returns no data.
+    """
+    raw = yf.download(ticker, start=start_date, end=end_date, auto_adjust=True, progress=False)
+    if raw.empty:
+        return pd.Series(dtype=float, name=ticker)
+    close = raw["Close"]
+    if isinstance(close, pd.DataFrame):
+        close = close.squeeze()
+    if not isinstance(close, pd.Series):
+        close = pd.Series(close, name=ticker)
+    return close
+
+
+def _fetch_fred_volatility_index(  # pragma: no cover
+    series_id: str,
+    start_date: str,
+    end_date: str,
+) -> pd.Series:
+    """Fetch a FRED volatility-index level series (e.g. RVXCLS).
+
+    Arguments:
+        series_id: FRED series identifier (without the "fred:" prefix).
+        start_date: Start date string in YYYY-MM-DD format.
+        end_date: End date string in YYYY-MM-DD format.
+
+    Returns:
+        Raw index-level Series (not yet ÷100). Empty Series when FRED_API_KEY
+        is not set, the FRED fetch fails (e.g. maintenance/down, invalid key,
+        network error), or FRED returns no observations for the range.
+    """
+    import os
+
+    from fredapi import Fred
+
+    fred_key = os.environ.get("FRED_API_KEY", "")
+    if not fred_key:
+        return pd.Series(dtype=float, name=series_id)
+    fred = Fred(api_key=fred_key)
+    try:
+        series: pd.Series = fred.get_series(
+            series_id, observation_start=start_date, observation_end=end_date
+        )
+    except Exception:
+        # FRED maintenance/down, an invalid key, or a malformed response all
+        # resolve to an empty series so the caller can fall back gracefully.
+        return pd.Series(dtype=float, name=series_id)
+    if series.empty:
+        return pd.Series(dtype=float, name=series_id)
+    return series.rename(series_id)
 
 
 def splice(

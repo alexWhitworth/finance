@@ -266,6 +266,37 @@ def test_create_leaps_account_type_stored() -> None:
     assert c.account_type == AccountType.TAX_SHELTERED
 
 
+def test_leaps_contract_ticker_defaults_to_vti() -> None:
+    """M8: LeapsContract constructed without ticker defaults to "VTI"."""
+    c = LeapsContract(
+        purchase_date=pd.Timestamp("2024-01-15"),
+        expiry_date=pd.Timestamp("2026-01-15"),
+        strike=100.0,
+        spot_at_purchase=200.0,
+        premium_paid=45.0,
+        notional=200.0 * CONTRACT_MULTIPLIER,
+        n_contracts=2.0,
+        account_type=AccountType.TAXABLE,
+    )
+    assert c.ticker == "VTI"
+
+
+def test_leaps_contract_ticker_explicit() -> None:
+    """LeapsContract preserves an explicitly supplied ticker."""
+    c = LeapsContract(
+        purchase_date=pd.Timestamp("2024-01-15"),
+        expiry_date=pd.Timestamp("2026-01-15"),
+        strike=100.0,
+        spot_at_purchase=200.0,
+        premium_paid=45.0,
+        notional=200.0 * CONTRACT_MULTIPLIER,
+        n_contracts=2.0,
+        account_type=AccountType.TAXABLE,
+        ticker="IWM",
+    )
+    assert c.ticker == "IWM"
+
+
 # ---------------------------------------------------------------------------
 # build_leaps_contract
 # ---------------------------------------------------------------------------
@@ -332,6 +363,26 @@ def test_build_leaps_frozen() -> None:
     )
     with pytest.raises((AttributeError, TypeError)):
         c.strike = 0.0  # type: ignore[misc]
+
+
+def test_build_leaps_ticker_defaults_to_vti() -> None:
+    """M8: build_leaps_contract constructed without ticker defaults to "VTI"."""
+    c = build_leaps_contract(
+        pd.Timestamp("2024-01-15"), pd.Timestamp("2026-01-15"), 280.0, 4.0
+    )
+    assert c.ticker == "VTI"
+
+
+def test_build_leaps_ticker_explicit() -> None:
+    """build_leaps_contract preserves an explicitly supplied ticker."""
+    c = build_leaps_contract(
+        pd.Timestamp("2024-01-15"),
+        pd.Timestamp("2026-01-15"),
+        280.0,
+        4.0,
+        ticker="GLD",
+    )
+    assert c.ticker == "GLD"
 
 
 # ---------------------------------------------------------------------------

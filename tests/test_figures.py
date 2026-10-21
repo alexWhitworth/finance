@@ -40,7 +40,7 @@ from finance.portfolio_manager import (
     compute_leaps_holdings_view,
     compute_nav_breakdown,
     compute_rebalance_plan,
-    leaps_trim_as_trade_order,
+    leaps_trims_as_trade_orders,
 )
 from finance.returns import ReturnData
 from finance.volatility import build_volatility_model
@@ -460,7 +460,7 @@ def _make_portfolio_greeks(n_contracts: float = 3.0) -> PortfolioGreeks:
         leaps_contracts=((contract, 1.0),),
         gtt_regime=None,
     )
-    return compute_portfolio_greeks(portfolio, spot=320.0, iv=0.18)
+    return compute_portfolio_greeks(portfolio, spot={"VTI": 320.0}, iv={"VTI": 0.18})
 
 
 class TestFormatContractGreeksTable:
@@ -471,10 +471,41 @@ class TestFormatContractGreeksTable:
     def test_contains_expected_columns(self) -> None:
         table = format_contract_greeks_table(_make_portfolio_greeks())
         for col in (
-            "purchased", "expiry", "n_contracts", "delta", "gamma", "vega",
+            "ticker", "purchased", "expiry", "n_contracts", "delta", "gamma", "vega",
             "theta/day", "position_delta",
         ):
             assert col in table
+
+    def test_ticker_column_matches_contract_ticker(self) -> None:
+        """Each formatted row's ticker column equals cg.contract.ticker."""
+        contract_vti = build_leaps_contract(
+            pd.Timestamp("2024-01-15"), pd.Timestamp("2026-01-15"), 300.0, 2.0, ticker="VTI"
+        )
+        contract_iwm = build_leaps_contract(
+            pd.Timestamp("2024-01-15"), pd.Timestamp("2026-01-15"), 250.0, 2.0, ticker="IWM"
+        )
+        contract_gld = build_leaps_contract(
+            pd.Timestamp("2024-01-15"), pd.Timestamp("2026-01-15"), 200.0, 2.0, ticker="GLD"
+        )
+        portfolio = LivePortfolio(
+            as_of_date=pd.Timestamp("2025-06-01"),
+            holdings={},
+            target_weights={"VTI_LEAPS": 1.0},
+            leaps_contracts=((contract_vti, 1.0), (contract_iwm, 1.0), (contract_gld, 1.0)),
+            gtt_regime=None,
+        )
+        greeks = compute_portfolio_greeks(
+            portfolio,
+            spot={"VTI": 320.0, "IWM": 270.0, "GLD": 220.0},
+            iv={"VTI": 0.18, "IWM": 0.22, "GLD": 0.20},
+        )
+        table = format_contract_greeks_table(greeks)
+        assert "VTI" in table
+        assert "IWM" in table
+        assert "GLD" in table
+        # One data row per contract, all three tickers present in the ticker column.
+        lines = [ln for ln in table.splitlines() if ln.strip()]
+        assert len(lines) == 1 + len(greeks.contracts)  # header + 3 data rows
 
     def test_one_row_per_contract(self) -> None:
         contract_a = build_leaps_contract(
@@ -490,7 +521,7 @@ class TestFormatContractGreeksTable:
             leaps_contracts=((contract_a, 1.0), (contract_b, 1.0)),
             gtt_regime=None,
         )
-        greeks = compute_portfolio_greeks(portfolio, spot=320.0, iv=0.18)
+        greeks = compute_portfolio_greeks(portfolio, spot={"VTI": 320.0}, iv={"VTI": 0.18})
         table = format_contract_greeks_table(greeks)
         assert table.count("2024-01-15") == 1
         assert table.count("2024-07-15") == 1
@@ -523,7 +554,7 @@ class TestFormatHoldingsTable:
             leaps_contracts=(),
             gtt_regime=None,
         )
-        nb = compute_nav_breakdown(lp, leaps_mtm=40_000.0)
+        nb = compute_nav_breakdown(lp, leaps_mtm_by_ticker={"VTI": 40_000.0})
         views = (*compute_holdings_view(lp, nb), *compute_leaps_holdings_view(lp, nb))
         assert isinstance(format_holdings_table(views), str)
 
@@ -535,7 +566,7 @@ class TestFormatHoldingsTable:
             leaps_contracts=(),
             gtt_regime=None,
         )
-        nb = compute_nav_breakdown(lp, leaps_mtm=40_000.0)
+        nb = compute_nav_breakdown(lp, leaps_mtm_by_ticker={"VTI": 40_000.0})
         views = (*compute_holdings_view(lp, nb), *compute_leaps_holdings_view(lp, nb))
         table = format_holdings_table(views)
         assert "VXUS" in table
@@ -585,15 +616,15 @@ class TestFormatTradeOrdersTable:
             leaps_contracts=(),
             gtt_regime=None,
         )
-        nb = compute_nav_breakdown(lp, leaps_mtm=60_000.0)
+        nb = compute_nav_breakdown(lp, leaps_mtm_by_ticker={"VTI": 60_000.0})
         plan = compute_rebalance_plan(
             lp, nb, RebalanceRule.DRIFT, is_rebal_date=False, is_month_end=True
         )
-        assert plan.leaps_trim > 0.0
-        leaps_view = compute_leaps_holdings_view(lp, nb)[0]
-        leaps_trade = leaps_trim_as_trade_order(leaps_view, plan.leaps_trim)
-        assert leaps_trade is not None
-        table = format_trade_orders_table((*plan.trades, leaps_trade))
+        assert plan.leaps_trim["VTI"] > 0.0
+        leaps_views = compute_leaps_holdings_view(lp, nb)
+        leaps_trades = leaps_trims_as_trade_orders(leaps_views, plan.leaps_trim)
+        assert len(leaps_trades) == 1
+        table = format_trade_orders_table((*plan.trades, *leaps_trades))
         assert "VTI_LEAPS" in table
         assert "e+" not in table
 
@@ -612,7 +643,7 @@ class TestFormatNavBreakdownTable:
             leaps_contracts=(),
             gtt_regime=None,
         )
-        nb = compute_nav_breakdown(lp, leaps_mtm=40_000.0)
+        nb = compute_nav_breakdown(lp, leaps_mtm_by_ticker={"VTI": 40_000.0})
         assert isinstance(format_nav_breakdown_table(nb), str)
 
     def test_one_row_per_field(self) -> None:
@@ -623,7 +654,7 @@ class TestFormatNavBreakdownTable:
             leaps_contracts=(),
             gtt_regime=None,
         )
-        nb = compute_nav_breakdown(lp, leaps_mtm=40_000.0)
+        nb = compute_nav_breakdown(lp, leaps_mtm_by_ticker={"VTI": 40_000.0})
         table = format_nav_breakdown_table(nb)
         lines = table.splitlines()
         assert len(lines) == 5
@@ -638,7 +669,7 @@ class TestFormatNavBreakdownTable:
             leaps_contracts=(),
             gtt_regime=None,
         )
-        nb = compute_nav_breakdown(lp, leaps_mtm=2_375_081.0)
+        nb = compute_nav_breakdown(lp, leaps_mtm_by_ticker={"VTI": 2_375_081.0})
         table = format_nav_breakdown_table(nb)
         assert "e+" not in table
         assert "$2,375,081.00" in table

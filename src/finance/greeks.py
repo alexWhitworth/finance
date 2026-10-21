@@ -158,23 +158,30 @@ def compute_contract_greeks(
 
 def compute_portfolio_greeks(
     portfolio: LivePortfolio,
-    spot: float,
-    iv: float,
+    spot: dict[str, float],
+    iv: dict[str, float],
     risk_free_rate: float = 0.0,
 ) -> PortfolioGreeks:
     """Compute aggregate greeks across all active LEAPS contracts in a LivePortfolio.
 
+    Each contract is priced against its own underlying by routing
+    ``contract.ticker`` to ``spot[contract.ticker]`` and ``iv[contract.ticker]``.
     Returns a zero-valued PortfolioGreeks with an empty contracts tuple when
     portfolio.leaps_contracts is empty.
 
     Arguments:
         portfolio: LivePortfolio with leaps_contracts to evaluate.
-        spot: Current spot price of the underlying.
-        iv: Implied volatility (annualized decimal).
+        spot: Current spot price per underlying, keyed by ticker.
+        iv: Implied volatility (annualized decimal) per underlying, keyed by ticker.
         risk_free_rate: Continuously compounded risk-free rate. Default 0.0.
 
     Returns:
         PortfolioGreeks with per-contract details and net aggregates.
+
+    Raises:
+        ValueError: If one or more live contracts' tickers are missing from
+            spot or iv. The message lists every missing ticker, not just the
+            first.
     """
     if not portfolio.leaps_contracts:
         return PortfolioGreeks(
@@ -188,8 +195,27 @@ def compute_portfolio_greeks(
             net_charm=0.0,
         )
 
+    missing = sorted(
+        {
+            contract.ticker
+            for contract, _ in portfolio.leaps_contracts
+            if contract.ticker not in spot or contract.ticker not in iv
+        }
+    )
+    if missing:
+        raise ValueError(
+            "spot/iv maps are missing the following tickers: " + ", ".join(missing)
+        )
+
     contract_greeks = tuple(
-        compute_contract_greeks(contract, spot, iv, portfolio.as_of_date, risk_free_rate, scale)
+        compute_contract_greeks(
+            contract,
+            spot[contract.ticker],
+            iv[contract.ticker],
+            portfolio.as_of_date,
+            risk_free_rate,
+            scale,
+        )
         for contract, scale in portfolio.leaps_contracts
     )
 
@@ -206,3 +232,22 @@ def compute_portfolio_greeks(
         net_vanna=sum(cg.vanna * _position_scale(cg) for cg in contract_greeks),
         net_charm=sum(cg.charm * _position_scale(cg) for cg in contract_greeks),
     )
+
+
+def leaps_mtm_by_ticker(greeks: PortfolioGreeks) -> dict[str, float]:
+    """Sum position mark-to-market grouped by underlying ticker.
+
+    Position MTM is ``price * n_contracts * CONTRACT_MULTIPLIER * leaps_scale``
+    per contract, summed within each ``contract.ticker``.
+
+    Arguments:
+        greeks: PortfolioGreeks with per-contract detail.
+
+    Returns:
+        Per-ticker MTM mapping. Empty dict when greeks.contracts is empty.
+    """
+    mtm: dict[str, float] = {}
+    for cg in greeks.contracts:
+        value = cg.price * cg.contract.n_contracts * CONTRACT_MULTIPLIER * cg.leaps_scale
+        mtm[cg.contract.ticker] = mtm.get(cg.contract.ticker, 0.0) + value
+    return mtm
