@@ -5,12 +5,12 @@ the network; all downstream modules receive pure DataFrames.
 """
 
 import warnings
-from dotenv import load_dotenv
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import pandas as pd
 import yfinance as yf
+from dotenv import load_dotenv
 
 from finance.consts import SPLICE_MAP, TBILL_TICKER, TICKERS, VOL_INDEX_FALLBACK, VOL_INDEX_SCALAR
 
@@ -235,6 +235,7 @@ def _fetch_fred_volatility_index(  # pragma: no cover
         network error), or FRED returns no observations for the range.
     """
     import os
+
     from fredapi import Fred
 
     fred_key = os.getenv("FRED_API_KEY")
