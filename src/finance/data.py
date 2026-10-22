@@ -5,6 +5,7 @@ the network; all downstream modules receive pure DataFrames.
 """
 
 import warnings
+from dotenv import load_dotenv
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -13,6 +14,7 @@ import yfinance as yf
 
 from finance.consts import SPLICE_MAP, TBILL_TICKER, TICKERS, VOL_INDEX_FALLBACK, VOL_INDEX_SCALAR
 
+load_dotenv()  # load FRED_API_KEY from .env if present
 
 @dataclass(frozen=True)
 class PriceData:
@@ -233,10 +235,9 @@ def _fetch_fred_volatility_index(  # pragma: no cover
         network error), or FRED returns no observations for the range.
     """
     import os
-
     from fredapi import Fred
 
-    fred_key = os.environ.get("FRED_API_KEY", "")
+    fred_key = os.getenv("FRED_API_KEY")
     if not fred_key:
         return pd.Series(dtype=float, name=series_id)
     fred = Fred(api_key=fred_key)
