@@ -694,8 +694,8 @@ def _make_dca_signal() -> LeapsDcaSignal:
         iv_percentile=59.9,
         iv_current=0.176,
         macd_hist=-0.760,
-        macd_bearish_confirmed=True,
-        macd_gate=0.5,
+        macd_z=-1.42,
+        macd_delta=-0.031,
     )
 
 
@@ -716,8 +716,8 @@ class TestFormatLeapsDcaSignalTable:
         assert "VTI" in table
         assert "dca_action" in table
         assert "TRANCHE" in table
-        assert "macd_bearish_confirmed" in table
-        assert "True" in table
+        assert "macd_z" in table
+        assert "macd_delta" in table
 
     def test_iv_current_rendered_as_percent(self) -> None:
         table = format_leaps_dca_signal_table(_make_dca_signal())
