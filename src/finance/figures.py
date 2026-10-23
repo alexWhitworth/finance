@@ -608,8 +608,8 @@ def format_leaps_dca_signal_table(signal: LeapsDcaSignal) -> str:
         ("iv_current", f"{signal.iv_current:.1%}"),
         ("iv_percentile", f"{signal.iv_percentile:.1f}"),
         ("macd_hist", f"{signal.macd_hist:.3f}"),
-        ("macd_bearish_confirmed", str(signal.macd_bearish_confirmed)),
-        ("macd_gate", f"{signal.macd_gate:.2f}"),
+        ("macd_z", f"{signal.macd_z:.2f}"),
+        ("macd_delta", f"{signal.macd_delta:.3f}"),
     ]
     df = pd.DataFrame(rows, columns=["field", "value"]).set_index("field")
     return df.to_string(header=False, index_names=False)

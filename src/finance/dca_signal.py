@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 import pandas as pd
+from scipy.stats import norm
 
 from finance.consts import ASSET_VOL_INDEX
 
@@ -42,8 +43,8 @@ class LeapsDcaSignal:
         iv_percentile: 252-day IV percentile rank (0-100).
         iv_current: Raw IV (decimal) at as_of_date.
         macd_hist: MACD histogram value at as_of_date.
-        macd_bearish_confirmed: True if MACD histogram negative for ≥ 3 consecutive sessions.
-        macd_gate: Gate multiplier applied (1.0 or macd_gate_floor).
+        macd_z: MACD histogram Z-score over the trailing macd_z_window days.
+        macd_delta: First difference of the MACD histogram (H_t - H_{t-1}).
     """
 
     as_of_date: pd.Timestamp
@@ -57,8 +58,8 @@ class LeapsDcaSignal:
     iv_percentile: float
     iv_current: float
     macd_hist: float
-    macd_bearish_confirmed: bool
-    macd_gate: float
+    macd_z: float
+    macd_delta: float
 
 
 # ---------------------------------------------------------------------------
@@ -138,20 +139,25 @@ def _compute_macd(
     return macd_line - signal_line
 
 
-def _macd_bearish_confirmed(macd_hist: pd.Series, min_sessions: int = 3) -> bool:
-    """True if the last min_sessions MACD histogram values are all negative.
+def _macd_zscore(macd_hist: pd.Series, window: int = 126, eps_rel: float = 1e-3) -> pd.Series:
+    """Rolling Z-score of the MACD histogram.
+
+    Z_t = (H_t - mu_H(window)) / sigma_eff, where sigma_eff carries a floor of
+    eps_rel * mean(|H|) + 1e-12 so that a degenerate (flat) window resolves to
+    Z ~ 0 — "no trend information" — rather than an explosive ratio.
 
     Arguments:
-        macd_hist: Full MACD histogram Series up to as_of_date.
-        min_sessions: Required consecutive negative sessions.
+        macd_hist: MACD histogram Series.
+        window: Trailing window in trading days for the mean and std.
+        eps_rel: Relative sigma floor as a fraction of the window's mean |H|.
 
     Returns:
-        True when at least min_sessions consecutive negative values end the series.
+        Z-score Series with the same index as macd_hist.
     """
-    recent = macd_hist.dropna().iloc[-min_sessions:]
-    if len(recent) < min_sessions:
-        return False
-    return bool((recent < 0.0).all())
+    mu = macd_hist.rolling(window, min_periods=1).mean()
+    sigma = macd_hist.rolling(window, min_periods=1).std(ddof=0)
+    floor = eps_rel * macd_hist.abs().rolling(window, min_periods=1).mean() + 1e-12
+    return (macd_hist - mu) / np.maximum(sigma, floor)
 
 
 def _percentile_rank(value: float, series: pd.Series) -> float:
@@ -194,8 +200,7 @@ def compute_leaps_dca_signal(
     w_stoch: float = 0.15,
     w_iv: float = 0.35,
     w_macd: float = 0.30,
-    use_macd_gate: bool = True,
-    macd_gate_floor: float = 0.5,
+    macd_z_window: int = 126,
 ) -> LeapsDcaSignal:
     """Compute the multi-factor DITM LEAPS DCA entry signal for a single ticker.
 
@@ -221,8 +226,7 @@ def compute_leaps_dca_signal(
         w_stoch: Stochastic component weight.
         w_iv: IV component weight.
         w_macd: MACD component weight.
-        use_macd_gate: Apply MACD gate multiplier when bearish confirmed.
-        macd_gate_floor: Gate multiplier when bearish confirmed and use_macd_gate=True.
+        macd_z_window: Trailing window (trading days) for the MACD histogram Z-score.
 
     Returns:
         LeapsDcaSignal with all factor values and composite score.
@@ -233,6 +237,15 @@ def compute_leaps_dca_signal(
         ValueError: If price_data.vol_prices has no column for ticker's IV proxy.
         ValueError: If w_rsi + w_stoch + w_iv + w_macd does not sum to 1.0 within 1e-6.
         ValueError: If fewer than min_lookback trading days available up to as_of_date.
+
+    Notes:
+        Weights are economic priors, not fitted values: cost of entry (IV,
+        w_iv=0.35) and trend regime (MACD, w_macd=0.30) dominate timing;
+        short-term oversold signals (RSI + Stochastic) act as seasoning. The
+        MACD factor is regime-relative: score_macd = Phi(Z_H) * 100 where Z_H
+        is the trailing macd_z_window Z-score of the histogram. The score
+        glides through zero-crossings instead of whipsawing on the sign of a
+        near-zero histogram, and stays comparable across price levels.
     """
     pd_obj = price_data
 
@@ -328,9 +341,10 @@ def compute_leaps_dca_signal(
     )
     macd_hist_val = float(macd_hist_series.iloc[-1])
 
-    # MACD bearish confirmed
-    bearish = _macd_bearish_confirmed(macd_hist_series, min_sessions=3)
-    gate = macd_gate_floor if (use_macd_gate and bearish) else 1.0
+    # MACD trailing Z-score and first difference
+    macd_z_series = _macd_zscore(macd_hist_series, window=macd_z_window)
+    macd_z_val = float(macd_z_series.iloc[-1])
+    macd_delta_val = float(macd_hist_series.diff().iloc[-1])
 
     # -----------------------------------------------------------------------
     # Factor scores in [0, 100] (higher = better entry)
@@ -345,12 +359,12 @@ def compute_leaps_dca_signal(
     # IV: low IV (cheap options) = good → score = 100 - iv_pct
     score_iv = float(np.clip(100.0 - iv_pct, 0.0, 100.0))
 
-    # MACD: positive histogram (bullish trend) = 100; negative = 0 (binary regime signal)
-    score_macd = 100.0 if macd_hist_val > 0.0 else 0.0
+    # MACD: normal-CDF of trailing Z-score in (0, 100); 50 = neutral trend information
+    score_macd = float(norm.cdf(macd_z_val) * 100.0)
 
-    # Composite score (before gate)
+    # Composite score
     raw_score = w_rsi * score_rsi + w_stoch * score_stoch + w_iv * score_iv + w_macd * score_macd
-    entry_score = float(np.clip(raw_score, 0.0, 100.0) * gate)
+    entry_score = float(np.clip(raw_score, 0.0, 100.0))
 
     # -----------------------------------------------------------------------
     # Score percentile over lookback window of entry scores
@@ -362,9 +376,6 @@ def compute_leaps_dca_signal(
     high_lookback = high.iloc[-lookback:]
     low_lookback = low.iloc[-lookback:]
     iv_lookback_full = iv_series_all.reindex(close_lookback.index, method="ffill")
-    macd_lookback_hist = _compute_macd(
-        close_lookback, fast=macd_fast, slow=macd_slow, signal_window=macd_signal_window
-    )
 
     rsi_lookback = _compute_rsi(close_lookback, window=rsi_window)
     stoch_lookback = _compute_stochastic(
@@ -379,16 +390,10 @@ def compute_leaps_dca_signal(
     scores_rsi = (100.0 - rsi_lookback).clip(0.0, 100.0)
     scores_stoch = (100.0 - stoch_lookback).clip(0.0, 100.0).fillna(50.0)
     scores_iv = (100.0 - iv_lookback_pcts).clip(0.0, 100.0)
-    # Binary: positive MACD histogram = bullish trend = 100; negative = 0
-    scores_macd = (macd_lookback_hist > 0.0).astype(float) * 100.0
-
-    # Gate for each day in lookback
-    gates_series = pd.Series(1.0, index=close_lookback.index)
-    if use_macd_gate:
-        for i in range(3, len(macd_lookback_hist) + 1):
-            recent_3 = macd_lookback_hist.iloc[i - 3 : i]
-            if (recent_3 < 0.0).all():
-                gates_series.iloc[i - 1] = macd_gate_floor
+    # Smooth MACD score: Phi(Z) * 100 on the same full-history Z series used
+    # for the point-in-time value, sliced to the lookback window (identical
+    # per-day formula, no EMA warmup asymmetry between the two paths).
+    scores_macd = norm.cdf(macd_z_series.loc[close_lookback.index]) * 100.0
 
     raw_scores = (
         w_rsi * scores_rsi
@@ -396,7 +401,7 @@ def compute_leaps_dca_signal(
         + w_iv * scores_iv
         + w_macd * scores_macd
     )
-    entry_scores_lookback = (raw_scores.clip(0.0, 100.0) * gates_series).dropna()
+    entry_scores_lookback = raw_scores.clip(0.0, 100.0).dropna()
 
     score_pct = _percentile_rank(entry_score, entry_scores_lookback)
 
@@ -431,6 +436,6 @@ def compute_leaps_dca_signal(
         iv_percentile=iv_pct,
         iv_current=iv_current,
         macd_hist=macd_hist_val,
-        macd_bearish_confirmed=bearish,
-        macd_gate=gate,
+        macd_z=macd_z_val,
+        macd_delta=macd_delta_val,
     )

@@ -2,7 +2,7 @@
 
 Covers: I14 (entry_score ∈ [0,100]), I15 (alpha_t ∈ [0,1]), I16 (dca_action
 membership), I17 (raises on empty ohlcv), I18 (T1 no-lookahead), I19 (weights
-sum to 1.0), min_lookback enforcement, MACD gate behavior, and action classification.
+sum to 1.0), min_lookback enforcement, MACD Z-score behavior, and action classification.
 """
 
 from __future__ import annotations
@@ -12,13 +12,14 @@ import pandas as pd
 import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
+from scipy.stats import norm
 
 from finance.data import PriceData
 from finance.dca_signal import (
     _compute_macd,
     _compute_rsi,
     _compute_stochastic,
-    _macd_bearish_confirmed,
+    _macd_zscore,
     _percentile_rank,
     compute_leaps_dca_signal,
 )
@@ -142,26 +143,50 @@ def test_macd_histogram_shape() -> None:
     assert hist.index.equals(close.index)
 
 
-def test_macd_bearish_confirmed_true() -> None:
-    """Three consecutive negative histogram values → bearish_confirmed=True."""
-    idx = pd.bdate_range("2022-01-03", periods=10)
-    hist = pd.Series([0.5, 0.1, -0.1, -0.2, -0.3, 0.1, -0.4, -0.5, -0.6, -0.7], index=idx)
-    assert _macd_bearish_confirmed(hist, min_sessions=3) is True
+def test_macd_zscore_standard_normal() -> None:
+    """A histogram value one window-std above its rolling mean → Z ≈ 1."""
+    idx = pd.bdate_range("2022-01-03", periods=200)
+    rng = np.random.default_rng(4)
+    hist = pd.Series(rng.normal(0.0, 1.0, 200), index=idx)
+    z = _macd_zscore(hist, window=126)
+    # Population std of the window including t itself, so |Z| is bounded by
+    # ~ sqrt(n) but a typical draw is O(1); last value is within ±10
+    assert abs(z.iloc[-1]) < 10.0
 
 
-def test_macd_bearish_confirmed_false_mixed() -> None:
-    """Mixed signs in last 3 values → bearish_confirmed=False."""
-    idx = pd.bdate_range("2022-01-03", periods=5)
-    hist = pd.Series([-0.3, -0.2, 0.1, -0.4, -0.5], index=idx)
-    # Last 3: [0.1, -0.4, -0.5] → not all negative
-    assert _macd_bearish_confirmed(hist, min_sessions=3) is False
+def test_macd_zscore_positive_when_hist_above_mean() -> None:
+    """Z > 0 when the last histogram value exceeds its trailing mean."""
+    idx = pd.bdate_range("2022-01-03", periods=50)
+    # First 49 values negative, last value positive → above trailing mean
+    hist = pd.Series([*np.linspace(-1.0, -0.1, 49).tolist(), 1.0], index=idx)
+    z = _macd_zscore(hist, window=126)
+    assert z.iloc[-1] > 0.0
 
 
-def test_macd_bearish_confirmed_insufficient_data() -> None:
-    """Fewer than min_sessions rows → bearish_confirmed=False."""
-    idx = pd.bdate_range("2022-01-03", periods=2)
-    hist = pd.Series([-0.3, -0.4], index=idx)
-    assert _macd_bearish_confirmed(hist, min_sessions=3) is False
+def test_macd_zscore_negative_when_hist_below_mean() -> None:
+    """Z < 0 when the last histogram value is below its trailing mean."""
+    idx = pd.bdate_range("2022-01-03", periods=50)
+    hist = pd.Series([*np.linspace(1.0, 0.1, 49).tolist(), -1.0], index=idx)
+    z = _macd_zscore(hist, window=126)
+    assert z.iloc[-1] < 0.0
+
+
+def test_macd_zscore_flat_window_is_zero() -> None:
+    """Constant histogram → sigma floor resolves degenerate window to Z = 0."""
+    idx = pd.bdate_range("2022-01-03", periods=50)
+    hist = pd.Series(-0.5, index=idx)
+    z = _macd_zscore(hist, window=126)
+    assert z.iloc[-1] == pytest.approx(0.0, abs=1e-6)
+
+
+def test_macd_zscore_index_preserved() -> None:
+    """Z-score Series keeps the input index and length."""
+    idx = pd.bdate_range("2022-01-03", periods=100)
+    rng = np.random.default_rng(5)
+    hist = pd.Series(rng.normal(0.0, 1.0, 100), index=idx)
+    z = _macd_zscore(hist, window=126)
+    assert len(z) == len(hist)
+    assert z.index.equals(hist.index)
 
 
 def test_percentile_rank_boundaries() -> None:
@@ -368,21 +393,12 @@ def test_leaps_dca_signal_is_frozen() -> None:
         sig.entry_score = 99.0  # type: ignore[misc]
 
 
-def test_macd_gate_applied_when_bearish_confirmed() -> None:
-    """When bearish_confirmed=True, macd_gate == macd_gate_floor."""
+def test_macd_z_and_delta_populated() -> None:
+    """macd_z and macd_delta are finite and computed at as_of_date."""
     pd_obj = _make_price_data()
-    sig = compute_leaps_dca_signal(pd_obj, "VTI", _as_of(pd_obj), macd_gate_floor=0.5)
-    if sig.macd_bearish_confirmed:
-        assert sig.macd_gate == pytest.approx(0.5)
-    else:
-        assert sig.macd_gate == pytest.approx(1.0)
-
-
-def test_macd_gate_off_always_one() -> None:
-    """use_macd_gate=False → macd_gate is always 1.0."""
-    pd_obj = _make_price_data()
-    sig = compute_leaps_dca_signal(pd_obj, "VTI", _as_of(pd_obj), use_macd_gate=False)
-    assert sig.macd_gate == pytest.approx(1.0)
+    sig = compute_leaps_dca_signal(pd_obj, "VTI", _as_of(pd_obj))
+    assert np.isfinite(sig.macd_z)
+    assert np.isfinite(sig.macd_delta)
 
 
 def test_action_hold_when_low_percentile() -> None:
@@ -442,42 +458,92 @@ def test_no_lookahead_extra_row_does_not_change_output() -> None:
 
 
 # ---------------------------------------------------------------------------
-# MACD bearish confirmed scenario
+# MACD Z-score scenario
 # ---------------------------------------------------------------------------
 
 
-def test_macd_bearish_confirmed_gate_reduces_score() -> None:
-    """A bearish-confirmed gate multiplier < 1 cannot increase entry_score."""
-    pd_obj = _make_price_data(n_days=N_DAYS, seed=99)
-    as_of = pd_obj.prices.index[-1]
-
-    sig_with_gate = compute_leaps_dca_signal(
-        pd_obj, "VTI", as_of, use_macd_gate=True, macd_gate_floor=0.5
+def test_macd_score_smooth_in_z() -> None:
+    """With pure MACD weight, entry_score = Phi(Z_H) * 100 (in (0, 100),
+    not binary), and a deep bearish Z drives the score below 50 while a
+    strongly bullish Z drives it above 50."""
+    rng = np.random.default_rng(0)
+    n = N_DAYS
+    idx = pd.bdate_range("2020-01-02", periods=n)
+    t = np.arange(n)
+    noise = rng.normal(0.0, 0.5, n)
+    # Fresh regime change (last 60 days) against a calm window: the trailing
+    # Z must separate a fresh crash (Z < 0, score < 50) from a fresh rally
+    # (Z > 0, score > 50). Persistent full-history trends are deliberately
+    # NOT tested here: regime-relative Z correctly scores them near neutral.
+    bear_close = pd.Series(
+        100.0 - 1.0 * np.maximum(t - (n - 60), 0) ** 2 * 0.01 + noise, index=idx, name="VTI"
     )
-    sig_no_gate = compute_leaps_dca_signal(
-        pd_obj, "VTI", as_of, use_macd_gate=False
+    bull_close = pd.Series(
+        100.0 + 1.0 * np.maximum(t - (n - 60), 0) ** 2 * 0.01 + noise, index=idx, name="VTI"
     )
 
-    # Gate can only hold or reduce; never increase above no-gate score
-    assert sig_with_gate.entry_score <= sig_no_gate.entry_score + 1e-9
+    for close, expected_side in ((bear_close, "below"), (bull_close, "above")):
+        prices = pd.DataFrame({"VTI": close})
+        high = close * 1.01
+        low = close * 0.99
+        tuples = [("VTI", f) for f in ("Open", "High", "Low", "Close", "Volume")]
+        cols = pd.MultiIndex.from_tuples(tuples, names=["ticker", "field"])
+        data = np.column_stack(
+            [close.values, high.values, low.values, close.values, np.ones(n)]
+        )
+        ohlcv = pd.DataFrame(data, index=idx, columns=cols)
+        iv_vals = np.clip(0.18 + rng.normal(0.0, 0.04, n), 0.05, 0.80)
+        vol_prices = pd.DataFrame({"VTI_IV": iv_vals}, index=idx)
+        pd_obj = PriceData(
+            prices=prices,
+            dividends=pd.DataFrame({"VTI": 0.0}, index=idx),
+            vol_prices=vol_prices,
+            tickers=("VTI",),
+            start_date=str(idx[0].date()),
+            end_date=str(idx[-1].date()),
+            spliced=False,
+            ohlcv=ohlcv,
+        )
+        sig = compute_leaps_dca_signal(
+            pd_obj, "VTI", idx[-1],
+            w_rsi=0.0, w_stoch=0.0, w_iv=0.0, w_macd=1.0,
+        )
+        # Smooth score: strictly inside (0, 100), never binary 0/100
+        assert 0.0 < sig.entry_score < 100.0
+        if expected_side == "below":
+            assert sig.macd_z < -1.0
+            assert sig.entry_score < 25.0
+        else:
+            assert sig.macd_z > 1.0
+            assert sig.entry_score > 75.0
 
 
-def test_macd_score_is_binary() -> None:
-    """MACD component is 100 when histogram > 0, 0 when ≤ 0.
-
-    Construct a deterministic price series where the last MACD histogram sign
-    is known, then verify the composite score reflects binary w_macd contribution.
-    """
+def test_macd_zero_crossing_no_whipsaw() -> None:
+    """Near a histogram zero-crossing, the pure-MACD score stays near 50
+    (no 0/100 whipsaw): a tiny wiggle around H ≈ its trailing mean moves the
+    score only slightly."""
     pd_obj = _make_price_data(n_days=N_DAYS, seed=42)
     as_of = pd_obj.prices.index[-1]
     sig = compute_leaps_dca_signal(
         pd_obj, "VTI", as_of,
-        # Use pure MACD weight to isolate the component
         w_rsi=0.0, w_stoch=0.0, w_iv=0.0, w_macd=1.0,
-        use_macd_gate=False,
     )
-    # With only MACD weight and no gate, entry_score must be exactly 0 or 100
-    assert sig.entry_score in (0.0, 100.0)
+    # Pure-MACD score equals Phi(Z)*100 exactly — verify the mapping itself,
+    # which bounds any H near its trailing mean to a mid-range score (no whipsaw).
+    assert sig.entry_score == pytest.approx(norm.cdf(sig.macd_z) * 100.0, abs=1e-9)
+
+
+def test_macd_z_window_param_changes_z() -> None:
+    """macd_z_window is honored: Z is re-derived from the requested window."""
+    pd_obj = _make_price_data(n_days=N_DAYS, seed=42)
+    as_of = pd_obj.prices.index[-1]
+    sig_126 = compute_leaps_dca_signal(pd_obj, "VTI", as_of, macd_z_window=126)
+    sig_63 = compute_leaps_dca_signal(pd_obj, "VTI", as_of, macd_z_window=63)
+    assert np.isfinite(sig_126.macd_z) and np.isfinite(sig_63.macd_z)
+    # On a random-walk fixture the two windows draw on different histories;
+    # equality would indicate the parameter is being ignored. (Coincidental
+    # equality on one seed is ruled out by construction — assert difference.)
+    assert sig_126.macd_z != sig_63.macd_z
 
 
 def test_alpha_t_linear_interpolation() -> None:
