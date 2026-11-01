@@ -12,7 +12,17 @@ import pandas as pd
 import yfinance as yf
 from dotenv import load_dotenv
 
-from finance.consts import SPLICE_MAP, TBILL_TICKER, TICKERS, VOL_INDEX_FALLBACK, VOL_INDEX_SCALAR
+from finance.consts import (
+    MOVE_EFFECTIVE_DURATION,
+    SPLICE_MAP,
+    TBILL_TICKER,
+    TICKERS,
+    TIME_FLOOR,
+    VOL_INDEX_FALLBACK,
+    VOL_INDEX_SCALAR,
+    VOL_INDEX_SPECS,
+    VolIndexSpec,
+)
 
 load_dotenv()  # load FRED_API_KEY from .env if present
 
@@ -182,7 +192,20 @@ def fetch_volatility_index(  # pragma: no cover
     if raw_level.empty:
         return pd.Series(dtype=float, name=f"{asset_ticker}_IV")
     scalar = VOL_INDEX_SCALAR.get(asset_ticker, 1.0)
-    result: pd.Series = (raw_level / 100.0 * scalar).ffill().rename(f"{asset_ticker}_IV")
+    spec = VOL_INDEX_SPECS.get(vol_key, VolIndexSpec("percent_points"))
+    if spec.unit == "basis_points":
+        d_eff = MOVE_EFFECTIVE_DURATION.get(asset_ticker)
+        if d_eff is None:
+            warnings.warn(
+                f"^MOVE converted for {asset_ticker} without an effective duration; "
+                "falling back to 1.0.",
+                stacklevel=2,
+            )
+            d_eff = 1.0
+        decimal_iv = raw_level * d_eff * 1e-4
+    else:
+        decimal_iv = raw_level / 100.0
+    result: pd.Series = (decimal_iv * scalar).ffill().rename(f"{asset_ticker}_IV")
     return result
 
 
@@ -284,6 +307,60 @@ def fetch_2yr_treasury(  # pragma: no cover
     if series.empty:
         return pd.Series(dtype=float, name="DGS2")
     return series.rename("DGS2")
+
+
+def convert_vol_index_level(raw_level: float, spec: VolIndexSpec) -> float:
+    """Convert a quoted vol-index level to decimal annualized IV (D7).
+
+    Arguments:
+        raw_level: Quoted index level in its native units (e.g. MOVE 100).
+        spec: VolIndexSpec carrying the unit and effective duration. For a
+            basis-point spec resolved per asset, pass the D_eff explicitly.
+
+    Returns:
+        Decimal annualized IV (e.g. MOVE 100, D_eff 5.1 -> 0.051).
+
+    Raises:
+        ValueError: If spec.unit is not a known unit, or basis_points is given
+            without an effective_duration.
+    """
+    if spec.unit == "percent_points":
+        return raw_level / 100.0
+    if spec.unit == "basis_points":
+        if spec.effective_duration is None:
+            raise ValueError("effective_duration is required for basis_points conversion")
+        return raw_level * spec.effective_duration * 1e-4
+    raise ValueError(f"Unknown vol-index unit: {spec.unit!r}")
+
+
+def risk_free_at_expiry(
+    bill_13w_level: float,
+    treasury_2y_level: float,
+    time_to_expiry_years: float,
+) -> float:
+    """Maturity-matched continuously-compounded r(T) (D8).
+
+    Linear interpolation in maturity between the 0.25y ^IRX anchor and the 2.0y
+    DGS2 anchor; flat extrapolation outside that range. The par-vs-zero gap at
+    2y is accepted (U5).
+
+    Arguments:
+        bill_13w_level: ^IRX 13-week bill level, decimal.
+        treasury_2y_level: DGS2 2y treasury level, decimal.
+        time_to_expiry_years: Time to expiry; floored at TIME_FLOOR.
+
+    Returns:
+        r(T) for discounting and forward-carry to expiry.
+    """
+    t = max(time_to_expiry_years, TIME_FLOOR)
+    anchor_short = 0.25
+    anchor_2y = 2.0
+    if t <= anchor_short:
+        return bill_13w_level
+    if t >= anchor_2y:
+        return treasury_2y_level
+    frac = (t - anchor_short) / (anchor_2y - anchor_short)
+    return bill_13w_level + frac * (treasury_2y_level - bill_13w_level)
 
 
 def splice(

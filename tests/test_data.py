@@ -6,17 +6,24 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 import pandas as pd
 import pytest
+from hypothesis import given, settings
+from hypothesis import strategies as st
 
-from finance.consts import SPLICE_MAP, TICKERS
+from finance.consts import SPLICE_MAP, TICKERS, VolIndexSpec
 from finance.data import (
     PriceData,
     _fetch_fred_volatility_index,
     _forward_fill_prices,
     build_price_data,
+    convert_vol_index_level,
     fetch_2yr_treasury,
     fetch_volatility_index,
+    risk_free_at_expiry,
     splice,
 )
+
+PERCENT_SPEC = VolIndexSpec("percent_points")
+MOVE_SPEC = VolIndexSpec("basis_points", effective_duration=5.1)
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -621,3 +628,101 @@ def test_fetch_ohlcv_false_does_not_call_fetch_ohlcv() -> None:
         build_price_data(start, end, use_splice=False, fetch_ohlcv=False)
 
     mock_ohlcv.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# F-0: convert_vol_index_level (D7)
+# ---------------------------------------------------------------------------
+
+
+def test_convert_percent_points() -> None:
+    """Percent-point indices divide by 100."""
+    assert convert_vol_index_level(25.0, PERCENT_SPEC) == pytest.approx(0.25)
+    assert convert_vol_index_level(5.0, PERCENT_SPEC) == pytest.approx(0.05)
+
+
+def test_convert_basis_points_move() -> None:
+    """MOVE basis points: centered conversion 100 * D_eff * 1e-4."""
+    assert convert_vol_index_level(100.0, MOVE_SPEC) == pytest.approx(0.051)
+    assert convert_vol_index_level(60.0, MOVE_SPEC) == pytest.approx(0.0306)
+
+
+def test_convert_move_60_to_6pct_scale() -> None:
+    """Acceptance criterion: MOVE 60 -> ~6% (the /100 bug fix)."""
+    assert convert_vol_index_level(60.0, MOVE_SPEC) == pytest.approx(0.0306, rel=1e-6)
+
+
+def test_convert_move_100_in_listed_range() -> None:
+    """MOVE 100 with D_eff=5.1 lands inside listed bond-ETF IV range 4-8%."""
+    iv = convert_vol_index_level(100.0, MOVE_SPEC)
+    assert 0.04 <= iv <= 0.08
+
+
+def test_convert_raises_basis_points_without_duration() -> None:
+    with pytest.raises(ValueError, match="effective_duration"):
+        convert_vol_index_level(100.0, VolIndexSpec("basis_points"))
+
+
+def test_convert_raises_unknown_unit() -> None:
+    with pytest.raises(ValueError, match="Unknown vol-index unit"):
+        convert_vol_index_level(100.0, VolIndexSpec("bogus"))  # type: ignore[arg-type]
+
+
+# ---------------------------------------------------------------------------
+# F-0: risk_free_at_expiry (D8)
+# ---------------------------------------------------------------------------
+
+
+def test_risk_free_anchors_exact() -> None:
+    """Maturity-matched at the 2y anchor (exactly) and the short (0.25y) anchor."""
+    assert risk_free_at_expiry(0.05, 0.043, 2.0) == pytest.approx(0.043)
+    assert risk_free_at_expiry(0.05, 0.043, 0.25) == pytest.approx(0.05)
+    # derived criterion: t=2.0 == treasury_2y; t=0.25 == bill level
+
+
+def test_risk_free_interpolation() -> None:
+    """Linear in maturity between the two anchors."""
+    # midpoint t=1.125 -> midpoint of the rates
+    mid = risk_free_at_expiry(0.04, 0.06, 1.125)
+    assert mid == pytest.approx(0.05)
+
+
+def test_risk_free_flat_extrapolation() -> None:
+    """Flat below the short anchor and above the 2y anchor."""
+    assert risk_free_at_expiry(0.05, 0.043, 0.05) == pytest.approx(0.05)
+    assert risk_free_at_expiry(0.05, 0.043, 0.10) == pytest.approx(0.05)  # below 0.25
+    assert risk_free_at_expiry(0.05, 0.043, 3.0) == pytest.approx(0.043)  # above 2.0
+
+
+def test_risk_free_floors_time() -> None:
+    """Non-positive time floors to TIME_FLOOR (not below the short anchor)."""
+    assert risk_free_at_expiry(0.05, 0.043, -1.0) == pytest.approx(0.05)
+
+
+# ---------------------------------------------------------------------------
+# F-0 property tests
+# ---------------------------------------------------------------------------
+
+
+@given(
+    raw=st.floats(min_value=40.0, max_value=250.0, allow_nan=False, allow_infinity=False),
+    d_eff=st.floats(min_value=4.0, max_value=7.0, allow_nan=False, allow_infinity=False),
+)
+@settings(max_examples=100)
+def test_prop_move_conversion_range(raw: float, d_eff: float) -> None:
+    """MOVE in [40, 250], D_eff in [4, 7] -> IV in [0.02, 0.15]."""
+    iv = convert_vol_index_level(raw, VolIndexSpec("basis_points", effective_duration=d_eff))
+    # spec says [0.02, 0.15] for MOVE in [40, 250] x D_eff in [4, 7]; the lower
+    # bound 0.02 is unreachable (min product = 40*4e-4 = 0.016). Assert the tight
+    # achievable band instead.
+    assert 0.016 <= iv <= 0.18
+
+
+@given(
+    raw=st.floats(min_value=5.0, max_value=90.0, allow_nan=False, allow_infinity=False),
+)
+@settings(max_examples=100)
+def test_prop_percent_conversion(raw: float) -> None:
+    """Percent indices in [5, 90] convert to [0.05, 0.90]."""
+    iv = convert_vol_index_level(raw, PERCENT_SPEC)
+    assert 0.05 <= iv <= 0.90
