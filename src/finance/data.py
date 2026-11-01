@@ -16,6 +16,7 @@ from finance.consts import SPLICE_MAP, TBILL_TICKER, TICKERS, VOL_INDEX_FALLBACK
 
 load_dotenv()  # load FRED_API_KEY from .env if present
 
+
 @dataclass(frozen=True)
 class PriceData:
     """Adjusted close prices and dividends for the asset universe.
@@ -165,16 +166,13 @@ def fetch_volatility_index(  # pragma: no cover
         return pd.Series(dtype=float, name=f"{asset_ticker}_IV")
 
     if vol_key.startswith("fred:"):
-        raw_level = _fetch_fred_volatility_index(
-            vol_key[len("fred:"):], start_date, end_date
-        )
+        raw_level = _fetch_fred_volatility_index(vol_key[len("fred:") :], start_date, end_date)
         if raw_level.empty:
             fallback = VOL_INDEX_FALLBACK.get(asset_ticker)
             if fallback is None:
                 return pd.Series(dtype=float, name=f"{asset_ticker}_IV")
             warnings.warn(
-                f"{vol_key} unavailable for {asset_ticker}; "
-                f"falling back to {fallback}.",
+                f"{vol_key} unavailable for {asset_ticker}; falling back to {fallback}.",
                 stacklevel=2,
             )
             raw_level = _fetch_yf_close(fallback, start_date, end_date)
@@ -184,9 +182,7 @@ def fetch_volatility_index(  # pragma: no cover
     if raw_level.empty:
         return pd.Series(dtype=float, name=f"{asset_ticker}_IV")
     scalar = VOL_INDEX_SCALAR.get(asset_ticker, 1.0)
-    result: pd.Series = (
-        (raw_level / 100.0 * scalar).ffill().rename(f"{asset_ticker}_IV")
-    )
+    result: pd.Series = (raw_level / 100.0 * scalar).ffill().rename(f"{asset_ticker}_IV")
     return result
 
 
@@ -255,6 +251,41 @@ def _fetch_fred_volatility_index(  # pragma: no cover
     return series.rename(series_id)
 
 
+def fetch_2yr_treasury(  # pragma: no cover
+    start_date: str,
+    end_date: str,
+) -> pd.Series:
+    """Fetch the 2-Year Treasury Constant Maturity Rate (FRED series DGS2).
+
+    Uses pandas_datareader against the FRED database; no API key is required
+    for this series. Values are percent annualized yields (e.g. 4.61).
+
+    Arguments:
+        start_date: Start date string in YYYY-MM-DD format (inclusive).
+        end_date: End date string in YYYY-MM-DD format (inclusive).
+
+    Returns:
+        Series with DatetimeIndex, float values, and name "DGS2". Empty Series
+        when the fetch fails (network error, FRED down) or FRED returns no
+        observations for the range.
+    """
+    try:
+        import pandas_datareader.data as web
+
+        raw = web.DataReader("DGS2", "fred", start=start_date, end=end_date)
+        # Do not use .squeeze(): a 1x1 result would collapse to a numpy scalar
+        # (e.g. a single-day range), breaking the Series contract below.
+        series: pd.Series = raw["DGS2"] if isinstance(raw, pd.DataFrame) else raw
+    except Exception:
+        # pandas_datareader raises a variety of exception types for network
+        # failures, FRED downtime, and response-format changes; degrade to an
+        # empty Series so callers can fall back gracefully.
+        return pd.Series(dtype=float, name="DGS2")
+    if series.empty:
+        return pd.Series(dtype=float, name="DGS2")
+    return series.rename("DGS2")
+
+
 def splice(
     primary_prices: pd.Series,
     proxy_prices: pd.Series,
@@ -284,13 +315,9 @@ def splice(
     post = primary_prices.loc[splice_date:]
 
     if post.empty:
-        raise ValueError(
-            f"{primary_prices.name} has no data on or after {splice_date}"
-        )
+        raise ValueError(f"{primary_prices.name} has no data on or after {splice_date}")
     if pre.empty:
-        raise ValueError(
-            f"{proxy_prices.name} has no data before {splice_date}"
-        )
+        raise ValueError(f"{proxy_prices.name} has no data before {splice_date}")
 
     # Scale proxy so the last pre-splice value equals the first primary value.
     pre = pre * (post.iloc[0] / pre.iloc[-1])
@@ -344,9 +371,7 @@ def _forward_fill_prices(prices: pd.DataFrame, max_gap: int = 5) -> pd.DataFrame
     remaining_nans = filled.isna().sum()
     bad = remaining_nans[remaining_nans > 0]
     if not bad.empty:
-        raise ValueError(
-            f"Price gaps exceeding {max_gap} days found for: {bad.to_dict()}"
-        )
+        raise ValueError(f"Price gaps exceeding {max_gap} days found for: {bad.to_dict()}")
     return filled
 
 
@@ -450,12 +475,12 @@ def build_price_data(
     for ticker, (proxy, splice_date) in yf_proxies.items():
         spliced_col = splice(raw_prices[ticker], raw_prices[proxy], splice_date)
         prices[ticker] = spliced_col
-        prices = prices.loc[spliced_col.index[0]:]
+        prices = prices.loc[spliced_col.index[0] :]
     for ticker, (proxy_path, splice_date) in file_proxies.items():
-        proxy_series = fetch_file_proxy(proxy_path[len("file:"):], start_date, splice_date)
+        proxy_series = fetch_file_proxy(proxy_path[len("file:") :], start_date, splice_date)
         spliced_col = splice(raw_prices[ticker], proxy_series, splice_date)
         prices[ticker] = spliced_col
-        prices = prices.loc[spliced_col.index[0]:]
+        prices = prices.loc[spliced_col.index[0] :]
 
     # Trim leading NaNs (tickers with later inception), then fill small holiday gaps
     first_complete = prices.dropna().index
@@ -463,7 +488,7 @@ def build_price_data(
         raise ValueError(
             "Price data is entirely NaN after splicing — all tickers may have failed to download."
         )
-    prices = prices.loc[first_complete[0]:]
+    prices = prices.loc[first_complete[0] :]
     prices = _forward_fill_prices(prices)
 
     # Fetch MUB dividends for TEY adjustment
@@ -478,8 +503,7 @@ def build_price_data(
     vol_prices: pd.DataFrame
     if fetch_vol_indices:
         vol_cols = {
-            ticker: fetch_volatility_index(ticker, start_date, end_date)
-            for ticker in asset_tickers
+            ticker: fetch_volatility_index(ticker, start_date, end_date) for ticker in asset_tickers
         }
         non_empty = {k: v for k, v in vol_cols.items() if not v.empty}
         vol_prices = pd.DataFrame(non_empty) if non_empty else pd.DataFrame()

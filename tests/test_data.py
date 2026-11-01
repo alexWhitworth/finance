@@ -1,5 +1,6 @@
 """Tests for data.py — splice logic and price validation."""
 
+import os
 from unittest.mock import MagicMock, patch
 
 import numpy as np
@@ -12,6 +13,7 @@ from finance.data import (
     _fetch_fred_volatility_index,
     _forward_fill_prices,
     build_price_data,
+    fetch_2yr_treasury,
     fetch_volatility_index,
     splice,
 )
@@ -32,6 +34,7 @@ def _fake_ohlcv(tickers: tuple[str, ...], start: str, end: str) -> pd.DataFrame:
     for i, (t, _) in enumerate(tuples):
         data[:, i] = close[t]
     return pd.DataFrame(data, index=idx, columns=cols)
+
 
 # KMLM splice date from SPLICE_MAP for convenience
 _KMLM_START: str = SPLICE_MAP["KMLM"][1]
@@ -81,9 +84,9 @@ def test_splice_values_match_sources() -> None:
     spliced_pre_rets = spliced.loc[pre_idx].pct_change().dropna()
     proxy_pre_rets = proxy.loc[pre_idx].pct_change().dropna()
     common = spliced_pre_rets.index.intersection(proxy_pre_rets.index)
-    assert (spliced_pre_rets.loc[common].values == pytest.approx(
+    assert spliced_pre_rets.loc[common].values == pytest.approx(
         proxy_pre_rets.loc[common].values, rel=1e-9
-    ))
+    )
 
 
 def test_splice_no_seam_jump() -> None:
@@ -264,9 +267,7 @@ def test_fetch_volatility_index_fred_path_divides_by_100() -> None:
         out = fetch_volatility_index("IWM", "2024-06-03", "2024-06-07")
 
     assert out.name == "IWM_IV"
-    np.testing.assert_allclose(
-        out.to_numpy(), np.array([0.20, 0.22, 0.25, 0.24, 0.26]), atol=1e-12
-    )
+    np.testing.assert_allclose(out.to_numpy(), np.array([0.20, 0.22, 0.25, 0.24, 0.26]), atol=1e-12)
 
 
 def test_fetch_volatility_index_fred_path_forward_fills() -> None:
@@ -334,6 +335,87 @@ def test_fetch_fred_volatility_index_returns_empty_on_fetch_error(
         out = _fetch_fred_volatility_index("RVXCLS", "2024-06-03", "2024-06-05")
 
     assert out.empty
+
+
+# ---------------------------------------------------------------------------
+# fetch_2yr_treasury (DGS2 via pandas_datareader)
+# ---------------------------------------------------------------------------
+
+
+def test_fetch_2yr_treasury_success() -> None:
+    """Returns the raw DGS2 percent-yield series, renamed to DGS2."""
+    idx = pd.bdate_range("2024-06-03", periods=3)
+    raw = pd.DataFrame({"DGS2": [4.50, 4.52, np.nan]}, index=idx)
+
+    with patch("pandas_datareader.data.DataReader", return_value=raw) as mock_reader:
+        out = fetch_2yr_treasury("2024-06-03", "2024-06-05")
+
+    mock_reader.assert_called_once_with("DGS2", "fred", start="2024-06-03", end="2024-06-05")
+    assert out.name == "DGS2"
+    assert isinstance(out, pd.Series)
+    np.testing.assert_allclose(out.to_numpy(), np.array([4.50, 4.52, np.nan]))
+
+
+def test_fetch_2yr_treasury_single_column_squeezed() -> None:
+    """A single-column DataFrame result is squeezed to a Series."""
+    idx = pd.bdate_range("2024-06-03", periods=2)
+    raw = pd.Series([4.48, 4.51], index=idx, name="DGS2")
+
+    with patch("pandas_datareader.data.DataReader", return_value=raw):
+        out = fetch_2yr_treasury("2024-06-03", "2024-06-04")
+
+    assert isinstance(out, pd.Series)
+    np.testing.assert_allclose(out.to_numpy(), np.array([4.48, 4.51]))
+
+
+def test_fetch_2yr_treasury_returns_empty_on_error() -> None:
+    """Any fetch exception (network/FRED down) degrades to an empty Series."""
+    with patch(
+        "pandas_datareader.data.DataReader",
+        side_effect=Exception("FRED maintenance"),
+    ):
+        out = fetch_2yr_treasury("2024-06-03", "2024-06-05")
+
+    assert out.empty
+    assert out.name == "DGS2"
+    assert out.dtype == float
+
+
+def test_fetch_2yr_treasury_returns_empty_when_no_observations() -> None:
+    """An empty (but successful) result resolves to an empty Series."""
+    with patch(
+        "pandas_datareader.data.DataReader",
+        return_value=pd.DataFrame({"DGS2": pd.Series(dtype=float)}),
+    ):
+        out = fetch_2yr_treasury("2024-06-03", "2024-06-05")
+
+    assert out.empty
+
+
+def test_fetch_2yr_treasury_single_observation_returns_series() -> None:
+    """A one-day range (1x1 result) returns a 1-element Series, not a scalar."""
+    raw = pd.DataFrame({"DGS2": [4.82]}, index=pd.to_datetime(["2024-06-03"]))
+
+    with patch("pandas_datareader.data.DataReader", return_value=raw):
+        out = fetch_2yr_treasury("2024-06-03", "2024-06-03")
+
+    assert isinstance(out, pd.Series)
+    assert len(out) == 1
+    assert out.name == "DGS2"
+    np.testing.assert_allclose(out.to_numpy(), np.array([4.82]))
+
+
+@pytest.mark.slow
+@pytest.mark.skipif(os.getenv("FRED_API_KEY", "") == "", reason="needs network")
+def test_fetch_2yr_treasury_live_smoke() -> None:
+    """Live smoke test: DGS2 is fetchable and values are plausible (0-25%)."""
+    out = fetch_2yr_treasury("2024-01-01", "2024-06-30")
+
+    assert not out.empty
+    assert out.name == "DGS2"
+    valid = out.dropna()
+    assert len(valid) > 0
+    assert (valid > 0).all() and (valid < 25).all()
 
 
 def test_build_price_data_all_nan_raises() -> None:
