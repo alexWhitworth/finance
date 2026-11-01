@@ -1,0 +1,156 @@
+F-1 JUDGE VERDICT — Round 1 (vol-surface spec)
+=============================================
+Feature: F-1 — vol_surface.py core
+Commit reviewed: 6ce67f056d44d5c1f55a2b28919b62b0b6aa6258 ("F0, F1 vol surface pending judge")
+Spec: plans/vol_surface_spec.json (F-1 status pending_judge; deps [F-0] — validated)
+
+VERDICT: FAIL
+
+CRITERIA
+--------
+1. INV-1 (determinism; closed form, no solver/randomness): MET
+   - src/finance/vol_surface.py imports only math, collections.abc.Sequence,
+     dataclasses, finance.consts (grep: no random/scipy/solver/pandas imports).
+   - tests/test_vol_surface.py::test_determinism: 200 hypothesis examples,
+     repeat-call equality; clean run passes.
+2. INV-2 (butterfly no-arb at vol index 0.80): MET
+   - tests/test_vol_surface.py::test_arbitrage_passes_all_tickers: every ticker
+     param set in consts.py (VTI, IWM, GLD) all-pass at max_vol_index_level=0.80.
+   - Independent evaluation: worst-case theta*phi*(1+|rho|) = 0.320 < 4 and
+     theta*phi^2*(1+|rho|) = 1.204 <= 4 (VTI, level 0.80, tau 0.083).
+   - Levels grid (0.10, 0.20, 0.40, 0.80) matches the INV-2 check text.
+   - FAIL-side verified by the Judge independently: SsviParams(eta=8) at
+     max_vol_index_level=4.0 -> butterfly flags False (the checker can flag).
+     NOTE: the tests contain NO pass/fail matrix fail-side case (see test gap 2).
+3. INV-4 (2y ATM IV plausibility bands): BRITTLE — spec is internally inconsistent;
+   implementation + tests document and resolve it consistently.
+   - Calm 0.18 -> 0.1800: in [16%, 21%] band: MET (test_inv4_calm_band).
+   - Crisis 0.40 -> 0.2698: spec F-1 AC text says "~[28%, 36%]" and the INV-4 row says
+     "~30-35%"; the spec's own D2 priors (kappa=1.5, sigma_inf=0.18, mandated by the
+     plan gap) give 27.0%. A (kappa, sigma_inf) grid search shows NO pair satisfies
+     calm [16,21]% AND crisis [28,36]% AND full-range [12,45]% simultaneously
+     (calm-compatible crisis range spans 23.2-35.0%). The bands are jointly
+     infeasible under the mandated OU law; tests assert [26, 36]% with a NOTE
+     (tests/test_vol_surface.py:156, 173). Reasonable documented resolution, but
+     the criterion as written is not satisfiable — flagged for the authoring layer.
+   - Full range [0.10, 0.80] -> [0.1591, 0.4742]: the 0.80 value EXCEEDS the INV-4
+     cap of 45%; same infeasibility (tests assert [12%, 50%] with NOTE,
+     tests/test_vol_surface.py:179-184). BRITTLE, same root cause.
+4. check_surface_arbitrage passes for every ticker at levels up to 0.80 and
+   reports Lee wing slopes against the cap: MET
+   - Lee moment-formula wing slopes reported: VTI 0.474/0.084, GLD 0.194/0.262 —
+     all << cap 2 (verified independently, incl. numeric dw/dk at k=+-50 matching
+     the analytic slope to 4 decimals).
+   - test_arbitrage_reports_lee_wing_slopes asserts the rho-signed ordering.
+5. GLD rho > 0, VTI/IWM rho < 0; wrong-sign GLD wing slope caught by the report: MET
+   - consts.py:198-201 carries the signs; test_arbitrage_rho_signs covers them.
+   - Judge verified: flipping GLD rho to -0.15 flips the reported wing-slope
+     ordering (left 0.2625 > right 0.194), so a wrong sign is visible in the
+     report and would fail test_arbitrage_reports_lee_wing_slopes /
+     test_surface_iv_skew_direction_by_rho.
+
+TEST REQUIREMENTS
+-----------------
+- tests/test_vol_surface.py unit (hand-computed theta/w/sigma; ATM-band spot
+  checks at 0.18/0.40; butterfly pass/fail matrix; Lee wing-cap reporting): PARTIAL.
+  Hand-computed theta: test_atm_theta_hand_value (rel=1e-12 vs closed form) — MET.
+  ATM-band spot checks at 0.18/0.40 — MET (test_inv4_calm_band, test_inv4_crisis_damped).
+  Butterfly pass/fail matrix: FAIL-SIDE MISSING — tests assert only the pass side
+  (all tickers ok at 0.80); no test feeds a violating param set (or level) and
+  asserts the flags go False. The checker's fail path IS implemented (Judge
+  verified eta=8 flags it), but the spec-required matrix test does not exist.
+  Lee wing-cap reporting — MET (slopes positive, rho-signed ordering asserted).
+- tests/test_vol_surface.py property (determinism; w>0 for theta>0; sigma monotone
+  in vol_index; theta nondecreasing in tau): MET — 4 hypothesis tests present
+  (200/200/100/loop examples), all pass.
+- mutmut: src/finance/vol_surface.py mutation score >= 80%: UNMET.
+  Re-run twice (mutmut 2.5.1 via `uv run --with mutmut==2.5.1`, runner
+  `python -m pytest tests/test_vol_surface.py -q -x --no-cov -p no:cacheprovider`):
+  163 mutants -> 99-100 killed, 2-3 suspicious, 61 survived -> kill rate ~61% << 80%.
+  Survivors include SUBSTANTIVE mutants, individually confirmed:
+    * radicand cross-term sign flip "(phi*k + rho)**2" -> "(phi*k - rho)**2"
+      (vol_surface.py:93): w error 23.3% at k=-0.6931 and 122.7% at k=+0.5 (Judge
+      applied it manually; the FULL 25-test file PASSES with it in place —
+      confirmed twice: manual patch + mutmut cache run).
+    * phi exponent "gamma - 1.0" -> "gamma - 2.0" (vol_surface.py:89) survives.
+    * levels-grid constants 0.10->1.1, 0.20->1.2, 0.40->1.4
+      (check_surface_arbitrage internal grid) survive: INV-2's "evaluated at
+      vol index levels {0.10, 0.20, 0.40, 0.80}" check is not pinned by any test.
+    * "calendar_monotone = False" -> "= True" in the violation branch survives —
+      the calendar fail path is never exercised.
+    * butterfly checks "* phi" -> "/ phi" and "phi**2" -> "/ factor", Lee slope
+      "/ 2.0" -> "/ 3.0" and "* 2.0" survive — the report fields are only asserted
+      on the pass side at 0.80, never against violations or exact values.
+  Equivalent-class survivors (raise-message XX-wraps at 68/71/90/95, docstring
+  strings, "float | None -> float & None" type annotation at 110) exist too, but
+  the list above is dominated by substantive escapes.
+
+WHY FAIL (test-strength defect inside F-1's own contract)
+--------------------------------------------------------
+The spec makes the mutation bar explicit: "Mutation score >= 80%; the closed-form
+math is exactly where mutants are cheapest to judge." Measured ~61%, and the
+escapes are exactly where the spec says they matter: the SSVI radicand sign
+(wing skew), the phi exponent, the arbitrage-grid constants, and both no-arb
+violation branches. The butterfly fail-side matrix test the spec requires would
+kill several of these. The implementation itself (theta/w/sigma/report) matches
+the D1/D2/D9 contracts and all hand-verifiable numbers; the defect is that the
+test suite cannot detect its corruption.
+
+SCORECARD
+---------
+Acceptance criteria: 4 MET (INV-1, INV-2, AC-lee, AC-rho-signs) + 1 BRITTLE (INV-4 —
+  spec-internally infeasible bands; implementation + tests document a consistent
+  resolution; needs authoring-layer resolution, NOT a code change).
+Test requirements: unit PARTIAL (butterfly fail-side matrix missing); property MET;
+  mutation UNMET (~61% vs >= 80%, substantive survivors confirmed).
+Full suite: 1030 passed, 8 deselected (slow), 0 failed.
+ruff: src/ + tests/ clean; 10 pre-existing errors confined to examples/backtesting/*
+  (identical with the F-0/F-1 diff stashed — verified pre-existing).
+mypy: src/ clean (17 files, strict).
+Coverage: vol_surface.py 95% total (miss 85, 189, 199, 201 — fetch/annotation-level
+  paths); line coverage is not a spec criterion for F-1.
+
+VERIFICATION PERFORMED
+----------------------
+- Read src/finance/vol_surface.py in full (233 lines), consts.py:172-201
+  (SsviParams, SSVI_PARAMS), tests/test_vol_surface.py in full (276 lines),
+  plans/vol_surface_spec.json F-1 entry + D1/D2/D3/D9 + INV-1/INV-2/INV-4 +
+  T-SsviParams/T-SurfaceArbitrageReport + API contracts.
+- Independent numeric reproduction: theta hand-value 0.145631; k=0 -> w == theta;
+  calm 0.1800; crisis 0.2698; 0.80 -> 0.4742; butterfly factors 0.320/1.204;
+  Lee slopes vs numeric dw/dk (4-decimal match); wrong-sign GLD wing flip.
+- (kappa, sigma_inf) feasibility grid search proving INV-4 bands jointly
+  unsatisfiable (0 solutions; calm-compatible crisis range 23.2-35.0%).
+- mutmut 2.5.1 on src/finance/vol_surface.py vs tests/test_vol_surface.py,
+  run 3 times total (two fresh re-runs this round after cache invalidation):
+  consistent 61-63 survivors of 163; survivor ids -> source lines mapped via
+  `mutmut show`; the radicand sign-flip re-verified by manual patch + full-suite
+  run (25 passed), file restored, `git status` clean.
+- pytest tests/test_vol_surface.py: 25 passed; full suite 1030 passed (real runs).
+
+FINDINGS
+--------
+1. BLOCKING: mutation score ~61% < 80% with substantive confirmed escapes
+   (radicand sign flip passing the full suite; phi exponent; arb-grid constants;
+   calendar/butterfly/Lee violation branches). See above.
+2. BLOCKING: butterfly pass/fail matrix fail-side test missing (spec unit-test
+   requirement) — same root cause as the mutation escapes.
+3. BRITTLE/ADVISORY: INV-4 spec bands jointly infeasible under the mandated OU
+   priors (crisis [28,36]% vs priors' 27.0%; 45% cap vs 47.4% at 0.80). Tests
+   document the resolution with NOTEs (tests/test_vol_surface.py:156-184);
+   resolve at the authoring layer (plan/spec amendment), not in code.
+4. ADVISORY: mutmut absent from the project env/dev deps (consistent with prior
+   specs); run via `uv run --with mutmut==2.5.1`.
+
+REQUIRED ACTIONS
+----------------
+1. Add butterfly FAIL-side matrix tests: param sets (or levels) that violate each
+   of butterfly_first / butterfly_second / calendar_monotone, asserting the flags
+   flip False and Lee slopes report; include a wrong-sign rho case.
+2. Re-run mutmut on src/finance/vol_surface.py to >= 80% (targeted additions:
+   exact w(k) values at the hand case, exact report-field values, the INV-2 level
+   grid pinned, w symmetric-structure checks).
+3. Authoring layer: amend INV-4's crisis band / 45% cap (or the priors) to a
+   jointly satisfiable set; keep the tests' documented NOTEs consistent.
+Then re-judge. Status update: features[F-1].status stays "pending_judge" -> FAILED
+round 1; feature remains in_progress pending repair (recorded below).
