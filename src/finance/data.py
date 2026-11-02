@@ -252,6 +252,13 @@ def _fetch_fred_volatility_index(  # pragma: no cover
         Raw index-level Series (not yet ÷100). Empty Series when FRED_API_KEY
         is not set, the FRED fetch fails (e.g. maintenance/down, invalid key,
         network error), or FRED returns no observations for the range.
+
+    Notes:
+        FRED publishes CBOE vol indices (e.g. RVXCLS) about one business day
+        late, so the final trading day of the requested window may be absent.
+        When the last observation precedes end_date, exactly one business day
+        is forward-filled past it so the series covers end_date; a longer gap
+        is left missing (stale-but-honest) for downstream fallback logic.
     """
     import os
 
@@ -271,6 +278,14 @@ def _fetch_fred_volatility_index(  # pragma: no cover
         return pd.Series(dtype=float, name=series_id)
     if series.empty:
         return pd.Series(dtype=float, name=series_id)
+    series = series.dropna()
+    if series.empty:
+        return pd.Series(dtype=float, name=series_id)
+    # Forward-fill a single business day past the last observation when the
+    # requested window extends beyond it (FRED's ~1-day publication lag).
+    next_bday = series.index[-1] + pd.offsets.BDay(1)
+    if next_bday <= pd.Timestamp(end_date):
+        series = pd.concat([series, pd.Series([series.iloc[-1]], index=[next_bday])])
     return series.rename(series_id)
 
 
@@ -618,7 +633,13 @@ def build_price_data(
             ticker: fetch_volatility_index(ticker, start_date, end_date) for ticker in asset_tickers
         }
         non_empty = {k: v for k, v in vol_cols.items() if not v.empty}
-        vol_prices = pd.DataFrame(non_empty) if non_empty else pd.DataFrame()
+        if non_empty:
+            # Align to the price calendar (the longest series): a lagging source
+            # (e.g. FRED RVXCLS, 1 day behind) is forward-filled so every vol
+            # column covers the same dates as prices through day t.
+            vol_prices = pd.DataFrame(non_empty).reindex(prices.index).ffill()
+        else:
+            vol_prices = pd.DataFrame()
     else:
         vol_prices = pd.DataFrame()
 

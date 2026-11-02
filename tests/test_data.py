@@ -267,6 +267,42 @@ def test_build_price_data_vol_prices_empty_when_not_requested() -> None:
 # ---------------------------------------------------------------------------
 
 
+def test_build_price_data_vol_prices_aligned_to_price_calendar() -> None:
+    """vol_prices is reindexed to prices.index with lagged sources ffilled.
+
+    VTI vol (VIX, real-time) runs to day t; IWM vol (FRED RVXCLS, 1-day
+    lagged) only to t-1. The aligned vol_prices must cover day t for both,
+    with IWM forward-filled at t.
+    """
+    start, end = "2024-06-03", "2024-06-07"
+    price_idx = pd.bdate_range(start, end, freq="C")  # Mon-Fri trading days
+
+    with (
+        patch("finance.data.fetch_prices", side_effect=lambda t, s, e: _fake_prices(t, s, e)),
+        patch("finance.data.fetch_dividends", return_value=pd.Series(dtype=float)),
+        patch(
+            "finance.data.fetch_volatility_index",
+            side_effect=lambda ticker, s, e: (
+                pd.Series(np.linspace(0.15, 0.18, len(price_idx)), index=price_idx, name=ticker)
+                if ticker == "VTI"
+                else pd.Series(
+                    np.linspace(0.20, 0.22, len(price_idx) - 1),
+                    index=price_idx[:-1],
+                    name=ticker,
+                )
+            ),
+        ),
+    ):
+        pd_obj = build_price_data(start, end, tickers=["VTI", "IWM"], fetch_vol_indices=True)
+
+    assert list(pd_obj.vol_prices.index) == list(pd_obj.prices.index)
+    assert pd_obj.vol_prices.index[-1] == pd_obj.prices.index[-1]
+    assert pd_obj.vol_prices["IWM"].iloc[-1] == pytest.approx(
+        pd_obj.vol_prices["IWM"].iloc[-2]
+    )  # ffilled, not NaN
+    assert pd_obj.vol_prices["VTI"].notna().all()
+
+
 def test_fetch_volatility_index_fred_path_divides_by_100() -> None:
     """FRED RVXCLS levels are converted to decimal IV and renamed `<asset>_IV`."""
     idx = pd.bdate_range("2024-06-03", periods=5)
@@ -329,6 +365,88 @@ def test_fetch_fred_volatility_index_fetches_and_renames(monkeypatch: pytest.Mon
         "RVXCLS", observation_start="2024-06-03", observation_end="2024-06-05"
     )
     np.testing.assert_allclose(out.to_numpy(), raw.to_numpy())
+
+
+def test_fetch_fred_volatility_index_ffills_one_bday_lag(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Missing final day (FRED's ~1-day lag) is forward-filled, not NaN."""
+    monkeypatch.setenv("FRED_API_KEY", "test-key")
+    idx = pd.bdate_range("2024-06-03", periods=3)  # Mon-Wed; Thu absent
+    raw = pd.Series([20.0, 21.0, 22.0], index=idx)
+    mock_fred = MagicMock()
+    mock_fred.get_series.return_value = raw
+
+    with patch("fredapi.Fred", return_value=mock_fred):
+        out = _fetch_fred_volatility_index("RVXCLS", "2024-06-03", "2024-06-06")  # Thu
+
+    assert list(out.index) == list(pd.bdate_range("2024-06-03", periods=4))
+    np.testing.assert_allclose(out.to_numpy(), np.array([20.0, 21.0, 22.0, 22.0]))
+
+
+def test_fetch_fred_volatility_index_no_ffill_when_observation_reaches_end(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No synthetic point is added when the series already covers end_date."""
+    monkeypatch.setenv("FRED_API_KEY", "test-key")
+    idx = pd.bdate_range("2024-06-03", periods=3)
+    raw = pd.Series([20.0, 21.0, 22.0], index=idx)
+    mock_fred = MagicMock()
+    mock_fred.get_series.return_value = raw
+
+    with patch("fredapi.Fred", return_value=mock_fred):
+        out = _fetch_fred_volatility_index("RVXCLS", "2024-06-03", "2024-06-05")
+
+    assert list(out.index) == list(idx)
+    np.testing.assert_allclose(out.to_numpy(), np.array([20.0, 21.0, 22.0]))
+
+
+def test_fetch_fred_volatility_index_only_one_bday_filled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A gap longer than 1 business day is left missing (not silently filled)."""
+    monkeypatch.setenv("FRED_API_KEY", "test-key")
+    idx = pd.bdate_range("2024-06-03", periods=1)  # only Mon available
+    raw = pd.Series([20.0], index=idx)
+    mock_fred = MagicMock()
+    mock_fred.get_series.return_value = raw
+
+    with patch("fredapi.Fred", return_value=mock_fred):
+        out = _fetch_fred_volatility_index("RVXCLS", "2024-06-03", "2024-06-07")
+
+    assert list(out.index) == list(pd.bdate_range("2024-06-03", periods=2))  # Tue added, no more
+    np.testing.assert_allclose(out.to_numpy(), np.array([20.0, 20.0]))
+
+
+def test_fetch_fred_volatility_index_drops_nan_observations(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """FRED NaN entries (holidays) are dropped; only real observations remain."""
+    monkeypatch.setenv("FRED_API_KEY", "test-key")
+    idx = pd.bdate_range("2024-06-03", periods=3)
+    raw = pd.Series([20.0, float("nan"), 22.0], index=idx)
+    mock_fred = MagicMock()
+    mock_fred.get_series.return_value = raw
+
+    with patch("fredapi.Fred", return_value=mock_fred):
+        out = _fetch_fred_volatility_index("RVXCLS", "2024-06-03", "2024-06-05")
+
+    assert list(out.index) == [idx[0], idx[2]]
+    np.testing.assert_allclose(out.to_numpy(), np.array([20.0, 22.0]))
+
+
+def test_fetch_fred_volatility_index_all_nan_returns_empty(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A NaN-only FRED response degrades to an empty Series (fallback path)."""
+    monkeypatch.setenv("FRED_API_KEY", "test-key")
+    idx = pd.bdate_range("2024-06-03", periods=2)
+    raw = pd.Series([float("nan"), float("nan")], index=idx)
+    mock_fred = MagicMock()
+    mock_fred.get_series.return_value = raw
+
+    with patch("fredapi.Fred", return_value=mock_fred):
+        out = _fetch_fred_volatility_index("RVXCLS", "2024-06-03", "2024-06-04")
+
+    assert out.empty
 
 
 def test_fetch_fred_volatility_index_returns_empty_on_fetch_error(
