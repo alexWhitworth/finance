@@ -37,5 +37,5 @@ build/
 .claude/*.log
 .claude/worktrees
 
-# judge verdicts
-.claude/worktrees/
+# mutants
+.mutmut-cache

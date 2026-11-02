@@ -19,6 +19,7 @@ from finance.data import (
     fetch_2yr_treasury,
     fetch_volatility_index,
     risk_free_at_expiry,
+    risk_free_at_expiry_from_series,
     splice,
 )
 
@@ -697,6 +698,37 @@ def test_risk_free_flat_extrapolation() -> None:
 def test_risk_free_floors_time() -> None:
     """Non-positive time floors to TIME_FLOOR (not below the short anchor)."""
     assert risk_free_at_expiry(0.05, 0.043, -1.0) == pytest.approx(0.05)
+
+
+# ---------------------------------------------------------------------------
+# F-0: risk_free_at_expiry_from_series (empty-DGS2 -> ^IRX-flat composition)
+# ---------------------------------------------------------------------------
+
+
+def test_risk_free_series_composes_anchors() -> None:
+    """Latest ^IRX and DGS2 levels feed risk_free_at_expiry (the missing caller)."""
+    bill = pd.Series([0.05, 0.051, 0.052], index=pd.bdate_range("2024-01-01", periods=3))
+    dgs2 = pd.Series([0.043, 0.044], index=pd.bdate_range("2024-01-01", periods=2))
+    # 2y maturity -> DGS2 anchor exactly.
+    assert risk_free_at_expiry_from_series(bill, dgs2, 2.0) == pytest.approx(0.044)
+    # 0.25y maturity -> ^IRX anchor exactly.
+    assert risk_free_at_expiry_from_series(bill, dgs2, 0.25) == pytest.approx(0.052)
+
+
+def test_risk_free_series_empty_dgs2_flat_at_irx() -> None:
+    """Empty DGS2 -> ^IRX anchor flat across ALL maturities (graceful-empty pattern)."""
+    bill = pd.Series([0.05, 0.051, 0.052], index=pd.bdate_range("2024-01-01", periods=3))
+    dgs2 = pd.Series(dtype=float, name="DGS2")  # fetch_2yr_treasury's empty-on-error
+    for t in (0.05, 0.25, 1.0, 2.0, 5.0):
+        assert risk_free_at_expiry_from_series(bill, dgs2, t) == pytest.approx(0.052)
+
+
+def test_risk_free_series_raises_empty_bill() -> None:
+    """No short-end anchor to fall back on -> loud failure, not silent 0."""
+    bill = pd.Series(dtype=float)
+    dgs2 = pd.Series([0.043], index=pd.bdate_range("2024-01-01", periods=1))
+    with pytest.raises(ValueError, match="bill_13w_series"):
+        risk_free_at_expiry_from_series(bill, dgs2, 1.0)
 
 
 # ---------------------------------------------------------------------------

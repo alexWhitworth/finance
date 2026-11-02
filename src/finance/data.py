@@ -363,6 +363,41 @@ def risk_free_at_expiry(
     return bill_13w_level + frac * (treasury_2y_level - bill_13w_level)
 
 
+def risk_free_at_expiry_from_series(
+    bill_13w_series: pd.Series,
+    treasury_2y_series: pd.Series,
+    time_to_expiry_years: float,
+) -> float:
+    """r(T) from the fetched anchor series, with empty-DGS2 -> ^IRX-flat fallback (D8).
+
+    Composes the two carry anchors end-to-end: the latest ^IRX (13-week) level
+    and the latest DGS2 (2y) level are read from the fetched series and passed to
+    risk_free_at_expiry. When the DGS2 series is empty (fetch failure or no
+    observations), the ^IRX level substitutes as the 2y anchor, so r(T) is flat
+    at the ^IRX level across all maturities (F-0 edge case "DGS2 fetch fails ->
+    risk_free_at_expiry falls back to the ^IRX anchor flat").
+
+    Arguments:
+        bill_13w_series: Daily ^IRX 13-week bill levels, decimal.
+        treasury_2y_series: Daily DGS2 2y treasury levels, decimal (may be empty).
+        time_to_expiry_years: Time to expiry; floored at TIME_FLOOR.
+
+    Returns:
+        r(T) for discounting and forward-carry to expiry.
+
+    Raises:
+        ValueError: If bill_13w_series is empty (no short-end anchor to fall back on).
+    """
+    if bill_13w_series.empty:
+        raise ValueError("bill_13w_series must be non-empty")
+    bill_level = float(bill_13w_series.iloc[-1])
+    if treasury_2y_series.empty:
+        # Both anchors equal the ^IRX level; risk_free_at_expiry is then flat in T.
+        return bill_level
+    twoy_level = float(treasury_2y_series.iloc[-1])
+    return risk_free_at_expiry(bill_level, twoy_level, time_to_expiry_years)
+
+
 def splice(
     primary_prices: pd.Series,
     proxy_prices: pd.Series,

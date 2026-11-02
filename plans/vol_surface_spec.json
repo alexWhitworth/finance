@@ -592,7 +592,7 @@
       "phase": "0",
       "kind": "build",
       "layer": "python",
-      "status": "in_progress",
+      "status": "pending_judge",
       "component_ids": [
         "data_feed"
       ],
@@ -685,7 +685,7 @@
       "phase": "1",
       "kind": "build",
       "layer": "python",
-      "status": "in_progress",
+      "status": "pending_judge",
       "component_ids": [
         "vol_surface"
       ],

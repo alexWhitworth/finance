@@ -86,6 +86,35 @@ def test_ssvi_atm_equals_theta() -> None:
     assert ssvi_total_variance(0.0, theta, GLD) == pytest.approx(theta, rel=1e-12)
 
 
+def test_ssvi_hand_values_exact() -> None:
+    """Hand-computed w(k) pins the radicand sign, phi form, and sqrt clamp."""
+    theta = 0.0648
+    k_atm = math.log(0.5)  # k = ln(K/F) for the DITM LEAPS strike K = 0.5*F
+    assert ssvi_total_variance(k_atm, theta, VTI) == pytest.approx(
+        0.18557955551770486, rel=1e-12
+    )
+    assert ssvi_total_variance(0.5, theta, VTI) == pytest.approx(
+        0.0335640671339563, rel=1e-12
+    )
+    assert ssvi_total_variance(k_atm, theta, GLD) == pytest.approx(
+        0.08825217463354407, rel=1e-12
+    )
+    assert ssvi_total_variance(0.5, theta, GLD) == pytest.approx(
+        0.09778903460571188, rel=1e-12
+    )
+    # k=0.02 puts the radicand below 1 (0.910753...), pinning the sqrt clamp at 0.0
+    # rather than 1.0.
+    assert ssvi_total_variance(0.02, theta, VTI) == pytest.approx(
+        0.06180201039483746, rel=1e-12
+    )
+
+
+def test_ssvi_gamma_upper_boundary_accepted() -> None:
+    """gamma == 1.0 is inside the (0, 1] domain and must not raise."""
+    p = SsviParams(rho=-0.7, eta=1.1, gamma=1.0, kappa=1.5, sigma_inf=0.18)
+    assert ssvi_total_variance(0.0, 0.0648, p) == pytest.approx(0.0648, rel=1e-12)
+
+
 def test_ssvi_positive_for_positive_theta() -> None:
     theta = 0.0648
     for k in (-2.0, -0.69, 0.0, 0.5, 2.0):
@@ -125,6 +154,12 @@ def test_surface_iv_atm_equals_sigma_inf_when_levels_match() -> None:
         f = 100.0 * math.exp((0.0 - 0.013) * tau)
         iv = surface_implied_vol(100.0, f, tau, 0.18, params)
         assert iv == pytest.approx(0.18, abs=1e-9)
+
+
+def test_surface_iv_pinned_exact() -> None:
+    """Closed-form sigma(k, t) pinned to a hand value for the DITM 2y LEAPS."""
+    iv = surface_implied_vol(100.0, 50.0, 2.0, 0.18, VTI)
+    assert iv == pytest.approx(0.30071875802416753, rel=1e-12)
 
 
 def test_surface_iv_skew_direction_by_rho() -> None:
@@ -211,6 +246,55 @@ def test_arbitrage_reports_lee_wing_slopes() -> None:
     # VTI (rho < 0): left (put) wing steeper. GLD (rho > 0): right wing steeper.
     assert vti.lee_wing_slope_left > vti.lee_wing_slope_right
     assert gld.lee_wing_slope_right > gld.lee_wing_slope_left
+
+
+def test_arbitrage_lee_wings_exact() -> None:
+    """Exact Lee wing slopes pin the formula, its /2 factor, and the 4-level grid."""
+    vti = check_surface_arbitrage(VTI, max_vol_index_level=0.80)
+    assert vti.lee_wing_slope_left == pytest.approx(0.4742042092875824, rel=1e-12)
+    assert vti.lee_wing_slope_right == pytest.approx(0.0836830957566322, rel=1e-12)
+    gld = check_surface_arbitrage(GLD, max_vol_index_level=0.80)
+    assert gld.lee_wing_slope_left == pytest.approx(0.19399263107219275, rel=1e-12)
+    assert gld.lee_wing_slope_right == pytest.approx(0.26246061850943725, rel=1e-12)
+
+
+def test_arbitrage_defaults_pinned() -> None:
+    """Calling with no args must use the 0.80 level and 5-point expiry grid."""
+    report = check_surface_arbitrage(VTI)
+    assert report.butterfly_first_ok is True
+    assert report.butterfly_second_ok is True
+    assert report.calendar_monotone is True
+    assert report.lee_wing_slope_left == pytest.approx(0.4742042092875824, rel=1e-12)
+    assert report.lee_wing_slope_right == pytest.approx(0.0836830957566322, rel=1e-12)
+
+
+def test_arbitrage_butterfly_pass_fail_matrix() -> None:
+    """Butterfly no-arb fails on the violate side (spec-required pass/fail matrix)."""
+    mild = SsviParams(rho=-0.7, eta=2.0, gamma=0.42, kappa=1.5, sigma_inf=0.18)
+    harsh = SsviParams(rho=-0.7, eta=8.0, gamma=0.42, kappa=1.5, sigma_inf=0.18)
+
+    # PASS side: the real per-ticker params hold both conditions at 0.80.
+    for params in (VTI, IWM, GLD):
+        report = check_surface_arbitrage(params, max_vol_index_level=0.80)
+        assert report.butterfly_first_ok
+        assert report.butterfly_second_ok
+
+    # FAIL side: eta=8.0 breaks both butterfly conditions at 0.80.
+    fail = check_surface_arbitrage(harsh, max_vol_index_level=0.80)
+    assert fail.butterfly_first_ok is False
+    assert fail.butterfly_second_ok is False
+
+    # FAIL side (isolated): eta=2.0 breaks only the second condition
+    # (theta*phi^2*(1+|rho|) > 4), pinning that operator's threshold.
+    second_only = check_surface_arbitrage(mild, max_vol_index_level=0.80)
+    assert second_only.butterfly_first_ok is True
+    assert second_only.butterfly_second_ok is False
+
+
+def test_arbitrage_butterfly_calendar_violation_false() -> None:
+    """A non-ascending expiry grid exercises the calendar violation branch."""
+    report = check_surface_arbitrage(VTI, expiry_grid_years=(2.0, 1.0, 0.5, 0.25, 0.083))
+    assert report.calendar_monotone is False
 
 
 def test_arbitrage_rho_signs() -> None:
