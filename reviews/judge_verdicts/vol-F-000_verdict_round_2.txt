@@ -1,0 +1,118 @@
+F-0 JUDGE VERDICT — Round 2 (vol-surface spec)
+=============================================
+Feature: F-0 — Carry wiring + MOVE conversion fix
+Commits under review: 9886814 ("actor(vol-F-000/F-001): address round-1 judge FAIL
+feedback") + 059d673 ("fix t-1 issue with FRED vol data", adjacent hardening with
+its own tests in the same module)
+Spec: plans/vol_surface_spec.json (F-0 status pending_judge; deps [] — valid root)
+Round-1 verdict: FAIL (reviews/judge_verdicts/vol-F-000_verdict_round_1.txt)
+
+VERDICT: PASS
+
+ROUND-1 BLOCKER RESOLUTION
+-------------------------
+Round 1 FAILed on one blocker: "no production caller composes ^IRX +
+fetch_2yr_treasury into risk_free_at_expiry, and the spec's edge-case disposition
+(empty DGS2 -> ^IRX-flat fallback) is not implemented or testable end-to-end."
+
+Resolution verified this round:
+- src/finance/data.py:381 risk_free_at_expiry_from_series(bill_13w_series,
+  treasury_2y_series, time_to_expiry_years) composes the two fetched anchor
+  series: latest ^IRX level + latest DGS2 level -> risk_free_at_expiry; empty
+  DGS2 Series (fetch_2yr_treasury's empty-on-error / empty-no-observations
+  return) -> returns the ^IRX level flat across ALL maturities (D8 edge case);
+  empty bill_13w_series -> ValueError("bill_13w_series must be non-empty")
+  (loud failure, no silent 0).
+- Tests (tests/test_data.py:826-850): test_risk_free_series_composes_anchors
+  (t=2.0 -> latest DGS2 exactly; t=0.25 -> latest ^IRX exactly),
+  test_risk_free_series_empty_dgs2_flat_at_irx (empty DGS2 -> ^IRX level at
+  t in {0.05, 0.25, 1.0, 2.0, 5.0}), test_risk_free_series_raises_empty_bill
+  (ValueError naming bill_13w_series). The exact spec-named fallback composition
+  is now implemented and pinned.
+
+CRITERIA (all independently reproduced by the Judge)
+----------------------------------------------------
+1. INV-3 partial; MOVE unit test (60 -> ~6% scale): MET
+   - tests/test_data.py::test_convert_move_60_to_6pct_scale asserts 0.0306;
+     Judge re-derived: 60 * 5.1e-4 = 0.0306 (i.e. the 60->"6%"-scale in D7 terms;
+     actual decimal 3.06%). Listed bond-ETF option range check holds: 0.04 <=
+     0.051 <= 0.08 (test_convert_move_100_in_listed_range).
+2. convert_vol_index_level(100.0, MOVE spec D_eff=5.1) == 0.051: MET
+   - Judge independent run: module returns exactly 0.051 (= 100*5.1e-4; note the
+     float product 100.0*5.1e-4 = 0.051000000000000004 while the module computes
+     raw_level * effective_duration * 1e-4 = 0.051 exactly — both within 1 ulp;
+     the property test's tight achievable band [0.016, 0.18] with NOTE at
+     tests/test_data.py:858-862 covers MOVE [40,250] x D_eff [4,7] as in round 1).
+3. risk_free_at_expiry(2.0) == treasury_2y_level exactly; t=0.25 == bill_13w_level:
+   MET
+   - Judge independent run: r(2.0) = 0.043 exact, r(0.25) = 0.05 exact,
+     t=1.125 midpoint (0.04,0.06) -> 0.05, flat extrapolation both sides,
+     TIME_FLOOR flooring at negative t.
+
+TEST REQUIREMENTS
+-----------------
+- tests/test_data.py unit (convert cases + interpolation/extrapolation + the
+  spec-named empty-fetch fallback): MET this round. Round-1 gap (fallback
+  composition untested) closed by the three risk_free_at_expiry_from_series
+  tests above.
+- tests/test_data.py property (hypothesis MOVE range + percent range): MET
+  (test_prop_move_conversion_range, test_prop_percent_conversion_range).
+- mutmut: src/finance/data.py mutation score >= 80% on conversion +
+  interpolation functions: MET. Fresh full-file run (mutmut 2.5.1 via
+  `uv run --with mutmut==2.5.1`, runner `python -m pytest tests/test_data.py -q
+  -m 'not slow' --no-cov -p no:cacheprovider`): 235 mutants, 113 killed,
+  3 suspicious, 119 survived. Mutant-id -> source-line mapping (`mutmut show`,
+  hunks @@): the F-0 window — convert_vol_index_level (data.py:327-349) +
+  risk_free_at_expiry (data.py:351-379) + risk_free_at_expiry_from_series
+  (data.py:381-406) — holds 30 mutants, 25 killed = 83.3% >= 80%. The 5
+  in-window survivors, individually displayed:
+    * 106/110: raise-message "XX...XX" wraps — pytest.raises(match=...) still
+      matches the contained substring; value-equivalent.
+    * 116/117: anchor boundary flips t<=0.25 -> t<0.25 and t>=2.0 -> t>2.0 —
+      at the anchor the fall-through returns frac=0 or frac=1, i.e. the IDENTICAL
+      anchor value; no reachable input distinguishes them (verified numerically
+      in round 1, unchanged).
+    * 125: raise-message wrap on the empty-bill guard — equivalent.
+  The out-of-window survivors are fetch/network plumbing (fetch_prices,
+  fetch_volatility_index, fetch_2yr_treasury, _fetch_fred_volatility_index,
+  splice — marked `pragma: no cover` / excluded from the F-0 mutation scope per
+  the spec's own requirement text "on the conversion + interpolation
+  functions").
+
+SCORECARD
+---------
+Acceptance criteria: 3/3 MET (independently reproduced).
+Test requirements: unit MET (round-1 gap closed), property MET, mutation MET
+  in-scope (83.3% on the F-0 functions; the 5 survivors are equivalent-class).
+Full suite: 1046 passed, 8 deselected (slow), 0 failed (105.8s, real run;
+includes the round-2 additions).
+ruff: `uv run ruff check src/ tests/` — All checks passed (mypy: clean 17 files).
+Coverage: 98.72% total (project threshold 85% met); data.py 95%.
+
+ADJACENT COMMIT (059d673, out of F-0's contract but reviewed for regressions)
+-----------------------------------------------------------------------------
+Fills FRED's ~1-day publication lag: _fetch_fred_volatility_index drops NaNs,
+ffills exactly one business day past the last observation when the window
+extends beyond it (longer gaps left stale); build_price_data reindexes
+vol_prices to the price calendar with ffill so a lagged source (RVXCLS) covers
+day t. Six new tests (test_build_price_data_vol_prices_aligned_to_price_calendar,
+test_fetch_fred_volatility_index_{ffills_one_bday_lag,
+no_ffill_when_observation_reaches_end, only_one_bday_filled, drops_nan_observations,
+all_nan_returns_empty}). Behavior reviewed: correct, guarded (exactly one day),
+and fully covered by its own tests; no F-0 contract touched. No-lookahead is
+preserved (ffill only, backward-looking). No action required.
+
+FINDINGS
+--------
+No blocking findings. Advisory carried from round 1 (unchanged, non-blocking):
+- No integration test exercising fetch_volatility_index's basis_points branch
+  on the real ^MOVE path (VGIT/MUB); behavior verified correct manually.
+- mutmut absent from project dev deps; run ad hoc via `uv run --with
+  mutmut==2.5.1`.
+
+STATUS TRANSITION
+-----------------
+features[F-0].status: pending_judge -> complete. F-0 has no downstream
+invariant gates beyond its own (INV-3 partial, covered); dependency consumers
+(F-1) already validated. Next Actor work: F-2 (depends_on F-1, which is also
+re-judged this round).
