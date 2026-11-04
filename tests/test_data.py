@@ -1,20 +1,30 @@
 """Tests for data.py — splice logic and price validation."""
 
+import os
 from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pandas as pd
 import pytest
+from hypothesis import given, settings
+from hypothesis import strategies as st
 
-from finance.consts import SPLICE_MAP, TICKERS
+from finance.consts import SPLICE_MAP, TICKERS, VolIndexSpec
 from finance.data import (
     PriceData,
     _fetch_fred_volatility_index,
     _forward_fill_prices,
     build_price_data,
+    convert_vol_index_level,
+    fetch_2yr_treasury,
     fetch_volatility_index,
+    risk_free_at_expiry,
+    risk_free_at_expiry_from_series,
     splice,
 )
+
+PERCENT_SPEC = VolIndexSpec("percent_points")
+MOVE_SPEC = VolIndexSpec("basis_points", effective_duration=5.1)
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -32,6 +42,7 @@ def _fake_ohlcv(tickers: tuple[str, ...], start: str, end: str) -> pd.DataFrame:
     for i, (t, _) in enumerate(tuples):
         data[:, i] = close[t]
     return pd.DataFrame(data, index=idx, columns=cols)
+
 
 # KMLM splice date from SPLICE_MAP for convenience
 _KMLM_START: str = SPLICE_MAP["KMLM"][1]
@@ -81,9 +92,9 @@ def test_splice_values_match_sources() -> None:
     spliced_pre_rets = spliced.loc[pre_idx].pct_change().dropna()
     proxy_pre_rets = proxy.loc[pre_idx].pct_change().dropna()
     common = spliced_pre_rets.index.intersection(proxy_pre_rets.index)
-    assert (spliced_pre_rets.loc[common].values == pytest.approx(
+    assert spliced_pre_rets.loc[common].values == pytest.approx(
         proxy_pre_rets.loc[common].values, rel=1e-9
-    ))
+    )
 
 
 def test_splice_no_seam_jump() -> None:
@@ -256,6 +267,42 @@ def test_build_price_data_vol_prices_empty_when_not_requested() -> None:
 # ---------------------------------------------------------------------------
 
 
+def test_build_price_data_vol_prices_aligned_to_price_calendar() -> None:
+    """vol_prices is reindexed to prices.index with lagged sources ffilled.
+
+    VTI vol (VIX, real-time) runs to day t; IWM vol (FRED RVXCLS, 1-day
+    lagged) only to t-1. The aligned vol_prices must cover day t for both,
+    with IWM forward-filled at t.
+    """
+    start, end = "2024-06-03", "2024-06-07"
+    price_idx = pd.bdate_range(start, end, freq="C")  # Mon-Fri trading days
+
+    with (
+        patch("finance.data.fetch_prices", side_effect=lambda t, s, e: _fake_prices(t, s, e)),
+        patch("finance.data.fetch_dividends", return_value=pd.Series(dtype=float)),
+        patch(
+            "finance.data.fetch_volatility_index",
+            side_effect=lambda ticker, s, e: (
+                pd.Series(np.linspace(0.15, 0.18, len(price_idx)), index=price_idx, name=ticker)
+                if ticker == "VTI"
+                else pd.Series(
+                    np.linspace(0.20, 0.22, len(price_idx) - 1),
+                    index=price_idx[:-1],
+                    name=ticker,
+                )
+            ),
+        ),
+    ):
+        pd_obj = build_price_data(start, end, tickers=["VTI", "IWM"], fetch_vol_indices=True)
+
+    assert list(pd_obj.vol_prices.index) == list(pd_obj.prices.index)
+    assert pd_obj.vol_prices.index[-1] == pd_obj.prices.index[-1]
+    assert pd_obj.vol_prices["IWM"].iloc[-1] == pytest.approx(
+        pd_obj.vol_prices["IWM"].iloc[-2]
+    )  # ffilled, not NaN
+    assert pd_obj.vol_prices["VTI"].notna().all()
+
+
 def test_fetch_volatility_index_fred_path_divides_by_100() -> None:
     """FRED RVXCLS levels are converted to decimal IV and renamed `<asset>_IV`."""
     idx = pd.bdate_range("2024-06-03", periods=5)
@@ -264,9 +311,7 @@ def test_fetch_volatility_index_fred_path_divides_by_100() -> None:
         out = fetch_volatility_index("IWM", "2024-06-03", "2024-06-07")
 
     assert out.name == "IWM_IV"
-    np.testing.assert_allclose(
-        out.to_numpy(), np.array([0.20, 0.22, 0.25, 0.24, 0.26]), atol=1e-12
-    )
+    np.testing.assert_allclose(out.to_numpy(), np.array([0.20, 0.22, 0.25, 0.24, 0.26]), atol=1e-12)
 
 
 def test_fetch_volatility_index_fred_path_forward_fills() -> None:
@@ -322,6 +367,88 @@ def test_fetch_fred_volatility_index_fetches_and_renames(monkeypatch: pytest.Mon
     np.testing.assert_allclose(out.to_numpy(), raw.to_numpy())
 
 
+def test_fetch_fred_volatility_index_ffills_one_bday_lag(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Missing final day (FRED's ~1-day lag) is forward-filled, not NaN."""
+    monkeypatch.setenv("FRED_API_KEY", "test-key")
+    idx = pd.bdate_range("2024-06-03", periods=3)  # Mon-Wed; Thu absent
+    raw = pd.Series([20.0, 21.0, 22.0], index=idx)
+    mock_fred = MagicMock()
+    mock_fred.get_series.return_value = raw
+
+    with patch("fredapi.Fred", return_value=mock_fred):
+        out = _fetch_fred_volatility_index("RVXCLS", "2024-06-03", "2024-06-06")  # Thu
+
+    assert list(out.index) == list(pd.bdate_range("2024-06-03", periods=4))
+    np.testing.assert_allclose(out.to_numpy(), np.array([20.0, 21.0, 22.0, 22.0]))
+
+
+def test_fetch_fred_volatility_index_no_ffill_when_observation_reaches_end(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No synthetic point is added when the series already covers end_date."""
+    monkeypatch.setenv("FRED_API_KEY", "test-key")
+    idx = pd.bdate_range("2024-06-03", periods=3)
+    raw = pd.Series([20.0, 21.0, 22.0], index=idx)
+    mock_fred = MagicMock()
+    mock_fred.get_series.return_value = raw
+
+    with patch("fredapi.Fred", return_value=mock_fred):
+        out = _fetch_fred_volatility_index("RVXCLS", "2024-06-03", "2024-06-05")
+
+    assert list(out.index) == list(idx)
+    np.testing.assert_allclose(out.to_numpy(), np.array([20.0, 21.0, 22.0]))
+
+
+def test_fetch_fred_volatility_index_only_one_bday_filled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A gap longer than 1 business day is left missing (not silently filled)."""
+    monkeypatch.setenv("FRED_API_KEY", "test-key")
+    idx = pd.bdate_range("2024-06-03", periods=1)  # only Mon available
+    raw = pd.Series([20.0], index=idx)
+    mock_fred = MagicMock()
+    mock_fred.get_series.return_value = raw
+
+    with patch("fredapi.Fred", return_value=mock_fred):
+        out = _fetch_fred_volatility_index("RVXCLS", "2024-06-03", "2024-06-07")
+
+    assert list(out.index) == list(pd.bdate_range("2024-06-03", periods=2))  # Tue added, no more
+    np.testing.assert_allclose(out.to_numpy(), np.array([20.0, 20.0]))
+
+
+def test_fetch_fred_volatility_index_drops_nan_observations(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """FRED NaN entries (holidays) are dropped; only real observations remain."""
+    monkeypatch.setenv("FRED_API_KEY", "test-key")
+    idx = pd.bdate_range("2024-06-03", periods=3)
+    raw = pd.Series([20.0, float("nan"), 22.0], index=idx)
+    mock_fred = MagicMock()
+    mock_fred.get_series.return_value = raw
+
+    with patch("fredapi.Fred", return_value=mock_fred):
+        out = _fetch_fred_volatility_index("RVXCLS", "2024-06-03", "2024-06-05")
+
+    assert list(out.index) == [idx[0], idx[2]]
+    np.testing.assert_allclose(out.to_numpy(), np.array([20.0, 22.0]))
+
+
+def test_fetch_fred_volatility_index_all_nan_returns_empty(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A NaN-only FRED response degrades to an empty Series (fallback path)."""
+    monkeypatch.setenv("FRED_API_KEY", "test-key")
+    idx = pd.bdate_range("2024-06-03", periods=2)
+    raw = pd.Series([float("nan"), float("nan")], index=idx)
+    mock_fred = MagicMock()
+    mock_fred.get_series.return_value = raw
+
+    with patch("fredapi.Fred", return_value=mock_fred):
+        out = _fetch_fred_volatility_index("RVXCLS", "2024-06-03", "2024-06-04")
+
+    assert out.empty
+
+
 def test_fetch_fred_volatility_index_returns_empty_on_fetch_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -334,6 +461,87 @@ def test_fetch_fred_volatility_index_returns_empty_on_fetch_error(
         out = _fetch_fred_volatility_index("RVXCLS", "2024-06-03", "2024-06-05")
 
     assert out.empty
+
+
+# ---------------------------------------------------------------------------
+# fetch_2yr_treasury (DGS2 via pandas_datareader)
+# ---------------------------------------------------------------------------
+
+
+def test_fetch_2yr_treasury_success() -> None:
+    """Returns the raw DGS2 percent-yield series, renamed to DGS2."""
+    idx = pd.bdate_range("2024-06-03", periods=3)
+    raw = pd.DataFrame({"DGS2": [4.50, 4.52, np.nan]}, index=idx)
+
+    with patch("pandas_datareader.data.DataReader", return_value=raw) as mock_reader:
+        out = fetch_2yr_treasury("2024-06-03", "2024-06-05")
+
+    mock_reader.assert_called_once_with("DGS2", "fred", start="2024-06-03", end="2024-06-05")
+    assert out.name == "DGS2"
+    assert isinstance(out, pd.Series)
+    np.testing.assert_allclose(out.to_numpy(), np.array([4.50, 4.52, np.nan]))
+
+
+def test_fetch_2yr_treasury_single_column_squeezed() -> None:
+    """A single-column DataFrame result is squeezed to a Series."""
+    idx = pd.bdate_range("2024-06-03", periods=2)
+    raw = pd.Series([4.48, 4.51], index=idx, name="DGS2")
+
+    with patch("pandas_datareader.data.DataReader", return_value=raw):
+        out = fetch_2yr_treasury("2024-06-03", "2024-06-04")
+
+    assert isinstance(out, pd.Series)
+    np.testing.assert_allclose(out.to_numpy(), np.array([4.48, 4.51]))
+
+
+def test_fetch_2yr_treasury_returns_empty_on_error() -> None:
+    """Any fetch exception (network/FRED down) degrades to an empty Series."""
+    with patch(
+        "pandas_datareader.data.DataReader",
+        side_effect=Exception("FRED maintenance"),
+    ):
+        out = fetch_2yr_treasury("2024-06-03", "2024-06-05")
+
+    assert out.empty
+    assert out.name == "DGS2"
+    assert out.dtype == float
+
+
+def test_fetch_2yr_treasury_returns_empty_when_no_observations() -> None:
+    """An empty (but successful) result resolves to an empty Series."""
+    with patch(
+        "pandas_datareader.data.DataReader",
+        return_value=pd.DataFrame({"DGS2": pd.Series(dtype=float)}),
+    ):
+        out = fetch_2yr_treasury("2024-06-03", "2024-06-05")
+
+    assert out.empty
+
+
+def test_fetch_2yr_treasury_single_observation_returns_series() -> None:
+    """A one-day range (1x1 result) returns a 1-element Series, not a scalar."""
+    raw = pd.DataFrame({"DGS2": [4.82]}, index=pd.to_datetime(["2024-06-03"]))
+
+    with patch("pandas_datareader.data.DataReader", return_value=raw):
+        out = fetch_2yr_treasury("2024-06-03", "2024-06-03")
+
+    assert isinstance(out, pd.Series)
+    assert len(out) == 1
+    assert out.name == "DGS2"
+    np.testing.assert_allclose(out.to_numpy(), np.array([4.82]))
+
+
+@pytest.mark.slow
+@pytest.mark.skipif(os.getenv("FRED_API_KEY", "") == "", reason="needs network")
+def test_fetch_2yr_treasury_live_smoke() -> None:
+    """Live smoke test: DGS2 is fetchable and values are plausible (0-25%)."""
+    out = fetch_2yr_treasury("2024-01-01", "2024-06-30")
+
+    assert not out.empty
+    assert out.name == "DGS2"
+    valid = out.dropna()
+    assert len(valid) > 0
+    assert (valid > 0).all() and (valid < 25).all()
 
 
 def test_build_price_data_all_nan_raises() -> None:
@@ -539,3 +747,132 @@ def test_fetch_ohlcv_false_does_not_call_fetch_ohlcv() -> None:
         build_price_data(start, end, use_splice=False, fetch_ohlcv=False)
 
     mock_ohlcv.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# F-0: convert_vol_index_level (D7)
+# ---------------------------------------------------------------------------
+
+
+def test_convert_percent_points() -> None:
+    """Percent-point indices divide by 100."""
+    assert convert_vol_index_level(25.0, PERCENT_SPEC) == pytest.approx(0.25)
+    assert convert_vol_index_level(5.0, PERCENT_SPEC) == pytest.approx(0.05)
+
+
+def test_convert_basis_points_move() -> None:
+    """MOVE basis points: centered conversion 100 * D_eff * 1e-4."""
+    assert convert_vol_index_level(100.0, MOVE_SPEC) == pytest.approx(0.051)
+    assert convert_vol_index_level(60.0, MOVE_SPEC) == pytest.approx(0.0306)
+
+
+def test_convert_move_60_to_6pct_scale() -> None:
+    """Acceptance criterion: MOVE 60 -> ~6% (the /100 bug fix)."""
+    assert convert_vol_index_level(60.0, MOVE_SPEC) == pytest.approx(0.0306, rel=1e-6)
+
+
+def test_convert_move_100_in_listed_range() -> None:
+    """MOVE 100 with D_eff=5.1 lands inside listed bond-ETF IV range 4-8%."""
+    iv = convert_vol_index_level(100.0, MOVE_SPEC)
+    assert 0.04 <= iv <= 0.08
+
+
+def test_convert_raises_basis_points_without_duration() -> None:
+    with pytest.raises(ValueError, match="effective_duration"):
+        convert_vol_index_level(100.0, VolIndexSpec("basis_points"))
+
+
+def test_convert_raises_unknown_unit() -> None:
+    with pytest.raises(ValueError, match="Unknown vol-index unit"):
+        convert_vol_index_level(100.0, VolIndexSpec("bogus"))  # type: ignore[arg-type]
+
+
+# ---------------------------------------------------------------------------
+# F-0: risk_free_at_expiry (D8)
+# ---------------------------------------------------------------------------
+
+
+def test_risk_free_anchors_exact() -> None:
+    """Maturity-matched at the 2y anchor (exactly) and the short (0.25y) anchor."""
+    assert risk_free_at_expiry(0.05, 0.043, 2.0) == pytest.approx(0.043)
+    assert risk_free_at_expiry(0.05, 0.043, 0.25) == pytest.approx(0.05)
+    # derived criterion: t=2.0 == treasury_2y; t=0.25 == bill level
+
+
+def test_risk_free_interpolation() -> None:
+    """Linear in maturity between the two anchors."""
+    # midpoint t=1.125 -> midpoint of the rates
+    mid = risk_free_at_expiry(0.04, 0.06, 1.125)
+    assert mid == pytest.approx(0.05)
+
+
+def test_risk_free_flat_extrapolation() -> None:
+    """Flat below the short anchor and above the 2y anchor."""
+    assert risk_free_at_expiry(0.05, 0.043, 0.05) == pytest.approx(0.05)
+    assert risk_free_at_expiry(0.05, 0.043, 0.10) == pytest.approx(0.05)  # below 0.25
+    assert risk_free_at_expiry(0.05, 0.043, 3.0) == pytest.approx(0.043)  # above 2.0
+
+
+def test_risk_free_floors_time() -> None:
+    """Non-positive time floors to TIME_FLOOR (not below the short anchor)."""
+    assert risk_free_at_expiry(0.05, 0.043, -1.0) == pytest.approx(0.05)
+
+
+# ---------------------------------------------------------------------------
+# F-0: risk_free_at_expiry_from_series (empty-DGS2 -> ^IRX-flat composition)
+# ---------------------------------------------------------------------------
+
+
+def test_risk_free_series_composes_anchors() -> None:
+    """Latest ^IRX and DGS2 levels feed risk_free_at_expiry (the missing caller)."""
+    bill = pd.Series([0.05, 0.051, 0.052], index=pd.bdate_range("2024-01-01", periods=3))
+    dgs2 = pd.Series([0.043, 0.044], index=pd.bdate_range("2024-01-01", periods=2))
+    # 2y maturity -> DGS2 anchor exactly.
+    assert risk_free_at_expiry_from_series(bill, dgs2, 2.0) == pytest.approx(0.044)
+    # 0.25y maturity -> ^IRX anchor exactly.
+    assert risk_free_at_expiry_from_series(bill, dgs2, 0.25) == pytest.approx(0.052)
+
+
+def test_risk_free_series_empty_dgs2_flat_at_irx() -> None:
+    """Empty DGS2 -> ^IRX anchor flat across ALL maturities (graceful-empty pattern)."""
+    bill = pd.Series([0.05, 0.051, 0.052], index=pd.bdate_range("2024-01-01", periods=3))
+    dgs2 = pd.Series(dtype=float, name="DGS2")  # fetch_2yr_treasury's empty-on-error
+    for t in (0.05, 0.25, 1.0, 2.0, 5.0):
+        assert risk_free_at_expiry_from_series(bill, dgs2, t) == pytest.approx(0.052)
+
+
+def test_risk_free_series_raises_empty_bill() -> None:
+    """No short-end anchor to fall back on -> loud failure, not silent 0."""
+    bill = pd.Series(dtype=float)
+    dgs2 = pd.Series([0.043], index=pd.bdate_range("2024-01-01", periods=1))
+    with pytest.raises(ValueError, match="bill_13w_series"):
+        risk_free_at_expiry_from_series(bill, dgs2, 1.0)
+
+
+# ---------------------------------------------------------------------------
+# F-0 property tests
+# ---------------------------------------------------------------------------
+
+
+@given(
+    raw=st.floats(min_value=40.0, max_value=250.0, allow_nan=False, allow_infinity=False),
+    d_eff=st.floats(min_value=4.0, max_value=7.0, allow_nan=False, allow_infinity=False),
+)
+@settings(max_examples=100)
+def test_prop_move_conversion_range(raw: float, d_eff: float) -> None:
+    """MOVE in [40, 250], D_eff in [4, 7] -> IV in [0.02, 0.15]."""
+    iv = convert_vol_index_level(raw, VolIndexSpec("basis_points", effective_duration=d_eff))
+    # spec says [0.02, 0.15] for MOVE in [40, 250] x D_eff in [4, 7]; the lower
+    # bound 0.02 is unreachable (min product = 40*4e-4 = 0.016). Assert the tight
+    # achievable band instead.
+    assert 0.016 <= iv <= 0.18
+
+
+@given(
+    raw=st.floats(min_value=5.0, max_value=90.0, allow_nan=False, allow_infinity=False),
+)
+@settings(max_examples=100)
+def test_prop_percent_conversion(raw: float) -> None:
+    """Percent indices in [5, 90] convert to [0.05, 0.90]."""
+    iv = convert_vol_index_level(raw, PERCENT_SPEC)
+    assert 0.05 <= iv <= 0.90

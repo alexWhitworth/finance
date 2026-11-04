@@ -3,6 +3,8 @@
 All modules import from here rather than defining constants locally.
 """
 
+from dataclasses import dataclass
+
 TICKERS: tuple[str, ...] = ("VTI", "VXUS", "GLD", "MUB", "KMLM", "VGIT")
 
 SPLICE_MAP: dict[str, tuple[str, str]] = {
@@ -60,6 +62,39 @@ VOL_INDEX_SCALAR: dict[str, float] = {
 # IWM (Russell 2000) ~ ^VIX when ^RVX (RVXCLS) is unreachable.
 VOL_INDEX_FALLBACK: dict[str, str] = {
     "IWM": "^VIX",
+}
+
+@dataclass(frozen=True)
+class VolIndexSpec:
+    """Per-vol-index unit conversion spec replacing the uniform /100 (D7).
+
+    Attributes:
+        unit: "percent_points" (^VIX, ^GVZ, RVXCLS — divide by 100) or
+            "basis_points" (^MOVE — multiply by D_eff * 1e-4).
+        effective_duration: D_eff for basis-point indices (VGIT ~5.1, MUB
+            ~5.5); None for percent-point indices.
+    """
+
+    unit: str
+    effective_duration: float | None = None
+
+
+# Unit conversion per vol-index key (D7). Percent-point indices (^VIX, ^GVZ,
+# RVXCLS) divide by 100; ^MOVE is quoted in basis points and converts as
+# sigma = D_eff * MOVE * 1e-4 with the per-ETF effective duration below. The
+# single ^MOVE entry carries no duration because D_eff varies per bond ETF;
+# resolve it per asset at conversion time (data.py).
+VOL_INDEX_SPECS: dict[str, VolIndexSpec] = {
+    "^VIX": VolIndexSpec("percent_points"),
+    "^GVZ": VolIndexSpec("percent_points"),
+    "^MOVE": VolIndexSpec("basis_points"),
+    "fred:RVXCLS": VolIndexSpec("percent_points"),
+}
+
+# Effective durations D_eff for the ^MOVE basis-point conversion (U6).
+MOVE_EFFECTIVE_DURATION: dict[str, float] = {
+    "VGIT": 5.1,
+    "MUB": 5.5,
 }
 
 TBILL_TICKER: str = "^IRX"
@@ -130,4 +165,38 @@ GTT_DEFENSIVE_WEIGHTS_DEFAULT: dict[str, float] = {
     "KMLM": 0.5,
     "VGIT": 0.25,
     "GLD": 0.0,
+}
+
+
+# ---------------------------------------------------------------------------
+# SSVI implied-volatility surface (F-1)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class SsviParams:
+    """Frozen SSVI + OU parameter set for one underlying (vol_surface.py).
+
+    Attributes:
+        rho: Skew/rotation; |rho| < 1. Negative for equity put skew, positive
+            for GLD call skew.
+        eta: Smile steepness scale (phi multiplier); eta > 0.
+        gamma: Steepness decay; gamma in (0, 1].
+        kappa: OU mean-reversion rate of instantaneous variance (1/yr); > 0.
+        sigma_inf: Long-run instantaneous vol (decimal); > 0.
+    """
+
+    rho: float
+    eta: float
+    gamma: float
+    kappa: float
+    sigma_inf: float
+
+
+# Per-ticker frozen SSVI shape/OU priors (D3/U1). Literature starting values,
+# explicitly F-5-pinnable. kappa/sigma_inf are shared equity/gold defaults.
+SSVI_PARAMS: dict[str, SsviParams] = {
+    "VTI": SsviParams(rho=-0.7, eta=1.1, gamma=0.42, kappa=1.5, sigma_inf=0.18),
+    "IWM": SsviParams(rho=-0.7, eta=1.1, gamma=0.42, kappa=1.5, sigma_inf=0.18),
+    "GLD": SsviParams(rho=0.15, eta=0.9, gamma=0.42, kappa=1.5, sigma_inf=0.18),
 }

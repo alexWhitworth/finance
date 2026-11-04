@@ -1,0 +1,2098 @@
+{
+  "spec_version": "1.0.0",
+  "generated_at": "2026-11-01T00:00:00Z",
+  "source_plan": {
+    "path": "plans/vol_surface.md",
+    "revision": "2026-11-01"
+  },
+  "project": {
+    "name": "finance",
+    "summary": "SSVI implied-volatility surface with an OU mean-reverting ATM total-variance curve anchored to the 30-day vol index, plus carry-input fixes (maturity-matched r(T), forward dividend yield q, MOVE basis-point conversion). Replaces the flat scalar-IV marks for 2-year DITM LEAPS in the live portfolio path (priority) and behind a back-compat flag in the backtest (secondary).",
+    "goals": [
+      "Marks, greeks, and roll logic for 2y DITM LEAPS priced from a term-structure-and-smile surface, not a scalar IV",
+      "Live portfolio management (portfolio_manager.py, priority) and backtest (_backtest_steps.py, secondary) consume the same surface",
+      "Extrinsic-to-extrinsic validation against real bid-ask, replacing model-price-vs-mid comparisons",
+      "Fix ^MOVE to IV conversion (basis points, not percent) and wire maturity-matched r(T) plus forward q"
+    ],
+    "non_goals": [
+      "Runtime calibration to option chains (no chain access; no solver in the daily loop)",
+      "Stochastic-vol model engines (Heston/rough-vol CF pricing)",
+      "American exercise adjustment",
+      "Bond-ETF LEAPS trading on the fixed MOVE-derived IV"
+    ],
+    "constraints": [
+      "20-year daily backtest (~5,000 days x 6 tickers) must price in closed form",
+      "Determinism and bit-for-bit back-compat under the flat vol_model flag",
+      "No chain access: shape parameters are literature priors, pinned one-time against manually entered broker quotes",
+      "Profile: library; Layers: python; pyproject targets python 3.13"
+    ]
+  },
+  "profiles": [
+    "library"
+  ],
+  "tech_stack": {
+    "layers": [
+      "python"
+    ],
+    "languages": [
+      "python 3.13"
+    ],
+    "key_libraries": [
+      "pandas",
+      "numpy",
+      "scipy",
+      "yfinance",
+      "pandas_datareader"
+    ],
+    "testing": {
+      "unit": [
+        "pytest"
+      ],
+      "property": [
+        "hypothesis"
+      ],
+      "integration": [
+        "pytest"
+      ],
+      "mutation": [
+        "mutmut"
+      ]
+    }
+  },
+  "extends": {
+    "parent_plan": "plans/portfolio_management.md",
+    "parent_spec": "plans/portfolio_management_spec.json",
+    "parent_invariants": [
+      "I4",
+      "I5",
+      "I6",
+      "I7",
+      "I12",
+      "I13",
+      "T1"
+    ]
+  },
+  "components": [
+    {
+      "id": "vol_surface",
+      "name": "Volatility surface module",
+      "layers": [
+        "python"
+      ],
+      "responsibility": "SSVI parameterization: OU ATM total-variance curve theta(tau), SSVI total variance w(k, theta), implied vol sigma(k, t), and no-arbitrage diagnostics. Pure closed form; the single source of implied vol for LEAPS marks.",
+      "owns": [
+        "SsviParams per underlying",
+        "theta(tau) OU curve",
+        "SSVI w(k, theta)",
+        "sigma(k, t)",
+        "no-arb checker + Lee wing caps"
+      ],
+      "reads": [
+        "vol index level (decimal)",
+        "spot",
+        "strike",
+        "time to expiry",
+        "risk_free_rate",
+        "dividend_yield"
+      ],
+      "writes": [
+        "SurfaceArbitrageReport diagnostics"
+      ],
+      "must_not_touch": [
+        "network",
+        "filesystem",
+        "pandas I/O",
+        "backtest state",
+        "live portfolio state"
+      ],
+      "source": "plan"
+    },
+    {
+      "id": "data_feed",
+      "name": "Data fetch and unit conversion",
+      "layers": [
+        "python"
+      ],
+      "responsibility": "Edge component: fetch vol-index and treasury series, convert quoted units to decimal annualized IV, expose r(T) anchors (^IRX short end, DGS2 at 2y via fetch_2yr_treasury).",
+      "owns": [
+        "per-index unit conversion (VolIndexSpec)",
+        "r(T) anchor series"
+      ],
+      "reads": [
+        "yfinance (^VIX, ^GVZ, ^MOVE, ^IRX)",
+        "FRED (DGS2 via fetch_2yr_treasury)"
+      ],
+      "writes": [
+        "vol_prices columns (decimal IV)",
+        "DGS2 series"
+      ],
+      "must_not_touch": [
+        "pricing logic",
+        "surface parameters",
+        "backtest state"
+      ],
+      "source": "plan"
+    },
+    {
+      "id": "pricing",
+      "name": "Scalar BS valuation (leverage.py)",
+      "layers": [
+        "python"
+      ],
+      "responsibility": "Existing scalar-iv Black-Scholes valuation of LeapsContract. Unchanged contract: callers source sigma(k, t) from vol_surface and pass it as the iv argument.",
+      "owns": [
+        "price_leaps_contract (unchanged signature)",
+        "bs_* scalar functions"
+      ],
+      "reads": [
+        "iv scalar supplied by caller",
+        "risk_free_rate scalar supplied by caller"
+      ],
+      "writes": [
+        "marks returned to callers"
+      ],
+      "must_not_touch": [
+        "network",
+        "surface internals",
+        "backtest state"
+      ],
+      "source": "plan"
+    },
+    {
+      "id": "greeks",
+      "name": "Surface-aware greeks (greeks.py)",
+      "layers": [
+        "python"
+      ],
+      "responsibility": "Per-contract and portfolio greeks. Surface path adds sticky-moneyness headline delta, sticky-strike exposure via vol_convention, and level-vega; flat scalar path preserved bit-for-bit.",
+      "owns": [
+        "compute_contract_greeks",
+        "compute_portfolio_greeks",
+        "ContractGreeks record",
+        "VolConvention"
+      ],
+      "reads": [
+        "LeapsContract",
+        "spot",
+        "vol index level",
+        "SsviParams"
+      ],
+      "writes": [
+        "ContractGreeks",
+        "PortfolioGreeks"
+      ],
+      "must_not_touch": [
+        "network",
+        "backtest internals"
+      ],
+      "source": "plan"
+    },
+    {
+      "id": "live_path",
+      "name": "Live portfolio management (portfolio_manager.py)",
+      "layers": [
+        "python"
+      ],
+      "responsibility": "Priority scope. LivePortfolio marks, greeks, and rebalance planning consume the surface via per-ticker SsviParams + vol index levels; scalar-iv fallback preserved.",
+      "owns": [
+        "per-ticker surface config in the live path",
+        "NAV / greeks / rebalance orchestration"
+      ],
+      "reads": [
+        "LivePortfolio",
+        "surface outputs",
+        "r(T), forward q"
+      ],
+      "writes": [
+        "PortfolioGreeks",
+        "VolatilityReport",
+        "RebalancePlan"
+      ],
+      "must_not_touch": [
+        "backtest internals",
+        "network"
+      ],
+      "source": "plan"
+    },
+    {
+      "id": "backtest",
+      "name": "Backtest engine (_backtest_steps.py)",
+      "layers": [
+        "python"
+      ],
+      "responsibility": "Secondary scope. vol_model flag (flat default) selects iv sourcing: flat = existing max(raw_vix, ctx.iv) logic unchanged; ssvi = per-day theta from the vol-index series.",
+      "owns": [
+        "vol_model flag on BacktestContext",
+        "per-day iv sourcing"
+      ],
+      "reads": [
+        "vol_prices series",
+        "r(T) series",
+        "vol_surface outputs"
+      ],
+      "writes": [
+        "leaps_value marks in PortfolioState"
+      ],
+      "must_not_touch": [
+        "live path",
+        "network"
+      ],
+      "source": "plan"
+    },
+    {
+      "id": "validation",
+      "name": "One-time validation harness",
+      "layers": [
+        "python"
+      ],
+      "responsibility": "Extrinsic-vs-spread comparison against manually entered broker quotes; kappa/sigma_inf sensitivity table; (rho, eta) pinning. One-time, human-reviewed scripts, not a library module.",
+      "owns": [
+        "validation/manual_quotes.csv",
+        "validation/report.md"
+      ],
+      "reads": [
+        "broker-screen quotes (manual entry)",
+        "surface marks"
+      ],
+      "writes": [
+        "validation/report.md"
+      ],
+      "must_not_touch": [
+        "library internals beyond public APIs"
+      ],
+      "source": "plan"
+    }
+  ],
+  "decisions": [
+    {
+      "id": "D1",
+      "kind": "rule",
+      "statement": "SSVI in total-variance space with log-forward-moneyness: w(k, t) = (theta_t/2) * {1 + rho*phi(theta_t)*k + sqrt((phi(theta_t)*k + rho)^2 + 1 - rho^2)}, phi(theta) = eta * theta^(-gamma) * (1+theta)^(gamma-1), sigma(k, t) = sqrt(w(k, t)/t); theta_t is ATM total variance.",
+      "rationale": "Variances add across the term structure and the no-arb conditions are stated in w-space; k = ln(K/F) with the forward makes the surface drift- and carry-consistent. Raw SVI (Gatheral 2004) stays the documented refit target if chains ever appear.",
+      "settles": [
+        "work in total variance w = sigma^2 * t, not vol space",
+        "moneyness is log-forward k = ln(K/F), not log-spot",
+        "raw SVI as documented refit extension only"
+      ],
+      "linked_features": [
+        "F-1",
+        "F-2"
+      ]
+    },
+    {
+      "id": "D2",
+      "kind": "rule",
+      "statement": "theta(t) from an OU variance law anchored to the vol index: v0 = (vol index level)^2, theta(tau) = sigma_inf^2*tau + (v0 - sigma_inf^2)*(1 - e^(-kappa*tau))/kappa, with frozen (kappa, sigma_inf) per underlying.",
+      "rationale": "VIX^2 is approximately the 30-day variance strike (Demeterfi et al. 1999); the OU form fixes the 30d-level-vs-2y-level error (dtheta(2y)/dv0 ~ 0.63 at kappa=1.5 vs ~0.08 at 30d, a ~3x overstatement of LEAPS vol sensitivity today) and makes the 30-day MTM smoothing window unnecessary.",
+      "settles": [
+        "30d vol-index level is not the 2y IV level",
+        "VIX_MTM_WINDOW smoothing is unnecessary on the ssvi path",
+        "theta is calendar-arb-free by construction"
+      ],
+      "linked_features": [
+        "F-1",
+        "F-4"
+      ]
+    },
+    {
+      "id": "D3",
+      "kind": "decision",
+      "statement": "Shape parameters (rho, eta, gamma) are frozen per ticker in consts.py from literature priors; no runtime calibration. Equity indices get rho < 0 (put skew); GLD gets rho ~ +0.15-ish (call skew, opposite sign). Zeliade-style refit is a documented later extension.",
+      "rationale": "No chain access; the smile contributes <= ~0.4% of mark at DITM k in calm regimes, so stylized priors suffice for marks and are pinned coarsely once against manually entered broker quotes.",
+      "settles": [
+        "per-ticker SsviParams in consts.py",
+        "GLD opposite-skew sign handled per ticker",
+        "no solver in the daily loop"
+      ],
+      "linked_features": [
+        "F-1",
+        "F-3",
+        "F-5"
+      ]
+    },
+    {
+      "id": "D4",
+      "kind": "decision",
+      "statement": "vol_model config flag with values 'flat' | 'ssvi'; 'flat' is the default and reproduces current scalar-iv logic bit-for-bit.",
+      "rationale": "Existing backtests must reproduce unchanged; the surface changes every LEAPS mark in a 20-year backtest, so SSVI is opt-in per run.",
+      "settles": [
+        "back-compat default",
+        "opt-in surface in backtest",
+        "test parameterization over both modes"
+      ],
+      "linked_features": [
+        "F-4"
+      ]
+    },
+    {
+      "id": "D5",
+      "kind": "rule",
+      "statement": "Greeks report sticky-moneyness delta as the headline: delta_sm = delta_BS - (vega/S) * d(sigma)/dk; sticky-strike (plain BSM) delta exposed via vol_convention. VolConvention enum: 'sticky_moneyness' (default) | 'sticky_strike'.",
+      "rationale": "The surface is parameterized in k, so sticky-moneyness is the internally consistent regime (Derman 1999); Cont & da Fonseca (2002) PCA supports level-dominated surface moves. Correction is small (~+0.004 at k = -0.69) but becomes explicit rather than implicit.",
+      "settles": [
+        "headline delta convention",
+        "vol_convention flag placement",
+        "BSM delta still available"
+      ],
+      "linked_features": [
+        "F-2",
+        "F-3"
+      ]
+    },
+    {
+      "id": "D6",
+      "kind": "rule",
+      "statement": "Headline vega is level-vega dC/dv0 (via dC/dtheta * dtheta/dv0), not local vega dC/dsigma(k, t).",
+      "rationale": "The mark moves with the vol index through theta; reporting local-vega at fixed shape is the ~3x overstatement in a single number. dtheta/dv0 = (1 - e^(-kappa*tau))/kappa.",
+      "settles": [
+        "vega semantics on the surface path",
+        "sensitivity reported per vol-index point"
+      ],
+      "linked_features": [
+        "F-2",
+        "F-3"
+      ]
+    },
+    {
+      "id": "D7",
+      "kind": "rule",
+      "statement": "Per-index unit conversion replaces the uniform /100 in data.py: percent-point indices (^VIX, ^GVZ, RVXCLS) divide by 100; basis-point indices (^MOVE) convert as sigma = D_eff * MOVE * 1e-4 with per-ETF effective duration (VGIT ~5.1, MUB ~5.5). VOL_INDEX_SCALAR multiplies downstream as today.",
+      "rationale": "MOVE is quoted in basis points (~60-160); MOVE/100 yields 60-140% 'IV', roughly 6-20x too high vs listed bond-ETF option IV (~4-8% decimal).",
+      "settles": [
+        "^MOVE conversion formula",
+        "conversion table location (consts.py)",
+        "VOL_INDEX_SCALAR unaffected"
+      ],
+      "linked_features": [
+        "F-0"
+      ]
+    },
+    {
+      "id": "D8",
+      "kind": "rule",
+      "statement": "r(T) is maturity-matched: short end anchored at ^IRX (13-week bill, <= 6m), ~2y anchored at DGS2 via fetch_2yr_treasury (data.py:258), linear in maturity between anchors, flat extrapolation. q is the trailing dividend yield grown forward to expiry.",
+      "rationale": "Both r appearances in BSM are rates to expiry; using the 13-week bill for a 2-year option is a term mismatch worth ~$0.92/share per 100bp of 13w-2y spread (rho ~ K*T), historically +/-100bp -> up to ~1.8% of mark. Par-vs-zero gap at 2y is a few bp, accepted.",
+      "settles": [
+        "which anchors feed r(T)",
+        "interpolation scheme",
+        "forward-q treatment"
+      ],
+      "linked_features": [
+        "F-0",
+        "F-3"
+      ]
+    },
+    {
+      "id": "D9",
+      "kind": "rule",
+      "statement": "Arbitrage enforcement is constructive, not fitted: calendar arb impossible by the OU form (theta nondecreasing for v0, sigma_inf^2 >= 0); butterfly asserted as theta*phi*(1+|rho|) < 4 and theta*phi^2*(1+|rho|) <= 4 at frozen params x worst-case theta (vol index 0.80); wings bounded by Lee (2004) moment-formula caps.",
+      "rationale": "No-arb becomes closed-form checks on frozen params, suitable as pytest fixtures, with no solver in the daily loop.",
+      "settles": [
+        "what the no-arb checker asserts",
+        "where worst-case theta comes from (vol index 0.80)",
+        "wing extrapolation cap at k = -0.7 with no quotes"
+      ],
+      "linked_features": [
+        "F-1"
+      ]
+    },
+    {
+      "id": "D10",
+      "kind": "decision",
+      "statement": "European exercise only; no American adjustment.",
+      "rationale": "r > q today makes the premium ~bp; Merton (1973): q = 0 => American = European exactly (GLD). ZIRP-era backtest understatement (~1-3% of mark pre-2022) is accepted and documented.",
+      "settles": [
+        "exercise style in scope",
+        "no CRR/Bjerksund machinery in v1"
+      ],
+      "linked_features": [
+        "F-2"
+      ]
+    }
+  ],
+  "invariants": [
+    {
+      "id": "INV-1",
+      "statement": "Same inputs give the same sigma(k, t): closed-form SSVI/OU evaluation, no solver, no randomness, no hidden state in any pricing path.",
+      "scope": "ATOMIC",
+      "kind": "determinism",
+      "verified_by": "Property tests on pure functions",
+      "check": "hypothesis: for random valid (spot, strike, tau, vol_index_level, params) tuples, implied_vol(args) == implied_vol(args) on repeated calls within 0 tolerance; vol_surface.py imports no random/solver modules.",
+      "linked_features": [
+        "F-1"
+      ]
+    },
+    {
+      "id": "INV-2",
+      "statement": "Butterfly no-arbitrage holds for the frozen per-ticker params at the historical worst-case theta (vol index 0.80): theta*phi*(1+|rho|) < 4 and theta*phi^2*(1+|rho|) <= 4 across the expiry grid.",
+      "scope": "ATOMIC",
+      "kind": "structural",
+      "verified_by": "pytest fixture (VIX 80 case)",
+      "check": "check_surface_arbitrage(params, max_vol_index_level=0.80) returns an all-pass SurfaceArbitrageReport for every ticker param set in consts.py, evaluated at vol index levels {0.10, 0.20, 0.40, 0.80}.",
+      "linked_features": [
+        "F-1"
+      ]
+    },
+    {
+      "id": "INV-3",
+      "statement": "Mark plausibility: parity bounds hold, max(0, S*e^(-q*t) - K*e^(-r(T)*t)) <= mark <= S*e^(-q*t), for every surface-priced contract.",
+      "scope": "ATOMIC",
+      "kind": "plausibility",
+      "verified_by": "pytest + harness vs broker quotes",
+      "check": "assert parity bounds on a grid including k = -0.69, t = 2y, calm (vol index 0.18) and crisis (vol index 0.80) v0, for VTI/IWM/GLD params; plus MOVE-derived VGIT/MUB converted IVs within listed-option range.",
+      "linked_features": [
+        "F-0",
+        "F-2",
+        "F-3"
+      ],
+      "bounds": "C in [max(0, S e^(-q t) - K e^(-r(T) t)), S e^(-q t)]: textbook no-arb bounds at k=-0.69, t=2y; MOVE-derived VGIT/MUB IV in the listed-option range ~4-8% decimal (D7/U6)."
+    },
+    {
+      "id": "INV-4",
+      "statement": "2y ATM IV plausibility: sigma_atm(2y) in [12%, 45%] across vol index levels [0.10, 0.80]; calm (index 0.18) lands ~16-21%, crisis (index 0.40) lands ~30-35%, not at the 30-day level.",
+      "scope": "ATOMIC",
+      "kind": "plausibility",
+      "verified_by": "pytest bounds + harness table",
+      "check": "atm_total_variance(0.18, tau=2.0) / 2.0 then sqrt lands in the calm band; vol index 0.40 lands in [0.28, 0.36]; whole range [0.10, 0.80] stays inside [0.12, 0.45].",
+      "linked_features": [
+        "F-1"
+      ],
+      "bounds": "sigma_atm(2y) in [12%, 45%] across vol-index levels [0.10, 0.80]; calm (index 0.18) ~16-21%, crisis (index 0.40) ~30-35%: derived from OU mean reversion (D2) and observed 2y SPX/gold term structure."
+    },
+    {
+      "id": "INV-5",
+      "statement": "With vol_model='flat' (the default), existing backtests reproduce current marks bit-for-bit: nav_series, weight_history, return_series identical to the pre-change baseline.",
+      "scope": "INTEGRATION",
+      "kind": "regression",
+      "verified_by": "Regression: run old vs new on fixture, compare",
+      "check": "run tests/test_backtest_integration.py and tests/test_gtt_*.py with the default flag against the pre-change baseline snapshot; assert exact equality (no tolerance) on nav_series and leaps_value sequences.",
+      "linked_features": [
+        "F-4"
+      ],
+      "parent_refs": [
+        "I13"
+      ],
+      "regression_of": "parent invariants"
+    },
+    {
+      "id": "INV-6",
+      "statement": "No lookahead: a day-t backtest mark on the ssvi path uses only vol-index, r(T), and q values dated <= t.",
+      "scope": "INTEGRATION",
+      "kind": "temporal",
+      "verified_by": "Backtest integration test",
+      "check": "run an ssvi-path backtest twice, once with the true vol-index series and once with all post-t vol-index values replaced by garbage; assert day-t leaps_value identical for every t.",
+      "linked_features": [
+        "F-4"
+      ],
+      "parent_refs": [
+        "T1"
+      ]
+    },
+    {
+      "id": "INV-7",
+      "statement": "Extrinsic-to-extrinsic acceptance: with correct carry inputs, model extrinsic lands within the observed half-spread for the majority of manually entered broker quotes; residual gap attributed (carry inputs, term structure, smile) in the report.",
+      "scope": "INTEGRATION",
+      "kind": "realism",
+      "verified_by": "One-time harness output, human-reviewed",
+      "check": "validation/validate_marks.py emits validation/report.md comparing model extrinsic vs (bid+ask)/2 extrinsic per quote with observed half-spread; acceptance is >= 2/3 of quotes inside the half-spread, human sign-off recorded.",
+      "linked_features": [
+        "F-3",
+        "F-5"
+      ]
+    }
+  ],
+  "unknowns": [
+    {
+      "id": "U1",
+      "type": "assumption",
+      "statement": "Stylized (rho, eta, gamma): marks at DITM k are off by <= ~0.4% calm, but reported greeks (vanna, charm, smile-corrected delta) inherit shape error in full; a wrong GLD skew sign misprices GLD DITM marks in the opposite direction.",
+      "severity": "high",
+      "closes_in": "F-5",
+      "impact_if_wrong": "Wrong-direction GLD marks and greeks; F-5 pins (rho, eta) coarsely against manually entered broker quotes.",
+      "status": "open",
+      "source": "plan",
+      "linked_features": [
+        "F-1",
+        "F-5"
+      ]
+    },
+    {
+      "id": "U2",
+      "type": "assumption",
+      "statement": "kappa, sigma_inf are estimated, not observed; kappa off by +/- 0.5/yr moves 2y ATM by ~1 vol pt (sigma_inf is well-identified).",
+      "severity": "medium",
+      "closes_in": "F-5",
+      "impact_if_wrong": "Term-structure level shift, mostly common across rolls; F-5 sensitivity table quantifies.",
+      "status": "open",
+      "source": "plan",
+      "linked_features": [
+        "F-1",
+        "F-5"
+      ]
+    },
+    {
+      "id": "U3",
+      "type": "assumption",
+      "statement": "European marks understate dealer prices by ~1-3% of mark in the ZIRP-era backtest window (q >= r), partially canceling across rolls.",
+      "severity": "low",
+      "closes_in": "later",
+      "impact_if_wrong": "Backtest LEAPS returns slightly conservative pre-2022; accepted and documented.",
+      "status": "open",
+      "source": "plan",
+      "linked_features": [
+        "F-2"
+      ]
+    },
+    {
+      "id": "U4",
+      "type": "assumption",
+      "statement": "Marks embed the variance risk premium (Carr & Wu 2009): backtest LEAPS returns show a VRP drag vs physical expectation.",
+      "severity": "low",
+      "closes_in": "later",
+      "impact_if_wrong": "None; this is the economic cost of owning vol, documented not fixed.",
+      "status": "open",
+      "source": "plan",
+      "linked_features": [
+        "F-5"
+      ]
+    },
+    {
+      "id": "U5",
+      "type": "assumption",
+      "statement": "DGS2 is a par-coupon yield; the par-vs-zero-coupon gap at 2y is a few bp in normal curves.",
+      "severity": "low",
+      "closes_in": "later",
+      "impact_if_wrong": "A few bp on the discount factor; negligible vs U2.",
+      "status": "open",
+      "source": "plan",
+      "linked_features": [
+        "F-0"
+      ]
+    },
+    {
+      "id": "U6",
+      "type": "assumption",
+      "statement": "Effective durations VGIT ~5.1, MUB ~5.5 for the MOVE conversion.",
+      "severity": "low",
+      "closes_in": "F-5",
+      "impact_if_wrong": "Bond-ETF IV marks off; no LEAPS exposure today. F-5 one-time check vs listed option IVs.",
+      "status": "open",
+      "source": "plan",
+      "linked_features": [
+        "F-0",
+        "F-5"
+      ]
+    }
+  ],
+  "features": [
+    {
+      "id": "F-0",
+      "name": "Carry wiring + MOVE conversion fix",
+      "description": "Per-index unit conversion in data.py (VolIndexSpec table replacing the uniform /100) and maturity-matched r(T) via ^IRX + fetch_2yr_treasury (DGS2), plus forward-q growth of the trailing yield. Constants for D_eff in consts.py.",
+      "phase": "0",
+      "kind": "build",
+      "layer": "python",
+      "status": "complete",
+      "component_ids": [
+        "data_feed"
+      ],
+      "depends_on": [],
+      "decision_refs": [
+        "D7",
+        "D8"
+      ],
+      "invariant_ids": [
+        "INV-3"
+      ],
+      "unknown_refs": [
+        "U5",
+        "U6"
+      ],
+      "linked_items": [
+        "T-VolIndexSpec",
+        "API-convert_vol_index_level",
+        "API-risk_free_at_expiry"
+      ],
+      "acceptance_criteria": [
+        {
+          "statement": "INV-3 partial; MOVE unit test (60->6% scale)",
+          "source": "plan"
+        },
+        {
+          "statement": "convert_vol_index_level(100.0, MOVE spec with D_eff=5.1) == 100 * 5.1e-4 = 0.051, inside the listed bond-ETF option IV range (~4-8% decimal)",
+          "source": "derived",
+          "plan_refs": [
+            "D7",
+            "U6"
+          ]
+        },
+        {
+          "statement": "risk_free_at_expiry(t=2.0) == treasury_2y_level exactly (maturity-matched at the 2y anchor); t=0.25 == bill_13w_level",
+          "source": "derived",
+          "plan_refs": [
+            "D8"
+          ]
+        }
+      ],
+      "test_requirements": [
+        {
+          "path": "tests/test_data.py",
+          "kind": "unit",
+          "layer": "python",
+          "covers": [],
+          "description": "convert_vol_index_level cases (percent, basis-points MOVE, scalar passthrough) + risk_free_at_expiry interpolation/flat extrapolation + empty-fetch fallbacks (empty DGS2 -> ^IRX flat, as today's graceful-empty pattern)."
+        },
+        {
+          "path": "tests/test_data.py",
+          "kind": "property",
+          "layer": "python",
+          "covers": [],
+          "description": "hypothesis: for MOVE in [40, 250] and D_eff in [4, 7], converted IV in [0.02, 0.15]; percent indices in [5, 90] convert to [0.05, 0.90]."
+        },
+        {
+          "path": "mutmut: src/finance/data.py",
+          "kind": "mutation",
+          "layer": "python",
+          "covers": [],
+          "description": "Mutation score >= 80% on the conversion + interpolation functions."
+        }
+      ],
+      "test_exemptions": [],
+      "performance": {
+        "kind": "complexity",
+        "budget": "O(1) per level; vectorized over the series in data.py",
+        "rationale": "Conversion applies to ~5,000 daily levels x few indices."
+      },
+      "edge_cases": [
+        {
+          "case": "MOVE raw level NaN mid-series",
+          "disposition": "ffill as today; empty fetch degrades to empty Series and callers fall back",
+          "decision_ref": "D7"
+        },
+        {
+          "case": "DGS2 fetch fails or returns empty",
+          "disposition": "risk_free_at_expiry falls back to the ^IRX anchor flat across maturities (graceful-empty pattern, data.py:258)",
+          "decision_ref": "D8"
+        }
+      ],
+      "clarification_needed": false,
+      "clarification_notes": null
+    },
+    {
+      "id": "F-1",
+      "name": "vol_surface.py core",
+      "description": "New pure module src/finance/vol_surface.py: SsviParams frozen dataclass, atm_total_variance (OU theta curve), ssvi_total_variance, surface_implied_vol, check_surface_arbitrage (butterfly conditions + Lee wing caps). Per-ticker SsviParams in consts.py. No pandas, no I/O.",
+      "phase": "1",
+      "kind": "build",
+      "layer": "python",
+      "status": "complete",
+      "component_ids": [
+        "vol_surface"
+      ],
+      "depends_on": [
+        "F-0"
+      ],
+      "decision_refs": [
+        "D1",
+        "D2",
+        "D3",
+        "D9"
+      ],
+      "invariant_ids": [
+        "INV-1",
+        "INV-2",
+        "INV-4"
+      ],
+      "unknown_refs": [
+        "U1",
+        "U2"
+      ],
+      "linked_items": [
+        "T-SsviParams",
+        "T-SurfaceArbitrageReport",
+        "API-atm_total_variance",
+        "API-ssvi_total_variance",
+        "API-surface_implied_vol",
+        "API-check_surface_arbitrage"
+      ],
+      "acceptance_criteria": [
+        {
+          "statement": "INV-1, INV-2, INV-4",
+          "source": "plan"
+        },
+        {
+          "statement": "atm_total_variance(vol_index=0.18, tau=2.0, kappa=1.5, sigma_inf=0.18) gives a 2y ATM IV in the calm band [16%, 21%]; vol_index=0.40 gives ~[28%, 36%] (mean reversion damps crisis)",
+          "source": "derived",
+          "plan_refs": [
+            "D2",
+            "INV-4"
+          ]
+        },
+        {
+          "statement": "check_surface_arbitrage passes for every per-ticker param set at vol index levels up to 0.80 and reports Lee wing slopes against the cap",
+          "source": "derived",
+          "plan_refs": [
+            "D9",
+            "INV-2"
+          ]
+        },
+        {
+          "statement": "GLD params carry rho > 0 (call skew) and VTI/IWM rho < 0 (put skew); a wrong-sign GLD wing slope is caught by the report",
+          "source": "derived",
+          "plan_refs": [
+            "D3"
+          ]
+        }
+      ],
+      "test_requirements": [
+        {
+          "path": "tests/test_vol_surface.py",
+          "kind": "unit",
+          "layer": "python",
+          "covers": [
+            "INV-2",
+            "INV-4"
+          ],
+          "description": "Hand-computed theta/w/sigma cases; ATM-band spot checks at vol index 0.18 and 0.40; butterfly-condition pass/fail matrix; Lee wing-cap reporting."
+        },
+        {
+          "path": "tests/test_vol_surface.py",
+          "kind": "property",
+          "layer": "python",
+          "covers": [
+            "INV-1"
+          ],
+          "description": "hypothesis: determinism (repeat-call equality), w(k, theta) > 0 for theta > 0, sigma monotone response to vol_index_level, calendar arb (theta nondecreasing in tau)."
+        },
+        {
+          "path": "mutmut: src/finance/vol_surface.py",
+          "kind": "mutation",
+          "layer": "python",
+          "covers": [],
+          "description": "Mutation score >= 80%; the closed-form math is exactly where mutants are cheapest to judge."
+        }
+      ],
+      "test_exemptions": [],
+      "performance": {
+        "kind": "complexity",
+        "budget": "O(1) per (k, tau) evaluation - closed form, no solver",
+        "rationale": "20-year daily backtest: ~5,000 days x 6 tickers x <= 2 contracts must not change cost regime vs the flat path."
+      },
+      "edge_cases": [
+        {
+          "case": "time_to_expiry <= 0 (expired or same-day evaluation)",
+          "disposition": "floored at TIME_FLOOR before theta/SSVI evaluation, matching the existing bs_* convention",
+          "decision_ref": "D1"
+        },
+        {
+          "case": "vol_index_level <= 0",
+          "disposition": "v0 = 0; theta = sigma_inf^2*(tau - (1 - e^(-kappa*tau))/kappa) >= 0, still calendar-monotone",
+          "decision_ref": "D2"
+        },
+        {
+          "case": "butterfly violation at extreme theta (beyond the 0.80 worst case)",
+          "disposition": "SurfaceArbitrageReport flags it; caller decides (no silent clamping)",
+          "decision_ref": "D9"
+        }
+      ],
+      "clarification_needed": false,
+      "clarification_notes": null
+    },
+    {
+      "id": "F-2",
+      "name": "Surface-aware greeks (changed contracts)",
+      "description": "compute_contract_greeks and compute_portfolio_greeks gain optional surface inputs (params, vol_index_level, vol_convention); ContractGreeks gains nullable delta_sticky_strike and level_vega. params=None preserves the flat scalar path bit-for-bit. Pricing needs no new contract: callers pass sigma(k, t) from vol_surface into the unchanged price_leaps_contract iv argument.",
+      "phase": "2",
+      "kind": "build",
+      "layer": "python",
+      "status": "planned",
+      "component_ids": [
+        "greeks",
+        "pricing"
+      ],
+      "depends_on": [
+        "F-1"
+      ],
+      "decision_refs": [
+        "D5",
+        "D6",
+        "D10"
+      ],
+      "invariant_ids": [
+        "INV-3"
+      ],
+      "unknown_refs": [
+        "U3"
+      ],
+      "linked_items": [
+        "T-ContractGreeks",
+        "T-VolConvention",
+        "API-compute_contract_greeks",
+        "API-compute_portfolio_greeks"
+      ],
+      "acceptance_criteria": [
+        {
+          "statement": "INV-3",
+          "source": "plan"
+        },
+        {
+          "statement": "level_vega == vega * (1 - e^(-kappa*tau))/kappa within 1e-9 at kappa=1.5, tau=2 (the ~0.63 damping vs local ATM vega); delta_sm = delta_BS - (vega/S)*dsigma/dk with sign flipping with rho",
+          "source": "derived",
+          "plan_refs": [
+            "D6",
+            "D5"
+          ]
+        },
+        {
+          "statement": "params=None path returns ContractGreeks identical (bit-for-bit) to the pre-change flat implementation; existing tests/test_greeks.py pass unchanged",
+          "source": "derived",
+          "plan_refs": [
+            "D5"
+          ]
+        }
+      ],
+      "test_requirements": [
+        {
+          "path": "tests/test_greeks.py",
+          "kind": "unit",
+          "layer": "python",
+          "covers": [
+            "INV-3"
+          ],
+          "description": "Surface greeks vs hand-computed delta_sm/level_vega at k = -0.69; parity-bounded marks; flat-path regression against current outputs; GLD sign-flipped dsigma/dk."
+        },
+        {
+          "path": "tests/test_greeks.py",
+          "kind": "property",
+          "layer": "python",
+          "covers": [
+            "INV-3"
+          ],
+          "description": "hypothesis: mark within parity bounds for random valid (spot, strike, tau, vol_index); delta in (0, 1) both conventions."
+        },
+        {
+          "path": "mutmut: src/finance/greeks.py",
+          "kind": "mutation",
+          "layer": "python",
+          "covers": [],
+          "description": "Mutation score >= 80% on the surface-greek additions."
+        }
+      ],
+      "test_exemptions": [],
+      "performance": {
+        "kind": "complexity",
+        "budget": "O(1) per contract - one SSVI evaluation + closed-form greeks",
+        "rationale": "Greeks must not introduce a solver or grid into the live path."
+      },
+      "edge_cases": [
+        {
+          "case": "params set but vol_index_level missing (or vice versa)",
+          "disposition": "ValueError listing the missing surface input",
+          "decision_ref": "D5"
+        },
+        {
+          "case": "k = 0 (ATM evaluation)",
+          "disposition": "rho*phi*k term vanishes; w = theta, sigma = sqrt(theta/t) - covered by unit grid",
+          "decision_ref": "D1"
+        }
+      ],
+      "clarification_needed": false,
+      "clarification_notes": null
+    },
+    {
+      "id": "F-3",
+      "name": "Live portfolio path on the surface (priority)",
+      "description": "portfolio_manager.py consumes the surface: per-ticker SsviParams + vol index levels feed compute_portfolio_greeks and the volatility report; r(T) + forward q from F-0 feed marks. Scalar-iv fallback preserved for cold starts. manual_leaps_review.py dry-run extended to print per-contract sigma(k, t), marks, and level-vega.",
+      "phase": "3",
+      "kind": "build",
+      "layer": "python",
+      "status": "planned",
+      "component_ids": [
+        "live_path",
+        "greeks"
+      ],
+      "depends_on": [
+        "F-2"
+      ],
+      "decision_refs": [
+        "D3",
+        "D5",
+        "D6",
+        "D8"
+      ],
+      "invariant_ids": [
+        "INV-3",
+        "INV-7"
+      ],
+      "unknown_refs": [],
+      "linked_items": [
+        "API-compute_portfolio_greeks",
+        "API-surface_implied_vol"
+      ],
+      "acceptance_criteria": [
+        {
+          "statement": "INV-7 dry-run on current quotes",
+          "source": "plan"
+        },
+        {
+          "statement": "examples/portfolio_manage/manual_leaps_review.py dry-run prints per-contract sigma(k, t), marks, headline sticky-moneyness delta, and level-vega for VTI/IWM/GLD from fixture inputs (no network)",
+          "source": "derived",
+          "plan_refs": [
+            "D5",
+            "D6"
+          ]
+        },
+        {
+          "statement": "LivePortfolio with no surface config (params absent) produces identical NAV/greeks output to today's scalar path",
+          "source": "derived",
+          "plan_refs": [
+            "D3"
+          ]
+        }
+      ],
+      "test_requirements": [
+        {
+          "path": "tests/test_portfolio_manager.py",
+          "kind": "unit",
+          "layer": "python",
+          "covers": [
+            "INV-3"
+          ],
+          "description": "Portfolio greeks route per contract.ticker to per-ticker params + vol index; missing-ticker ValueError lists all missing tickers (parent AC-008 behavior preserved)."
+        },
+        {
+          "path": "tests/test_examples_smoke.py",
+          "kind": "integration",
+          "layer": "python",
+          "covers": [
+            "INV-3",
+            "INV-7"
+          ],
+          "description": "manual_leaps_review.py smoke run on fixtures; output table sanity (sigma in band, marks parity-bounded, level-vega < local vega)."
+        }
+      ],
+      "test_exemptions": [
+        {
+          "kind": "mutation",
+          "rationale": "portfolio_manager.py is orchestration over pure, mutated modules (greeks, vol_surface); mutation budget targets the pure math."
+        }
+      ],
+      "performance": {
+        "kind": "complexity",
+        "budget": "O(n_contracts) per snapshot",
+        "rationale": "Weekly live snapshot: cost is irrelevant, keep it closed-form anyway."
+      },
+      "edge_cases": [
+        {
+          "case": "ticker present in spot but absent from surface config",
+          "disposition": "falls back to scalar iv if provided; else ValueError naming the ticker (fail loud, not silently flat)",
+          "decision_ref": "D3"
+        }
+      ],
+      "clarification_needed": false,
+      "clarification_notes": null
+    },
+    {
+      "id": "F-4",
+      "name": "Backtest wiring behind the vol_model flag (secondary)",
+      "description": "_backtest_steps.py: vol_model flag on BacktestContext ('flat' default = existing max(raw_vix, ctx.iv) + VIX_MTM_WINDOW logic untouched; 'ssvi' = per-day theta from the vol-index series replacing mtm_iv_series / iv_series floors). run_leaps_simulation iv_series parameterization switches accordingly.",
+      "phase": "4",
+      "kind": "build",
+      "layer": "python",
+      "status": "planned",
+      "component_ids": [
+        "backtest",
+        "pricing"
+      ],
+      "depends_on": [
+        "F-1"
+      ],
+      "decision_refs": [
+        "D2",
+        "D4"
+      ],
+      "invariant_ids": [
+        "INV-5",
+        "INV-6"
+      ],
+      "unknown_refs": [
+        "U2"
+      ],
+      "linked_items": [
+        "T-VolModel"
+      ],
+      "acceptance_criteria": [
+        {
+          "statement": "INV-5, INV-6",
+          "source": "plan"
+        },
+        {
+          "statement": "with the default flat flag, tests/test_backtest_integration.py + tests/test_gtt_*.py reproduce pre-change nav_series bit-for-bit (exact equality, no tolerance)",
+          "source": "derived",
+          "plan_refs": [
+            "D4",
+            "INV-5"
+          ]
+        },
+        {
+          "statement": "on the ssvi path, mtm smoothing window (VIX_MTM_WINDOW) is bypassed - per-day theta comes straight from the vol-index series (mean reversion damps it)",
+          "source": "derived",
+          "plan_refs": [
+            "D2"
+          ]
+        }
+      ],
+      "test_requirements": [
+        {
+          "path": "tests/test_backtest_integration.py",
+          "kind": "regression",
+          "layer": "python",
+          "covers": [
+            "INV-5"
+          ],
+          "description": "Default-flag run vs pre-change baseline snapshot: nav_series, weight_history, leaps_value sequences exactly equal; both-flag parameterized fixtures."
+        },
+        {
+          "path": "tests/test_backtest_integration.py",
+          "kind": "integration",
+          "layer": "python",
+          "covers": [
+            "INV-6"
+          ],
+          "description": "No-lookahead: corrupt all future vol-index values; day-t marks unchanged on the ssvi path."
+        }
+      ],
+      "test_exemptions": [
+        {
+          "kind": "mutation",
+          "rationale": "_backtest_steps.py wiring is integration- and regression-tested; mutation targets the pure modules (vol_surface, greeks, data conversion)."
+        },
+        {
+          "kind": "property",
+          "rationale": "no-lookahead is a temporal property verified by the integration corruption test; the pure pieces already carry hypothesis coverage."
+        }
+      ],
+      "performance": {
+        "kind": "complexity",
+        "budget": "O(n_live_contracts) per day, unchanged regime vs flat path",
+        "rationale": "Per-day theta replaces a rolling-mean lookup: no new per-day cost."
+      },
+      "edge_cases": [
+        {
+          "case": "vol_prices missing the underlying column on the ssvi path",
+          "disposition": "raise ValueError at context build (fail loud) - today's silent ctx.iv fallback stays on the flat path only",
+          "decision_ref": "D4"
+        }
+      ],
+      "clarification_needed": false,
+      "clarification_notes": null
+    },
+    {
+      "id": "F-5",
+      "name": "Validation harness: extrinsic-vs-spread, pinning, sensitivity",
+      "description": "validation/validate_marks.py + validation/manual_quotes.csv: model extrinsic vs quote extrinsic with observed half-spreads (Jaeckel-style IV inversion only if needed for diagnostics), (rho, eta) pinning against manually entered broker quotes, kappa/sigma_inf sensitivity table, MOVE D_eff one-time check vs listed bond-ETF option IVs. Emits validation/report.md for human review.",
+      "phase": "5",
+      "kind": "validation",
+      "layer": "python",
+      "status": "planned",
+      "component_ids": [
+        "validation"
+      ],
+      "depends_on": [
+        "F-3"
+      ],
+      "decision_refs": [
+        "D3",
+        "D5",
+        "D6"
+      ],
+      "invariant_ids": [
+        "INV-7"
+      ],
+      "unknown_refs": [
+        "U1",
+        "U2",
+        "U6"
+      ],
+      "linked_items": [],
+      "acceptance_criteria": [
+        {
+          "statement": "INV-7 report, human review",
+          "source": "plan"
+        },
+        {
+          "statement": "validation/report.md tables: per-quote model extrinsic vs bid/ask extrinsic with half-spread; >= 2/3 of quotes inside the half-spread with correct r(T)/q; kappa +/- 0.5 and sigma_inf sensitivity on the 2y ATM band; pinned (rho, eta) vs priors",
+          "source": "derived",
+          "plan_refs": [
+            "INV-7",
+            "U1",
+            "U2"
+          ]
+        },
+        {
+          "statement": "MOVE conversion check: converted VGIT/MUB IV within the listed-option range observed on the broker screen (U6 closes here)",
+          "source": "derived",
+          "plan_refs": [
+            "U6",
+            "D7"
+          ]
+        }
+      ],
+      "test_requirements": [
+        {
+          "path": "validation/validate_marks.py",
+          "kind": "dev_run",
+          "layer": "python",
+          "covers": [
+            "INV-7"
+          ],
+          "description": "Runs end-to-end against manual_quotes.csv (>= 10 quotes across VTI/IWM/GLD expiries); emits report.md; human signs off."
+        }
+      ],
+      "test_exemptions": [
+        {
+          "kind": "unit",
+          "rationale": "One-time human-reviewed report script, not library code; its inputs (quotes) are manual and non-reproducible."
+        },
+        {
+          "kind": "property",
+          "rationale": "No general law to property-test; acceptance is the human-reviewed report."
+        },
+        {
+          "kind": "mutation",
+          "rationale": "Report scripts are not shipped library code."
+        }
+      ],
+      "performance": {
+        "kind": "none",
+        "budget": "n/a",
+        "rationale": "One-time script, run manually."
+      },
+      "edge_cases": [
+        {
+          "case": "manual quote row missing bid or ask",
+          "disposition": "row excluded from the extrinsic comparison and noted in the report",
+          "decision_ref": "D3"
+        }
+      ],
+      "clarification_needed": false,
+      "clarification_notes": null
+    },
+    {
+      "id": "F-6",
+      "name": "Docs + handoff",
+      "description": "README vol-surface section, decision log in plans/vol_surface.md (sticky conventions, European-only, VRP note), full docstrings, uv run pytest / ruff / mypy clean.",
+      "phase": "6",
+      "kind": "release",
+      "layer": "python",
+      "status": "planned",
+      "component_ids": [],
+      "depends_on": [
+        "F-5"
+      ],
+      "decision_refs": [],
+      "invariant_ids": [],
+      "unknown_refs": [],
+      "linked_items": [],
+      "acceptance_criteria": [
+        {
+          "statement": "Plan accepted by user",
+          "source": "plan"
+        },
+        {
+          "statement": "uv run pytest, uv run ruff check ., uv run mypy src/ all clean; README documents the surface, the flat flag, and the sticky-moneyness/level-vega conventions",
+          "source": "derived",
+          "plan_refs": [
+            "D4",
+            "D5",
+            "D6"
+          ]
+        }
+      ],
+      "test_requirements": [],
+      "test_exemptions": [
+        {
+          "kind": "unit",
+          "rationale": "Docs-only phase; tests belong to F-0 through F-5."
+        },
+        {
+          "kind": "property",
+          "rationale": "Docs-only phase."
+        },
+        {
+          "kind": "mutation",
+          "rationale": "Docs-only phase."
+        }
+      ],
+      "performance": {
+        "kind": "none",
+        "budget": "n/a",
+        "rationale": "Documentation and lint gates."
+      },
+      "edge_cases": [],
+      "clarification_needed": false,
+      "clarification_notes": null
+    }
+  ],
+  "implementation_phases": [
+    {
+      "phase": "0",
+      "name": "Carry wiring + MOVE fix",
+      "description": "Per-index conversion + r(T) anchors + forward q in data.py and consts.py.",
+      "feature_ids": [
+        "F-0"
+      ]
+    },
+    {
+      "phase": "1",
+      "name": "vol_surface.py core",
+      "description": "SSVI parameterization, OU theta curve, implied vol, no-arb checker.",
+      "feature_ids": [
+        "F-1"
+      ]
+    },
+    {
+      "phase": "2",
+      "name": "Surface-aware pricing/greeks",
+      "description": "Changed greeks contracts; pricing consumes sigma(k, t) unchanged.",
+      "feature_ids": [
+        "F-2"
+      ]
+    },
+    {
+      "phase": "3",
+      "name": "Live portfolio path (priority)",
+      "description": "portfolio_manager.py consumes the surface; dry-run harness output.",
+      "feature_ids": [
+        "F-3"
+      ]
+    },
+    {
+      "phase": "4",
+      "name": "Backtest wiring (secondary)",
+      "description": "vol_model flag; per-day theta; back-compat regression.",
+      "feature_ids": [
+        "F-4"
+      ]
+    },
+    {
+      "phase": "5",
+      "name": "Validation",
+      "description": "Extrinsic-vs-spread harness, manual-quote pinning, sensitivity tables.",
+      "feature_ids": [
+        "F-5"
+      ]
+    },
+    {
+      "phase": "6",
+      "name": "Docs + handoff",
+      "description": "README, decision log, lint/type gates.",
+      "feature_ids": [
+        "F-6"
+      ]
+    }
+  ],
+  "plan_gaps": [
+    {
+      "description": "The plan names the SsviParams fields but does not fix numeric defaults for (rho, eta, gamma, kappa, sigma_inf) per ticker, nor the consts.py entry shape. The spec treats them as literature priors pending F-5 pinning (per D3/U1) and does not hard-code values in acceptance criteria.",
+      "affects": [
+        "D3",
+        "U1",
+        "F-1"
+      ],
+      "suggested_fix": "Add a Defaults subsection to plans/vol_surface.md listing per-ticker starting values (e.g. VTI/IWM: rho=-0.7, eta=1.1, gamma=0.42, kappa=1.5, sigma_inf=0.18; GLD: rho=+0.15, eta=0.9, gamma=0.42), explicitly marked F-5-pinnable."
+    },
+    {
+      "description": "Spec IDs D1..D10 / U1..U6 correspond to plan D-1..D-10 / U-1..U-6; the schema forbids hyphenated IDs. Mapping is mechanical, no semantic change.",
+      "affects": [
+        "D1",
+        "U1"
+      ],
+      "suggested_fix": "None - mechanical ID-format remap for schema compliance; plan IDs stay stable in plans/vol_surface.md."
+    }
+  ],
+  "library": {
+    "python_version": "3.13",
+    "rust": {
+      "enabled": false,
+      "edition": null,
+      "pyo3_version": null,
+      "build_tool": null
+    },
+    "build": {
+      "dev_install_cmd": "uv pip install -e .",
+      "requires_rust_toolchain": false
+    },
+    "types": [
+      {
+        "id": "T-SsviParams",
+        "name": "SsviParams",
+        "description": "Frozen per-underlying SSVI + OU parameter set. One instance per ticker in consts.py.",
+        "layer": "python",
+        "kind": "record",
+        "immutable": true,
+        "component_id": "vol_surface",
+        "fields": [
+          {
+            "name": "rho",
+            "type": "float",
+            "nullable": false,
+            "description": "Skew/rotation; |rho| < 1. Equity indices negative (put skew), GLD positive-ish (call skew).",
+            "source": "plan",
+            "plan_refs": [
+              "D3"
+            ]
+          },
+          {
+            "name": "eta",
+            "type": "float",
+            "nullable": false,
+            "description": "Smile steepness scale in phi(theta); eta > 0.",
+            "source": "plan",
+            "plan_refs": [
+              "D1"
+            ]
+          },
+          {
+            "name": "gamma",
+            "type": "float",
+            "nullable": false,
+            "description": "Steepness decay as theta grows; gamma in (0, 1] (empirical ~1/sqrt(t) skew decay).",
+            "source": "plan",
+            "plan_refs": [
+              "D1"
+            ]
+          },
+          {
+            "name": "kappa",
+            "type": "float",
+            "nullable": false,
+            "description": "OU mean-reversion rate of instantaneous variance; kappa > 0. Index-equity typical ~1-3 /yr.",
+            "source": "plan",
+            "plan_refs": [
+              "D2"
+            ]
+          },
+          {
+            "name": "sigma_inf",
+            "type": "float",
+            "nullable": false,
+            "description": "Long-run instantaneous vol (sigma_inf > 0); equity-index typical ~0.15-0.18.",
+            "source": "plan",
+            "plan_refs": [
+              "D2"
+            ]
+          }
+        ],
+        "source": "plan",
+        "plan_refs": [
+          "D1",
+          "D2",
+          "D3"
+        ],
+        "clarification_needed": false
+      },
+      {
+        "id": "T-VolModel",
+        "name": "VolModel",
+        "description": "IV sourcing mode for the backtest: 'flat' (existing scalar logic, default, bit-for-bit back-compat) or 'ssvi' (per-day theta from the vol-index series).",
+        "layer": "python",
+        "kind": "enum",
+        "immutable": true,
+        "component_id": "backtest",
+        "fields": [],
+        "source": "plan",
+        "plan_refs": [
+          "D4"
+        ],
+        "clarification_needed": false
+      },
+      {
+        "id": "T-VolIndexSpec",
+        "name": "VolIndexSpec",
+        "description": "Per-vol-index unit conversion spec replacing the uniform /100: quoted unit plus effective duration where applicable.",
+        "layer": "python",
+        "kind": "record",
+        "immutable": true,
+        "component_id": "data_feed",
+        "fields": [
+          {
+            "name": "unit",
+            "type": "str",
+            "nullable": false,
+            "description": "'percent_points' (^VIX, ^GVZ, RVXCLS: divide by 100) or 'basis_points' (^MOVE: multiply by 1e-4).",
+            "source": "derived",
+            "plan_refs": [
+              "D7"
+            ]
+          },
+          {
+            "name": "effective_duration",
+            "type": "float | None",
+            "nullable": true,
+            "description": "D_eff for basis-point indices (VGIT ~5.1, MUB ~5.5); None for percent-point indices.",
+            "source": "derived",
+            "plan_refs": [
+              "D7",
+              "U6"
+            ]
+          }
+        ],
+        "source": "derived",
+        "plan_refs": [
+          "D7"
+        ],
+        "clarification_needed": false
+      },
+      {
+        "id": "T-SurfaceArbitrageReport",
+        "name": "SurfaceArbitrageReport",
+        "description": "No-arbitrage diagnostic for one SsviParams set over a worst-case vol-index level and expiry grid: butterfly conditions, Lee wing slopes, calendar monotonicity.",
+        "layer": "python",
+        "kind": "record",
+        "immutable": true,
+        "component_id": "vol_surface",
+        "fields": [
+          {
+            "name": "butterfly_first_ok",
+            "type": "bool",
+            "nullable": false,
+            "description": "theta*phi*(1+|rho|) < 4 holds across the (vol-index level x expiry) grid.",
+            "source": "derived",
+            "plan_refs": [
+              "D9"
+            ]
+          },
+          {
+            "name": "butterfly_second_ok",
+            "type": "bool",
+            "nullable": false,
+            "description": "theta*phi^2*(1+|rho|) <= 4 holds across the grid.",
+            "source": "derived",
+            "plan_refs": [
+              "D9"
+            ]
+          },
+          {
+            "name": "lee_wing_slope_left",
+            "type": "float",
+            "nullable": false,
+            "description": "Max left-wing total-variance slope theta*phi*(1-rho)/2 over the grid, vs the Lee moment-formula cap.",
+            "source": "derived",
+            "plan_refs": [
+              "D9"
+            ]
+          },
+          {
+            "name": "lee_wing_slope_right",
+            "type": "float",
+            "nullable": false,
+            "description": "Max right-wing total-variance slope theta*phi*(1+rho)/2 over the grid, vs the cap.",
+            "source": "derived",
+            "plan_refs": [
+              "D9"
+            ]
+          },
+          {
+            "name": "calendar_monotone",
+            "type": "bool",
+            "nullable": false,
+            "description": "theta nondecreasing in tau across the grid (automatic by the OU form; asserted, not assumed).",
+            "source": "derived",
+            "plan_refs": [
+              "D2",
+              "D9"
+            ]
+          }
+        ],
+        "source": "derived",
+        "plan_refs": [
+          "D9"
+        ],
+        "clarification_needed": false
+      },
+      {
+        "id": "T-VolConvention",
+        "name": "VolConvention",
+        "description": "Delta convention on the surface path: 'sticky_moneyness' (headline, surface slides with the underlying) or 'sticky_strike' (plain BSM at quoted strikes).",
+        "layer": "python",
+        "kind": "enum",
+        "immutable": true,
+        "component_id": "greeks",
+        "fields": [],
+        "source": "derived",
+        "plan_refs": [
+          "D5"
+        ],
+        "clarification_needed": false
+      },
+      {
+        "id": "T-ContractGreeks",
+        "name": "ContractGreeks",
+        "description": "Per-contract greeks record, extended for the surface path: delta carries the headline convention (sticky-moneyness by default); new nullable sticky-strike delta and level-vega populated only when surface inputs are given.",
+        "layer": "python",
+        "kind": "record",
+        "immutable": true,
+        "component_id": "greeks",
+        "fields": [
+          {
+            "name": "delta_sticky_strike",
+            "type": "float | None",
+            "nullable": true,
+            "description": "Plain BSM delta at sigma(k, t); None on the flat path (delta field is the answer there).",
+            "source": "derived",
+            "plan_refs": [
+              "D5"
+            ]
+          },
+          {
+            "name": "level_vega",
+            "type": "float | None",
+            "nullable": true,
+            "description": "dC/dv0 = vega * (1 - e^(-kappa*tau))/kappa, sensitivity per vol-index variance point; None on the flat path.",
+            "source": "derived",
+            "plan_refs": [
+              "D6"
+            ]
+          }
+        ],
+        "change": {
+          "kind": "changed",
+          "was": "DS-007 ContractGreeks (plans/portfolio_management_spec.json): per-share + position-level BS greeks at scalar iv; delta was plain BSM."
+        },
+        "source": "derived",
+        "plan_refs": [
+          "D5",
+          "D6"
+        ],
+        "clarification_needed": false
+      }
+    ],
+    "api_contracts": [
+      {
+        "id": "API-atm_total_variance",
+        "name": "atm_total_variance",
+        "description": "ATM total variance theta(tau) under the OU variance law: theta = sigma_inf^2*tau + (v0 - sigma_inf^2)*(1 - e^(-kappa*tau))/kappa with v0 = vol_index_level^2. Calendar-arbitrage-free by construction (theta nondecreasing in tau for v0, sigma_inf^2 >= 0).",
+        "layer": "python",
+        "component_id": "vol_surface",
+        "pure": true,
+        "inputs": [
+          {
+            "name": "vol_index_level",
+            "type": "float",
+            "description": "Decimal annualized vol-index level (e.g. 0.18 for VIX 18)."
+          },
+          {
+            "name": "time_to_expiry_years",
+            "type": "float",
+            "description": "Time to expiry in years; floored at TIME_FLOOR."
+          },
+          {
+            "name": "params",
+            "type": "SsviParams",
+            "description": "Per-underlying parameter set."
+          }
+        ],
+        "outputs": [
+          {
+            "name": "theta",
+            "type": "float",
+            "description": "ATM total variance sigma_atm^2 * tau."
+          }
+        ],
+        "raises": [
+          "ValueError if params.kappa <= 0 or params.sigma_inf <= 0"
+        ],
+        "source": "derived",
+        "plan_refs": [
+          "D2",
+          "D9"
+        ],
+        "clarification_needed": false
+      },
+      {
+        "id": "API-ssvi_total_variance",
+        "name": "ssvi_total_variance",
+        "description": "SSVI total variance w(k, theta) = (theta/2)*{1 + rho*phi(theta)*k + sqrt((phi(theta)*k + rho)^2 + 1 - rho^2)}, phi(theta) = eta*theta^(-gamma)*(1+theta)^(gamma-1).",
+        "layer": "python",
+        "component_id": "vol_surface",
+        "pure": true,
+        "inputs": [
+          {
+            "name": "log_moneyness",
+            "type": "float",
+            "description": "k = ln(K/F) with forward F."
+          },
+          {
+            "name": "theta",
+            "type": "float",
+            "description": "ATM total variance from atm_total_variance."
+          },
+          {
+            "name": "params",
+            "type": "SsviParams",
+            "description": "Per-underlying parameter set."
+          }
+        ],
+        "outputs": [
+          {
+            "name": "total_variance",
+            "type": "float",
+            "description": "w(k, theta); strictly positive for theta > 0."
+          }
+        ],
+        "raises": [
+          "ValueError if theta <= 0"
+        ],
+        "source": "derived",
+        "plan_refs": [
+          "D1"
+        ],
+        "clarification_needed": false
+      },
+      {
+        "id": "API-surface_implied_vol",
+        "name": "surface_implied_vol",
+        "description": "Closed-form implied vol for a strike/expiry: forward F = spot*exp((r - q)*t), k = ln(strike/F), sigma = sqrt(w(k, theta)/t) composing atm_total_variance + ssvi_total_variance.",
+        "layer": "python",
+        "component_id": "vol_surface",
+        "pure": true,
+        "inputs": [
+          {
+            "name": "spot",
+            "type": "float",
+            "description": "Current spot."
+          },
+          {
+            "name": "strike",
+            "type": "float",
+            "description": "Option strike (LEAPS_STRIKE_RATIO * spot at purchase)."
+          },
+          {
+            "name": "time_to_expiry_years",
+            "type": "float",
+            "description": "Time to expiry in years; floored at TIME_FLOOR."
+          },
+          {
+            "name": "vol_index_level",
+            "type": "float",
+            "description": "Decimal annualized vol-index level."
+          },
+          {
+            "name": "dividend_yield",
+            "type": "float",
+            "description": "Forward dividend yield q; default DEFAULT_DIVIDEND_YIELD."
+          },
+          {
+            "name": "risk_free_rate",
+            "type": "float",
+            "description": "Maturity-matched r(T) from risk_free_at_expiry; default DEFAULT_RISK_FREE_RATE."
+          },
+          {
+            "name": "params",
+            "type": "SsviParams",
+            "description": "Per-underlying parameter set."
+          }
+        ],
+        "outputs": [
+          {
+            "name": "implied_vol",
+            "type": "float",
+            "description": "sigma(k, t) decimal annualized."
+          }
+        ],
+        "raises": [
+          "ValueError if spot or strike <= 0"
+        ],
+        "source": "derived",
+        "plan_refs": [
+          "D1",
+          "D2",
+          "D8"
+        ],
+        "clarification_needed": false
+      },
+      {
+        "id": "API-check_surface_arbitrage",
+        "name": "check_surface_arbitrage",
+        "description": "Constructive no-arb check for one SsviParams set: butterfly conditions theta*phi*(1+|rho|) < 4 and theta*phi^2*(1+|rho|) <= 4 over a (vol-index level x expiry) grid up to max_vol_index_level; Lee (2004) moment-formula wing slopes reported against the cap; calendar monotonicity asserted.",
+        "layer": "python",
+        "component_id": "vol_surface",
+        "pure": true,
+        "inputs": [
+          {
+            "name": "params",
+            "type": "SsviParams",
+            "description": "Per-underlying parameter set."
+          },
+          {
+            "name": "max_vol_index_level",
+            "type": "float",
+            "description": "Worst-case decimal vol-index level for the grid; default 0.80 (VIX 80)."
+          },
+          {
+            "name": "expiry_grid_years",
+            "type": "Sequence[float]",
+            "description": "Expiry grid in years; default (0.083, 0.25, 0.5, 1.0, 2.0)."
+          }
+        ],
+        "outputs": [
+          {
+            "name": "report",
+            "type": "SurfaceArbitrageReport",
+            "description": "Diagnostic report; caller decides on failure (no silent clamping)."
+          }
+        ],
+        "raises": [
+          "ValueError if max_vol_index_level <= 0 or any expiry <= 0"
+        ],
+        "source": "derived",
+        "plan_refs": [
+          "D9",
+          "INV-2"
+        ],
+        "clarification_needed": false
+      },
+      {
+        "id": "API-convert_vol_index_level",
+        "name": "convert_vol_index_level",
+        "description": "Quoted vol-index level to decimal annualized IV per VolIndexSpec: percent_points -> /100; basis_points (MOVE) -> D_eff * level * 1e-4. VOL_INDEX_SCALAR multiplies downstream as today.",
+        "layer": "python",
+        "component_id": "data_feed",
+        "pure": true,
+        "inputs": [
+          {
+            "name": "raw_level",
+            "type": "float",
+            "description": "Quoted index level in its native units (e.g. MOVE 100)."
+          },
+          {
+            "name": "spec",
+            "type": "VolIndexSpec",
+            "description": "Unit + effective-duration spec for this index."
+          }
+        ],
+        "outputs": [
+          {
+            "name": "decimal_iv",
+            "type": "float",
+            "description": "Decimal annualized IV (e.g. MOVE 100, D_eff 5.1 -> 0.051)."
+          }
+        ],
+        "raises": [
+          "ValueError if spec.unit is not a known unit, or basis_points without effective_duration"
+        ],
+        "source": "derived",
+        "plan_refs": [
+          "D7"
+        ],
+        "clarification_needed": false
+      },
+      {
+        "id": "API-risk_free_at_expiry",
+        "name": "risk_free_at_expiry",
+        "description": "Maturity-matched continuously-compounded r(T) proxy: linear interpolation in maturity between the 0.25y ^IRX anchor and the 2.0y DGS2 anchor (fetch_2yr_treasury, data.py:258), flat extrapolation outside. Par-vs-zero gap at 2y accepted (U5).",
+        "layer": "python",
+        "component_id": "data_feed",
+        "pure": true,
+        "inputs": [
+          {
+            "name": "bill_13w_level",
+            "type": "float",
+            "description": "^IRX 13-week bill level, decimal."
+          },
+          {
+            "name": "treasury_2y_level",
+            "type": "float",
+            "description": "DGS2 level, decimal."
+          },
+          {
+            "name": "time_to_expiry_years",
+            "type": "float",
+            "description": "Time to expiry in years; floored at TIME_FLOOR."
+          }
+        ],
+        "outputs": [
+          {
+            "name": "rate",
+            "type": "float",
+            "description": "r(T) for discounting and forward-carry to expiry."
+          }
+        ],
+        "raises": [],
+        "source": "derived",
+        "plan_refs": [
+          "D8",
+          "U5"
+        ],
+        "clarification_needed": false
+      },
+      {
+        "id": "API-compute_contract_greeks",
+        "name": "compute_contract_greeks",
+        "description": "Extended contract: adds optional surface inputs params (SsviParams | None = None), vol_index_level (float | None), vol_convention (VolConvention = sticky_moneyness). params=None -> flat path identical to today. Surface path: iv sourced via surface_implied_vol; delta carries the headline convention; delta_sticky_strike and level_vega populated.",
+        "layer": "python",
+        "component_id": "greeks",
+        "pure": true,
+        "inputs": [
+          {
+            "name": "contract",
+            "type": "LeapsContract",
+            "description": "The LEAPS contract to evaluate."
+          },
+          {
+            "name": "spot",
+            "type": "float",
+            "description": "Current spot of the underlying."
+          },
+          {
+            "name": "as_of_date",
+            "type": "pd.Timestamp",
+            "description": "Evaluation date."
+          },
+          {
+            "name": "risk_free_rate",
+            "type": "float",
+            "description": "r(T) from risk_free_at_expiry; default 0.0 as today."
+          },
+          {
+            "name": "leaps_scale",
+            "type": "float",
+            "description": "Surviving fraction in (0, 1]; default 1.0."
+          },
+          {
+            "name": "iv",
+            "type": "float | None",
+            "description": "Scalar IV for the flat path; None when surface inputs are given."
+          },
+          {
+            "name": "params",
+            "type": "SsviParams | None",
+            "description": "Per-underlying surface parameters; None -> flat path."
+          },
+          {
+            "name": "vol_index_level",
+            "type": "float | None",
+            "description": "Decimal vol-index level for the surface path."
+          },
+          {
+            "name": "vol_convention",
+            "type": "VolConvention",
+            "description": "Delta convention on the surface path; default sticky_moneyness."
+          }
+        ],
+        "outputs": [
+          {
+            "name": "greeks",
+            "type": "ContractGreeks",
+            "description": "Per-share + position-level greeks; delta = headline convention; delta_sticky_strike/level_vega set on the surface path."
+          }
+        ],
+        "raises": [
+          "ValueError if params is set but vol_index_level is None (or vice versa)",
+          "ValueError if neither iv nor (params, vol_index_level) is provided"
+        ],
+        "change": {
+          "kind": "changed",
+          "was": "compute_contract_greeks(contract, spot, iv, as_of_date, risk_free_rate=0.0, leaps_scale=1.0) -> ContractGreeks (AC-007, plans/portfolio_management_spec.json)"
+        },
+        "source": "derived",
+        "plan_refs": [
+          "D5",
+          "D6"
+        ],
+        "clarification_needed": false
+      },
+      {
+        "id": "API-compute_portfolio_greeks",
+        "name": "compute_portfolio_greeks",
+        "description": "Extended contract: adds optional per-ticker params: dict[str, SsviParams] and vol_index: dict[str, float]; routes per contract.ticker as today. Scalar iv-dict path unchanged; missing surface ticker -> scalar fallback if iv provided, else ValueError listing all missing tickers.",
+        "layer": "python",
+        "component_id": "greeks",
+        "pure": true,
+        "inputs": [
+          {
+            "name": "portfolio",
+            "type": "LivePortfolio",
+            "description": "Portfolio with leaps_contracts to evaluate."
+          },
+          {
+            "name": "spot",
+            "type": "dict[str, float]",
+            "description": "Spot per underlying, keyed by ticker."
+          },
+          {
+            "name": "iv",
+            "type": "dict[str, float]",
+            "description": "Scalar IV per underlying (flat path), keyed by ticker."
+          },
+          {
+            "name": "risk_free_rate",
+            "type": "float",
+            "description": "r(T); default 0.0 as today."
+          },
+          {
+            "name": "params",
+            "type": "dict[str, SsviParams]",
+            "description": "Per-ticker surface parameters (surface path)."
+          },
+          {
+            "name": "vol_index",
+            "type": "dict[str, float]",
+            "description": "Per-ticker decimal vol-index levels (surface path)."
+          },
+          {
+            "name": "vol_convention",
+            "type": "VolConvention",
+            "description": "Delta convention; default sticky_moneyness."
+          }
+        ],
+        "outputs": [
+          {
+            "name": "greeks",
+            "type": "PortfolioGreeks",
+            "description": "Per-contract details + net aggregates."
+          }
+        ],
+        "raises": [
+          "ValueError if one or more contract tickers are missing from spot and iv/params (message lists every missing ticker)"
+        ],
+        "change": {
+          "kind": "changed",
+          "was": "compute_portfolio_greeks(portfolio, spot: dict[str, float], iv: dict[str, float], risk_free_rate=0.0) -> PortfolioGreeks (AC-008, plans/portfolio_management_spec.json)"
+        },
+        "source": "derived",
+        "plan_refs": [
+          "D3",
+          "D5",
+          "D6"
+        ],
+        "clarification_needed": false
+      }
+    ]
+  },
+  "references": [
+    {
+      "id": "REF-1",
+      "kind": "paper",
+      "title": "Arbitrage-Free SVI Volatility Surfaces",
+      "location": "Gatheral, J. & Jacquier, A. (2014), Quantitative Finance 14(7), 1259-1271",
+      "role": "oracle",
+      "deviations": [
+        "D3"
+      ]
+    },
+    {
+      "id": "REF-2",
+      "kind": "paper",
+      "title": "A Parsimonious Parameterization of the Implied Volatility Surface",
+      "location": "Gatheral, J. (2004), working paper (presented at ETBS)",
+      "role": "prior_art",
+      "deviations": []
+    },
+    {
+      "id": "REF-3",
+      "kind": "paper",
+      "title": "The Moment Formula for Implied Volatility at Arbitrary Strikes",
+      "location": "Lee, R. (2004), Mathematical Finance 14(3), 469-473",
+      "role": "oracle",
+      "deviations": []
+    },
+    {
+      "id": "REF-4",
+      "kind": "paper",
+      "title": "Regimes of Volatility",
+      "location": "Derman, E. (1999), Risk 12(4)",
+      "role": "prior_art",
+      "deviations": []
+    },
+    {
+      "id": "REF-5",
+      "kind": "paper",
+      "title": "Dynamics of Implied Volatility Surfaces",
+      "location": "Cont, R. & da Fonseca, J. (2002), Quantitative Finance 2(1), 45-60",
+      "role": "prior_art",
+      "deviations": []
+    },
+    {
+      "id": "REF-6",
+      "kind": "paper",
+      "title": "More Than You Ever Wanted to Know About Volatility Swaps",
+      "location": "Demeterfi, K., Derman, E., Kamal, M. & Zou, J. (1999), Goldman Sachs Quantitative Strategies Research Notes",
+      "role": "prior_art",
+      "deviations": []
+    },
+    {
+      "id": "REF-7",
+      "kind": "paper",
+      "title": "Variance Risk Premia",
+      "location": "Carr, P. & Wu, L. (2009), Review of Financial Studies 22(3), 1311-1341",
+      "role": "prior_art",
+      "deviations": []
+    },
+    {
+      "id": "REF-8",
+      "kind": "paper",
+      "title": "The Large-Maturity Implied Volatility Smile for the Heston Model",
+      "location": "Forde, M. & Jacquier, A. (2011), Finance and Stochastics 15(4), 755-784",
+      "role": "prior_art",
+      "deviations": []
+    },
+    {
+      "id": "REF-9",
+      "kind": "paper",
+      "title": "Managing Smile Risk (SABR)",
+      "location": "Hagan, P., Kumar, D., Lesniewski, A. & Woodward, D. (2002), Wilmott Magazine",
+      "role": "prior_art",
+      "deviations": []
+    },
+    {
+      "id": "REF-10",
+      "kind": "paper",
+      "title": "The Volatility Surface: A Practitioner's Guide",
+      "location": "Gatheral, J. (2006), John Wiley & Sons",
+      "role": "prior_art",
+      "deviations": []
+    },
+    {
+      "id": "REF-11",
+      "kind": "paper",
+      "title": "Stochastic Volatility Modeling",
+      "location": "Bergomi, L. (2016), CRC Press",
+      "role": "prior_art",
+      "deviations": []
+    },
+    {
+      "id": "REF-12",
+      "kind": "paper",
+      "title": "Theory of Rational Option Pricing",
+      "location": "Merton, R. (1973), Bell Journal of Economics and Management Science 4(1), 141-183",
+      "role": "prior_art",
+      "deviations": []
+    },
+    {
+      "id": "REF-13",
+      "kind": "paper",
+      "title": "A Quasi-Explicit Calibration of the SVI Model",
+      "location": "Zeliade Systems (2009), Zeliade Quantitative Research",
+      "role": "prior_art",
+      "deviations": []
+    },
+    {
+      "id": "REF-14",
+      "kind": "paper",
+      "title": "Let's Be Rational",
+      "location": "Jaeckel, P. (2015), Wilmott Magazine 2015(68)",
+      "role": "prior_art",
+      "deviations": []
+    },
+    {
+      "id": "REF-15",
+      "kind": "paper",
+      "title": "Pricing Under Rough Volatility",
+      "location": "Bayer, C., Friz, P. & Gatheral, J. (2016), Quantitative Finance 16(6), 887-904",
+      "role": "prior_art",
+      "deviations": []
+    }
+  ]
+}

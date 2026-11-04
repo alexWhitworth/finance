@@ -1,0 +1,121 @@
+F-0 JUDGE VERDICT — Round 1 (vol-surface spec)
+=============================================
+Feature: F-0 — Carry wiring + MOVE conversion fix
+Commit reviewed: 6ce67f056d44d5c1f55a2b28919b62b0b6aa6258 ("F0, F1 vol surface pending judge")
+Spec: plans/vol_surface_spec.json (F-0 status pending_judge; deps [] — valid root)
+
+VERDICT: FAIL
+
+CRITERIA
+--------
+1. INV-3 partial; MOVE unit test (60 -> ~6% scale): MET
+   - tests/test_data.py::test_convert_move_60_to_6pct_scale asserts 0.0306
+   - Independent check: convert_vol_index_level(60.0, D_eff=5.1) = 0.0306 (60*5.1e-4);
+     MOVE-derived IV within listed bond-ETF range (100 -> 0.051 in [0.04, 0.08]: MET,
+     tests/test_data.py::test_convert_move_100_in_listed_range).
+2. convert_vol_index_level(100.0, MOVE D_eff=5.1) == 0.051: MET
+   - Reproduced independently: 0.051 exactly; property test covers MOVE [40,250] x
+     D_eff [4,7]. Spec lower bound 0.02 unreachable (min 40*4e-4 = 0.016); tests assert
+     the tight achievable band [0.016, 0.18] with an explanatory NOTE (test_data.py:715).
+     Bound relaxation is documented, not silent.
+3. risk_free_at_expiry(2.0) == treasury_2y_level exactly; t=0.25 == bill_13w_level: MET
+   - Reproduced independently: 0.043 and 0.05 exactly; covered by
+     tests/test_data.py::test_risk_free_anchors_exact, plus interpolation midpoint
+     (t=1.125 -> 0.05), flat extrapolation both sides, TIME_FLOOR flooring.
+
+TEST REQUIREMENTS
+-----------------
+- tests/test_data.py unit (convert cases + interpolation/extrapolation + empty-fetch
+  fallbacks): PARTIAL.
+  12 new tests added (percent/basis-points MOVE/60-scale/listed-range/raise x2/
+  anchors/interp/extrapolation/floor + 2 property tests) — all F-0-scope ACs covered.
+  BUT the empty-DGS2 -> ^IRX-flat fallback wiring has NO test anywhere: fetch_2yr_
+  treasury empty-on-error and empty-no-observations are covered (pre-existing), yet
+  no test exercises the caller path that detects an empty treasury series and
+  substitutes the ^IRX anchor flat ("as today's graceful-empty pattern"). The
+  graceful-empty fallback exists at fetch level; the composition the spec names is
+  untested. BRITTLE.
+- tests/test_data.py property (hypothesis MOVE range + percent range): MET.
+- mutmut: src/finance/data.py mutation score >= 80% on conversion + interpolation:
+  UNMET as a formal score, but survivors are near-equivalent. Measured on the real
+  src/finance/data.py against the real tests/test_data.py (mutmut 2.5.1 via
+  `uv run --with mutmut==2.5.1`): the two F-0 functions (convert_vol_index_level
+  data.py:312-334; risk_free_at_expiry data.py:336-364) span mutants 89-114 = 26
+  mutants; 22 killed, 4 survived (96, 100, 106, 107) -> 84.6% >= 80% on the F-0
+  functions themselves. Spec requirement textually satisfied; the 4 survivors were
+  individually shown value-equivalent:
+    * 96/100: raise-message "XX...XX" wrapping — pytest.raises(match=...) still
+      matches the contained substring; no behavioral contract asserted beyond that.
+    * 106/107: boundary flips t<=0.25->t<0.25 and t>=2.0->t>2.0 — at the anchor the
+      fall-through returns frac=0 or frac=1, i.e. the IDENTICAL anchor value; no
+      reachable input distinguishes them (verified numerically).
+  Not blocking.
+
+WHY FAIL (single blocking defect)
+---------------------------------
+The F-0 acceptance scope is "Carry wiring" — r(T) maturity-matched carry plus the
+MOVE conversion fix. The conversion fix is fully implemented and verified. The
+carry wiring delivers `fetch_2yr_treasury` (6d1125e, pre-existing) and the pure
+`risk_free_at_expiry`, but **no production caller composes them**: risk_free_at_
+expiry is exported (src/finance/data.py:336) and referenced only by tests. No
+composition reads ^IRX + fetch_2yr_treasury and feeds risk_free_at_expiry, and the
+spec's edge-case disposition ("DGS2 fetch fails -> risk_free_at_expiry falls back
+to the ^IRX anchor flat") is therefore not implemented or testable end-to-end.
+Granted: F-2/F-3 wire pricing on the surface (D8 consumers), and the spec's F-0
+test requirement explicitly lists "empty-fetch fallbacks (empty DGS2 -> ^IRX flat)"
+as an F-0 deliverable test — that test does not exist. This is a mechanically
+repairable missing-evidence defect within F-0's own contract, not deferred work:
+the spec's disposition names risk_free_at_expiry as the fallback site.
+
+SCORECARD
+---------
+Acceptance criteria: 3/3 MET (independently reproduced)
+Test requirements: unit BRITTLE (empty-fetch fallback test missing); property MET;
+  mutation: 84.6% (22/26) on the two F-0 functions — MET, survivors near-equivalent
+  (ids 96, 100, 106, 107), verified value-equivalent individually.
+Full suite: 1030 passed, 8 deselected (slow), 0 failed (40.4s, real run).
+ruff: src/ + tests/ clean; 10 pre-existing errors all in examples/backtesting/*.
+mypy: src/ clean (17 files).
+Coverage: src/finance/data.py 95% (F-0 miss lines are fetch-level); line-level
+  coverage is not a spec criterion for F-0.
+
+VERIFICATION PERFORMED
+----------------------
+- Read src/finance/data.py:312-364 (convert_vol_index_level, risk_free_at_expiry),
+  data.py:143-215 (fetch_volatility_index basis_points branch), data.py:277-310
+  (fetch_2yr_treasury graceful-empty), consts.py:63-101 (VolIndexSpec,
+  VOL_INDEX_SPECS, MOVE_EFFECTIVE_DURATION), plans/vol_surface_spec.json F-0 entry
+  + API-risk_free_at_expiry + INV-3.
+- Independent numeric reproduction of all three ACs (python REPL, real module).
+- pytest tests/test_data.py tests/test_vol_surface.py: 71 passed (real run).
+- Full suite non-slow: 1030 passed (real run).
+- mutmut 2.5.1 on src/finance/data.py vs tests/test_data.py (slow tests stripped
+  from a temp copy, real file restored after; runner `-m "not slow"`):
+  217 mutants -> per-id line mapping confirms 89-114 are the F-0 functions;
+  survivors in that window: 96, 100, 106, 107 only. Survivors 106/107 shown
+  value-equivalent at anchors (frac=0/frac=1); 96/100 raise-string matches intact.
+- Manual VGIT-path check through fetch_volatility_index with NaN mid-series:
+  ffill gives [0.051, 0.051, 0.0561, 0.05355] (D_eff=5.1 conversion applied at
+  fetch level too) — the MOVE edge case behaves correctly; it simply has no test.
+
+FINDINGS
+--------
+1. BLOCKING: empty-DGS2 -> ^IRX-flat fallback composition absent and untested
+   (spec F-0 test requirement + edge-case disposition). Repair: add the caller
+   (or a documented pure helper) that takes the two anchor series, detects empty
+   DGS2, and substitutes the ^IRX level flat across maturities, plus its test.
+2. ADVISORY: no integration test for fetch_volatility_index on the ^MOVE path
+   (VGIT/MUB) — the basis_points branch (data.py:197-206), the ffill, and the
+   missing-D_eff warning fallback are untested at fetch level (only the pure
+   convert_vol_index_level is tested; the RVXCLS tests cover the percent path).
+   Behavior verified correct manually by the Judge.
+3. ADVISORY: mutmut is absent from the project env/dev deps (as in prior specs —
+   see multi-F-001 verdict); run via `uv run --with mutmut==2.5.1`.
+
+REQUIRED ACTIONS
+----------------
+1. Implement and test the empty-DGS2 -> ^IRX-flat fallback named in the F-0 edge
+   case (or, if ownership moves to F-2/F-3 by explicit spec amendment, record the
+   reassignment in the spec — not silently).
+Then re-judge. Status update: features[F-0].status stays "pending_judge" → FAILED
+round 1; feature remains in_progress pending repair (recorded below).
