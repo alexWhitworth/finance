@@ -1,0 +1,295 @@
+F-2 JUDGE VERDICT — Round 1 (vol-surface spec)
+=============================================
+Feature: F-2 — Surface-aware greeks (changed contracts)
+Commit under review: 4a058c4 "actor(vol-F-2): surface-aware greeks (D5/D6)
+with bit-for-bit flat path" (branch alexwhitworth/vol-surface-2)
+Spec: plans/vol_surface_spec.json (F-2 status pending_judge; deps [F-1] complete —
+validated; components greeks + pricing; decisions D5/D6/D10; invariant INV-3;
+unknown U3)
+Reviewed revision: 4a058c4 (files: src/finance/greeks.py, src/finance/__init__.py,
+tests/test_greeks.py, plans/vol_surface_spec.json [status bump only])
+
+VERDICT: PASS
+
+(with 3 REQUIRED follow-ups in the test layer — see REQUIRED ACTIONS; none
+block this feature because each is a demonstrably-equivalent or coverage-only
+escape and the spec's quantitative gates are met. Recorded as required
+follow-up work on F-2 tests, to be folded into the next test-touching commit
+or F-3's review, per the repo's iterative loop.)
+
+SCOPE / OWNERSHIP CHECK
+-----------------------
+Diff touches only src/finance/greeks.py, src/finance/__init__.py (VolConvention
+export), tests/test_greeks.py, and the F-2 status bump in the spec. No
+backtest internals, no network, no filesystem I/O in greeks.py (pure module —
+imports: enum, math, dataclasses, pandas, finance.consts/leverage/
+portfolio_manager/vol_surface). Ownership boundaries respected: greeks.py
+does not re-implement surface math (composes atm_total_variance/
+ssvi_total_variance/surface_implied_vol from F-1) and does not touch pricing
+(price_leaps_contract unchanged — verified: no changes under src/finance/
+leverage.py). Pricing needs no new contract per the feature description;
+confirmed callers pass sigma(k, t) as the iv argument.
+
+ACCEPTANCE CRITERIA
+-------------------
+1. INV-3 (parity bounds: max(0, S e^(-q t) - K e^(-r(T) t)) <= mark <= S e^(-q t),
+   for every surface-priced contract) — MET.
+   Tests: test_surface_path_marks_within_parity_bounds (calm 0.18 + crisis
+   0.80 at k ~ -0.69, t ~ 2y) and test_property_surface_parity_and_delta_bounds
+   (hypothesis, 200 examples, spot in [50, 500], vol_index in [0.08, 0.80],
+   mono in [0.5, 1.0], both equity and GLD params, both conventions).
+   Judge independently reproduced: VTI(rho=-0.7) and GLD(rho=+0.15) params x
+   vol-index {0.10, 0.18, 0.40, 0.80} at spot=200, K=100 (k ~ -0.72), r=0.03,
+   q=0, tau ~ 1.63y — all marks inside bounds; delta in (0,1) both conventions
+   and delta_sticky_strike in (0,1).
+
+2. level_vega == vega*(1 - e^(-kappa*tau))/kappa within 1e-9 at kappa=1.5,
+   tau=2; delta_sm = delta_BS - (vega/S)*dsigma/dk with sign flipping with rho
+   — MET.
+   (a) Judge re-pinned at exactly kappa=1.5, tau=2.0027 (expiry 2026-01-15):
+       level_vega formula residual 0.0 <= 1e-9; damping ratio
+       level_vega/vega = 0.63361 (~0.63 as specified).
+       Tests: test_level_vega_damping_kappa_1_5_tau_2y asserts the formula
+       within 1e-9 and 0.5 < ratio < 0.8.
+   (b) delta_sm hand-formula verified to 1e-12 at k = -0.68995 (test:
+       test_surface_delta_sm_formula_k_minus_0_69 asserts within 1e-12 vs an
+       independent finite-difference _dsigma_dk cross-checked against the
+       ssvi_total_variance slope). Judge additionally FD-verified end-to-end:
+       impl delta_sm at q=0.013, r=0.03, spot=200, K=100 = 0.958693850 vs
+       FD sticky-moneyness price-delta 0.958693847 (rel err 3.2e-9).
+   (c) Sign flip with rho — MET, but note the tests pin it in two different
+       regions: test_surface_delta_sign_flips_with_rho_gld asserts at ATM
+       (k=0) where the curvature term dominates (GLD dsigma/dk = +0.037 > 0 ->
+       delta_sm < delta_BS); test_portfolio_surface_routing_per_ticker asserts
+       at DITM (k ~ -0.59) where GLD dsigma/dk = -0.074 < 0 -> delta_sm >
+       delta_BS. Both directions are correct (Judge reproduced all four
+       numbers); the ATM GLD assertion is the stronger skew-sign test since
+       the sign at k=0 is set by rho alone (term ~ theta*phi*rho), while the
+       DITM GLD sign is curvature-dominated. No defect.
+
+3. params=None path returns ContractGreeks identical (bit-for-bit) to the
+   pre-change flat implementation; existing tests/test_greeks.py pass
+   unchanged — MET.
+   (a) Full suite green: 1071 passed (186s), including all pre-existing
+       test_greeks.py tests (none modified except cosmetic line-unwrap of
+       three formatting-only lines — verified content-equivalent).
+   (b) Judge differential run: the parent-commit (2b067f6) greeks.py loaded
+       side-by-side with the new module across 2000 randomized contracts
+       (spot 50-500, mono 0.4-1.2, iv 0.05-0.9, r -0.01-0.09, scale 0.3-1.0,
+       q in {0, 0.013, 0.02}, T 120-800d) + 50 portfolio cases: every field
+       bit-identical (0 mismatches); delta_sticky_strike/level_vega None on
+       the flat path. Also verified examples/ callers
+       (manual_leaps_review.py:130, backtest_bridge.py:107) use the unchanged
+       keyword form and still work.
+   (c) Bit-compat detail audited: iv and as_of_date became optional
+       (iv=None, as_of_date=None), but every legacy call shape (positional
+       iv 3rd + as_of 4th, keyword forms) still works; new guards
+       (as_of_date required; iv-or-surface required) fire only on calls that
+       would have raised TypeError before — no silent behavior change.
+
+EDGE CASES (spec-listed)
+------------------------
+- params set but vol_index_level missing (or vice versa) -> ValueError listing
+  the missing surface input: MET — contract level
+  (greeks.py:188-192 "surface inputs must be given together") and portfolio
+  level (greeks.py:370-374 per-ticker both-or-neither). Judge reproduced all
+  four raises (params-only, vol_index-only, neither, portfolio partial-map).
+- k = 0 (ATM): w = theta, sigma = sqrt(theta/t), rho*phi*k vanishes: MET —
+  test_surface_delta_atm_rho_term_vanishes; Judge independently confirmed
+  cg.iv == sqrt(theta/t) exactly at strike == forward, and dsigma/dk finite
+  at k=0 for both parameter sets.
+
+CONTRACT CONFORMANCE (spec library types/APIs)
+----------------------------------------------
+- T-VolConvention: enum, immutable, values sticky_moneyness/sticky_strike,
+  default STICKY_MONEYNESS — MET (greeks.py:52-56; invalid input rejected
+  with ValueError — Judge reproduced with a string "sticky_moneyness").
+- T-ContractGreeks: adds nullable delta_sticky_strike, level_vega, None on
+  the flat path, populated on the surface path — MET (frozen dataclass,
+  fields defaulted None; dataclass(frozen) mutants 5/11/13 survived but
+  frozen-ness is pinned by the F-1-vetted pattern elsewhere in the suite —
+  advisory only).
+- API-compute_contract_greeks: signature matches the spec's input list
+  exactly (contract, spot, as_of_date, risk_free_rate=0.0, leaps_scale=1.0,
+  iv, params, vol_index_level, vol_convention); raises match the spec's three
+  clauses; surface precedence over iv when both supplied (documented in the
+  docstring, consistent with API-compute_contract_greeks "iv: None when
+  surface inputs are given") — MET.
+- API-compute_portfolio_greeks: per-ticker params/vol_index maps, scalar
+  fallback for tickers absent from the surface maps when iv provided, else
+  ValueError listing every missing ticker — MET (Judge reproduced the
+  fallback case: VTI on surface, IWM scalar 0.25 -> IWM level_vega None;
+  and the missing-ticker ValueError listing IWM+GLD).
+- API-compute_portfolio_greeks "message lists every missing ticker" — MET
+  (missing set built over all contracts before raising; pinned by
+  test_multi_ticker_missing_tickers_listed_all and the new
+  test_portfolio_surface_missing_ticker_fails_loud).
+
+DECISION CONFORMANCE
+--------------------
+- D5 (sticky-moneyness headline delta; sticky-strike via vol_convention;
+  BSM delta still available): MET — delta_sm = delta_BS - (vega/S)*dsigma/dk
+  (greeks.py:238-241); STICKY_STRIKE headline == delta_sticky_strike
+  (test_sticky_strike_convention_headline); position_delta carries the
+  headline convention (delta field feeds position_scale) — Judge verified
+  position_delta == headline delta * scale for both conventions.
+- D6 (level-vega = dC/dv0 = vega*(1 - e^(-kappa*tau))/kappa): MET as
+  specified. NOTE (advisory, authoring layer): at DITM strikes the true
+  dC/dv0 also picks up dsigma/dtheta at fixed k (SSVI w scales sub-linearly
+  in theta off-ATM); the Judge's FD gives dC/dv0 = 17.79 vs the specified
+  vega*dtheta/dv0 = 8.62 at k = -0.72, tau = 1.63y, i.e. the specified
+  formula understates the true level-vega by ~2x at deep ITM. The spec's
+  acceptance criterion pins exactly vega*(1-e^(-kappa tau))/kappa, and the
+  plan's D-6 prose ("partial C / partial v_0" via dtheta/dv0) matches the
+  implementation, so this is an authoring-layer approximation, not an
+  implementation deviation. Flag for the plan author to consider refining
+  the D6 formula (multiply by dsigma/dtheta = d/dtheta sqrt(w(k,theta)/t))
+  in a later spec revision; do NOT change the code against the spec.
+- D10 (European exercise only; no American machinery): MET — no
+  CRR/Bjerksund code added; nothing to verify beyond absence (confirmed).
+
+INVARIANT INV-3 (linked): MET — see criterion 1.
+
+UNKNOWN U3 (linked, low, closes "later"): status open as the spec records
+(ZIRP-era European understatement ~1-3%); nothing in F-2 needs to close it.
+No action.
+
+PERFORMANCE
+-----------
+O(1) per contract, no solver/grid: MET — surface path is one
+surface_implied_vol composition + closed-form BS greeks + one closed-form
+_dsigma_dk; no loops, no optimization, no cached mutable state. Verified by
+reading the diff (greeks.py surface block) and the module import list.
+
+TEST REQUIREMENTS
+-----------------
+1. tests/test_greeks.py unit (INV-3; hand-computed delta_sm/level_vega at
+   k=-0.69; parity-bounded marks; flat-path regression; GLD sign-flipped
+   dsigma/dk): MET — all elements present (test_surface_delta_sm_formula_
+   k_minus_0_69, test_level_vega_damping_kappa_1_5_tau_2y,
+   test_surface_path_marks_within_parity_bounds,
+   test_flat_path_bit_for_bit_regression, test_portfolio_flat_path_bit_
+   for_bit, sign-flip tests as in criterion 2c). Plus 14 more surface tests
+   (routing, fallback, raises, conventions, finite fields) beyond the spec
+   list.
+2. tests/test_greeks.py property (INV-3; hypothesis: mark within parity
+   bounds for random valid (spot, strike, tau, vol_index); delta in (0,1)
+   both conventions): MET — test_property_surface_parity_and_delta_bounds,
+   200 examples, both conventions, both parameter sets. Note: strike derives
+   from spot (not an independent draw) and tau is the fixed ~2y fixture, a
+   narrower space than "random tau"; acceptable for INV-3 (the invariant is
+   per-contract, and the calm-crisis vol-index axis is swept) — advisory.
+3. mutmut src/finance/greeks.py >= 80% on the surface-greek additions:
+   MET — 81.6% restricted to the diff's added lines (102/125 killed, 23
+   survived; fresh full run, mutmut 2.5.1, runner python -m pytest
+   tests/test_greeks.py -q -x --no-cov -p no:cacheprovider, 174 mutants
+   total). Survivors classified:
+   - Equivalent/benign (20): enum value strings (1-4), dataclass field
+     default None -> "" (9, 10 — survive because "" is falsy-is-None-blind
+     under `is None` checks only via mutmut's own dataclass default
+     mechanics; the flat path sets them explicitly to None at
+     greeks.py:236-237, so the mutant is unreachable in practice — the
+     surface path always overwrites and the flat path always passes None
+     positionally), annotation `|` -> `&` (50, 52), assert-variant
+     `and` -> `or` on an always-true pair (38, 56), raise-message XX-wraps
+     (19, 20, 22, 26, 28, 88, 146, 147, 151 — match= still hits), theta
+     `<` boundary (86 — theta==0 unreachable: theta = 0 requires
+     sigma_inf=0 which atm_total_variance rejects).
+   - SUBSTANTIVE ESCAPES (3) — test-coverage gaps, NOT implementation
+     defects (Judge FD-verified the implementation correct in each blind
+     region, rel err <= 5e-8):
+     * 58 (greeks.py:240): forward exp((r-q)*t) -> exp((r+q)*t) in the
+       delta_sm moneyness. Every surface-path test uses dividend_yield=0.0,
+       so the sign flip is invisible (impact 3-4e-4 in delta_sm at
+       q=0.013-0.02). Forward-q is a core D8 project goal, so a test with
+       q != 0 asserting the exact delta_sm (or an FD check) should pin it.
+     * 117 (greeks.py:308): max(radicand, 0.0) -> max(radicand, 1.0) in
+       _dsigma_dk. Untested at radicand < 1 (OTM-call region k in (0, 0.42)
+       for the equity params). FD-verified correct there; a k=+0.3 test
+       point would kill it.
+     * 126 (greeks.py:318): compute_portfolio_greeks risk_free_rate=0.0
+       default -> 1.0 survives because every portfolio test calls it with
+       default r; harmless for the surface path (r is passed through) but
+       the flat-path portfolio default is unpinned.
+   The 81.6% score and the classification above meet the spec's >= 80%
+   gate; the three escapes are recorded as required test follow-ups, not
+   verdict blockers, because each is demonstrably equivalent-in-effect
+   today (58/117 verified correct by FD; 126 pinned in spirit by every
+   portfolio test's default-r usage) and the spec's gate is quantitative.
+
+QUALITY GATES
+-------------
+- pytest: 1071 passed (full suite, 3:06) — PASS
+- ruff check src tests: clean — PASS (10 pre-existing E501/W291/I001 in
+  examples/ only, identical at the parent commit — not this feature's scope)
+- mypy src (strict per pyproject): no issues in 17 source files — PASS
+
+REQUIRED ACTIONS (test-layer follow-ups, fold into the next test-touching
+commit; do not block F-2 completion, but MUST be addressed before or with
+F-3's review round)
+------------------------------------------------------------------------
+1. Add a surface-path delta_sm test with dividend_yield != 0 (e.g. q=0.013,
+   r=0.03) asserting the exact r-q forward effect (kills mutant 58; ~4e-4
+   sensitivity is easily assertable at 1e-9 given the closed form).
+2. Add a _dsigma_dk test point in the radicand < 1 region (e.g. equity
+   params, k=+0.3, FD cross-check as the existing helper does; kills
+   mutant 117).
+3. Pin compute_portfolio_greeks's default risk_free_rate=0.0 (a portfolio
+   flat-path call without an explicit r; kills mutant 126).
+
+ADVISORY FINDINGS (no action required for this verdict)
+-------------------------------------------------------
+- A1: D6 level-vega formula understates the true dC/dv0 by ~2x at DITM
+  (dsigma/dtheta ~= 2.06 at k=-0.72 vs 1.0 assumed ATM); authoring-layer
+  note recorded above under D6. If the plan author refines D6, the change
+  belongs to a spec revision first.
+- A2: test_property_surface_parity_and_delta_bounds derives strike from
+  spot and fixes tau at the ~2y fixture; a wider (strike, tau) draw would
+  strengthen INV-3's property coverage.
+- A3: mutant 8/10 (dataclass default None -> "") is unreachable only
+  because both paths assign the fields explicitly at greeks.py:236-237;
+  worth a comment or an explicit `is None` pin in a flat-path
+  contract-greeks test to keep that invariant obvious.
+- A4: _missing_reason's error text says "iv (or surface params/vol_index)"
+  in a message prefixed "spot/iv maps are missing" — slightly stale wording
+  now that three sourcing modes exist; cosmetic only.
+
+OUTSTANDING DAG / DEFERRED CHECKS
+--------------------------------
+- None for F-2 itself. INV-3's live-path and backtest integration coverage
+  (portfolio_manager / _backtest_steps) is F-3/F-4 scope; INV-5/INV-6/INV-7
+  are explicitly deferred to their owning features.
+
+VERDICT RATIONALE
+-----------------
+Every Judge-stage criterion is MET with independently reproduced evidence:
+INV-3 parity bounds hold and are property-tested; the level_vega and
+delta_sm formulas match the spec's pinned forms exactly (0.0 and 1e-12
+residuals at the specified parameter point; ~0.633 damping reproduced);
+the flat path is bit-for-bit identical to the parent implementation across
+a 2000-case differential; the API/type contracts match the spec's
+library section including all four documented ValueError clauses; the
+mutation gate is met at 81.6% on the additions with all survivors
+classified, and the three substantive escapes were individually
+finite-difference-verified as coverage gaps rather than defects; quality
+gates (pytest, ruff, mypy-strict) all pass on the feature's scope. The three
+required test-layer actions are recorded and must land with or before the
+F-3 review round.
+
+Judge check commands (reproducible):
+- python -m pytest tests/test_greeks.py -q --no-cov -p no:cacheprovider
+  (53 passed) and full suite (1071 passed)
+- ruff check src tests; mypy src
+- uv run --with mutmut==2.5.1 mutmut run --paths-to-mutate
+  src/finance/greeks.py --tests-dir tests/ --runner "python -m pytest
+  tests/test_greeks.py -q -x --no-cov -p no:cacheprovider"; mutmut results
+- Side-by-side flat-path differential: git show 2b067f6:src/finance/greeks.py
+  vs current, 2000 randomized contracts + 50 portfolios, 0 mismatches
+- Independent FD re-derivations: level-vega chain rule, delta_sm at q=0,
+  q!=0, and radicand<1 region (rel err <= 5e-8)
+
+STATUS TRANSITION
+-----------------
+F-2: pending_judge -> complete
+(phase 2 "Surface-aware pricing/greeks" complete; next: F-3 Live portfolio
+path, priority)
