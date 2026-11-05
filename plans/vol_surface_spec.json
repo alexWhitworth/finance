@@ -805,7 +805,7 @@
       "phase": "2",
       "kind": "build",
       "layer": "python",
-      "status": "planned",
+      "status": "pending_judge",
       "component_ids": [
         "greeks",
         "pricing"

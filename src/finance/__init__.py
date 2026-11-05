@@ -15,6 +15,7 @@ from finance.dca_signal import LeapsDcaSignal, compute_leaps_dca_signal
 from finance.greeks import (
     ContractGreeks,
     PortfolioGreeks,
+    VolConvention,
     compute_contract_greeks,
     compute_portfolio_greeks,
 )
@@ -49,6 +50,7 @@ __all__ = [
     "PortfolioState",
     "RebalancePlan",
     "TradeOrder",
+    "VolConvention",
     "VolatilityReport",
     "as_live_portfolio",
     "compute_contract_greeks",
