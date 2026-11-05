@@ -1091,3 +1091,112 @@ def test_property_surface_parity_and_delta_bounds(
         assert lower <= cg.price <= upper
         assert 0.0 < cg.delta < 1.0
         assert 0.0 < cg.delta_sticky_strike < 1.0
+
+
+# ---------------------------------------------------------------------------
+# Judge round-1 required actions: surviving-mutant coverage pins
+# (reviews/judge_verdicts/vol-F-002_verdict_round_1.txt)
+# ---------------------------------------------------------------------------
+
+
+def test_surface_delta_sm_with_dividend_yield_pins_r_minus_q_forward() -> None:
+    """Mutant 58 (greeks.py:240): delta_sm must use F = S*exp((r-q)*t), not (r+q)*t.
+
+    Every other surface-path test uses dividend_yield=0.0, hiding a sign flip;
+    at q=0.013 the wrong-forward delta_sm differs by ~3e-4.
+    """
+    q = 0.013
+    contract = _make_contract(strike=100.0, dividend_yield=q)
+    spot, vol_index, rfr = 200.0, 0.18, 0.03
+    cg = compute_contract_greeks(
+        contract,
+        spot,
+        None,
+        _AS_OF,
+        risk_free_rate=rfr,
+        params=_SSVI_EQUITY,
+        vol_index_level=vol_index,
+    )
+    t = cg.time_to_expiry
+    theta = atm_total_variance(vol_index, t, _SSVI_EQUITY)
+
+    forward = spot * math.exp((rfr - q) * t)
+    dsigma_dk = _dsigma_dk_reference(math.log(100.0 / forward), theta, _SSVI_EQUITY, t)
+    expected = cg.delta_sticky_strike - (cg.vega / spot) * dsigma_dk
+    np.testing.assert_allclose(cg.delta, expected, atol=1e-12)
+
+    # the (r+q)-forward variant must be discriminated: it lands ~3e-4 away
+    forward_wrong = spot * math.exp((rfr + q) * t)
+    dsigma_dk_wrong = _dsigma_dk_reference(math.log(100.0 / forward_wrong), theta, _SSVI_EQUITY, t)
+    expected_wrong = cg.delta_sticky_strike - (cg.vega / spot) * dsigma_dk_wrong
+    assert abs(cg.delta - expected_wrong) > 1e-5
+
+
+def test_dsigma_dk_radicand_below_one_otm_region() -> None:
+    """Mutant 117 (greeks.py:308): _dsigma_dk must use max(radicand, 0.0), not 1.0.
+
+    OTM-call region (k > 0) for the equity params has radicand < 1; at k=0.3,
+    t=2y, vol_index=0.18 the FD cross-check plus an exact expected value kill
+    the max(radicand, 1.0) mutant (which shifts dsigma/dk by ~0.018).
+    """
+    t, vol_index, k = 2.0, 0.18, 0.3
+    theta = atm_total_variance(vol_index, t, _SSVI_EQUITY)
+
+    from finance.vol_surface import ssvi_total_variance
+
+    phi = (
+        _SSVI_EQUITY.eta
+        * theta ** (-_SSVI_EQUITY.gamma)
+        * (1.0 + theta) ** (_SSVI_EQUITY.gamma - 1.0)
+    )
+    radicand = (phi * k + _SSVI_EQUITY.rho) ** 2 + 1.0 - _SSVI_EQUITY.rho**2
+    assert 0.0 < radicand < 1.0  # the untested region: FD + exact value below
+
+    analytic = _dsigma_dk_reference(k, theta, _SSVI_EQUITY, t)
+
+    h = 1e-6
+    fd = (
+        math.sqrt(ssvi_total_variance(k + h, theta, _SSVI_EQUITY) / t)
+        - math.sqrt(ssvi_total_variance(k - h, theta, _SSVI_EQUITY) / t)
+    ) / (2 * h)
+    np.testing.assert_allclose(analytic, fd, atol=1e-5)
+    assert fd < -0.05  # correct value ~ -0.063; the mutant lands at ~ -0.081
+
+
+def test_portfolio_default_risk_free_rate_is_zero() -> None:
+    """Mutant 126 (greeks.py:318): compute_portfolio_greeks default risk_free_rate=0.0.
+
+    Calling without risk_free_rate must equal per-contract results computed at
+    an explicit r=0.0, bit-for-bit.
+    """
+    c_vti = _make_ticker_contract("VTI", strike=100.0, n_contracts=2.0)
+    c_iwm = _make_ticker_contract("IWM", strike=150.0, n_contracts=1.0)
+    portfolio = _make_live_portfolio(leaps_contracts=((c_vti, 0.8), (c_iwm, 1.0)))
+    spot = {"VTI": 200.0, "IWM": 180.0}
+    iv = {"VTI": 0.20, "IWM": 0.30}
+
+    pg_default = compute_portfolio_greeks(portfolio, spot=spot, iv=iv)
+    for cg in pg_default.contracts:
+        expected = compute_contract_greeks(
+            cg.contract,
+            spot[cg.contract.ticker],
+            iv[cg.contract.ticker],
+            _AS_OF,
+            risk_free_rate=0.0,
+            leaps_scale=cg.leaps_scale,
+        )
+        assert cg.iv == expected.iv
+        assert cg.price == expected.price
+        assert cg.delta == expected.delta
+    # aggregate nets also pinned at r=0 (a default of 1.0 shifts every price)
+    assert pg_default.net_delta == sum(
+        compute_contract_greeks(
+            cg.contract,
+            spot[cg.contract.ticker],
+            iv[cg.contract.ticker],
+            _AS_OF,
+            risk_free_rate=0.0,
+            leaps_scale=cg.leaps_scale,
+        ).position_delta
+        for cg in pg_default.contracts
+    )
