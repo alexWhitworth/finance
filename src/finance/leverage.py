@@ -23,6 +23,7 @@ from finance.consts import (
     SIX_MONTHS_DAYS,
     TIME_FLOOR,
     TRADING_DAYS_PER_YEAR,
+    VolModel,
 )
 
 # ---------------------------------------------------------------------------
@@ -1095,6 +1096,7 @@ def run_leaps_simulation(
     risk_free_series: pd.Series | None = None,
     iv_series: pd.Series | None = None,
     initial_capital: float = 0.0,
+    vol_model: VolModel = VolModel.FLAT,
 ) -> LeapsLedger:
     """Run the full LEAPS accumulation and roll simulation over a price history.
 
@@ -1122,6 +1124,11 @@ def run_leaps_simulation(
             and roll pricing, overriding config.iv. config.iv is used as a floor:
             iv = max(iv_series[date], config.iv). Falls back to config.iv if None
             or if the date is missing from the series.
+        vol_model: IV sourcing mode (D4). VolModel.FLAT (default) applies the
+            max(..., config.iv) floor above unchanged. VolModel.SSVI bypasses the
+            floor: the raw iv_series value is the per-day theta anchor and is used
+            as the scalar IV directly (mean reversion is already captured by the
+            OU theta in the surface).
         initial_capital: Carved-out capital deployed on the first date of
             price_series as a single DITM contract. Default 0.0 (no initial
             position). Used by the carved-out (Model B) portfolio backtest.
@@ -1165,7 +1172,7 @@ def run_leaps_simulation(
             first_vix = float(
                 iv_series.reindex([first_date], method="ffill").fillna(config.iv).iloc[0]
             )
-            first_iv = max(first_vix, config.iv)
+            first_iv = first_vix if vol_model is not VolModel.FLAT else max(first_vix, config.iv)
         else:
             first_iv = config.iv
         initial_c = create_leaps_contract(
@@ -1180,7 +1187,9 @@ def run_leaps_simulation(
         spot = float(price_series.loc[date])
         new_expiry: pd.Timestamp = pd.Timestamp(date + pd.DateOffset(years=2))
         rfr = float(rfr_aligned.loc[date]) if rfr_aligned is not None else config.risk_free_rate
-        iv = max(float(iv_aligned.loc[date]), config.iv) if iv_aligned is not None else config.iv
+        iv = float(iv_aligned.loc[date]) if iv_aligned is not None else config.iv
+        if vol_model is VolModel.FLAT:
+            iv = max(iv, config.iv)
 
         # Check roll conditions on every live contract
         still_live: list[LeapsContract] = []

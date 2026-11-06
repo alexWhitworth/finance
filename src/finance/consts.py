@@ -3,6 +3,7 @@
 All modules import from here rather than defining constants locally.
 """
 
+import enum
 from dataclasses import dataclass
 
 TICKERS: tuple[str, ...] = ("VTI", "VXUS", "GLD", "MUB", "KMLM", "VGIT")
@@ -171,6 +172,23 @@ GTT_DEFENSIVE_WEIGHTS_DEFAULT: dict[str, float] = {
 # ---------------------------------------------------------------------------
 # SSVI implied-volatility surface (F-1)
 # ---------------------------------------------------------------------------
+
+
+class VolModel(enum.Enum):
+    """IV sourcing mode for the backtest (D4 / T-VolModel).
+
+    Attributes:
+        FLAT: Existing scalar-iv logic — ``max(raw_vix, config.iv)`` floors and
+            the ``VIX_MTM_WINDOW``-day rolling mean. Default; reproduces
+            pre-change marks bit-for-bit.
+        SSVI: Per-day theta from the raw vol-index series drives
+            ``surface_implied_vol`` per contract. The ``VIX_MTM_WINDOW``
+            rolling mean and the ``max(..., config.iv)`` floors are bypassed:
+            mean reversion is already captured by the OU theta.
+    """
+
+    FLAT = "flat"
+    SSVI = "ssvi"
 
 
 @dataclass(frozen=True)

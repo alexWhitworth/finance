@@ -12,6 +12,7 @@ import pandas as pd
 import pytest
 
 from finance._portfolio_types import GttConfig, PortfolioConfig
+from finance.consts import VolModel
 from finance.data import PriceData
 from finance.gtt import GttSignalData
 from finance.leverage import (
@@ -1102,3 +1103,111 @@ class TestNoGttLeapsMonthEndContrib:
             f"{len(failures)}/{monthend_count} month-end(s):\n"
             + "\n".join(failures[:10])
         )
+
+
+# ---------------------------------------------------------------------------
+# F-4: vol_model flag (flat default, opt-in ssvi) — regression + no-lookahead
+# ---------------------------------------------------------------------------
+
+
+def _no_gtt_leaps_ssvi_config(contribution: float = _MONTHLY_CONTRIB) -> PortfolioConfig:
+    """_no_gtt_leaps_config with vol_model switched to SSVI."""
+    cfg = _no_gtt_leaps_config(contribution=contribution)
+    return PortfolioConfig(
+        target_weights=cfg.target_weights,
+        initial_nav=cfg.initial_nav,
+        monthly_contribution=cfg.monthly_contribution,
+        rebalance_rule=cfg.rebalance_rule,
+        weight_strategy=cfg.weight_strategy,
+        leaps_config=cfg.leaps_config,
+        vol_model=VolModel.SSVI,
+    )
+
+
+def _ssvi_backtest(
+    *, corrupt_vix_after: pd.Timestamp | None = None, seed: int = _SEED
+) -> tuple[pd.Series, pd.Series]:
+    """Run an ssvi-path LEAPS backtest over the synthetic VTI-vol corpus.
+
+    When ``corrupt_vix_after`` is set, every vol-index value dated strictly
+    after that timestamp is replaced with garbage (a large, wrong offset) to
+    test whether marks up to and including that date stay unchanged (INV-6
+    no-lookahead).
+    """
+    pd_obj = _make_price_data(seed=seed, with_vti_vol=True)
+    if corrupt_vix_after is not None:
+        col = pd_obj.vol_prices["VTI"].copy()
+        idx = pd_obj.vol_prices.index
+        future = idx > corrupt_vix_after
+        col.loc[future] = col.loc[future] + 0.50
+        pd_obj = PriceData(
+            prices=pd_obj.prices,
+            dividends=pd_obj.dividends,
+            vol_prices=pd.DataFrame({"VTI": col}, index=idx),
+            tickers=pd_obj.tickers,
+            start_date=pd_obj.start_date,
+            end_date=pd_obj.end_date,
+            spliced=pd_obj.spliced,
+        )
+    rd = _make_rd(pd_obj)
+    result = run_backtest(rd, pd_obj, _no_gtt_leaps_ssvi_config())
+    return result.nav_series, result.return_series
+
+
+def test_f4_default_flat_regression_exact() -> None:
+    """INV-5: flat default reproduces the pre-change scalar-iv NAV exactly.
+
+    The default `vol_model` is unspecified (VolModel.FLAT): nav_series and
+    return_series must equal the same run constructed with an explicit FLAT
+    config, bit-for-bit. This asserts the default is the back-compat path.
+    """
+    pd_obj = _make_price_data(with_vti_vol=True)
+    rd = _make_rd(pd_obj)
+    default = run_backtest(rd, pd_obj, _no_gtt_leaps_config())
+    cfg = _no_gtt_leaps_config()
+    explicit_flat = run_backtest(
+        rd,
+        pd_obj,
+        PortfolioConfig(
+            target_weights=cfg.target_weights,
+            initial_nav=cfg.initial_nav,
+            monthly_contribution=cfg.monthly_contribution,
+            rebalance_rule=cfg.rebalance_rule,
+            weight_strategy=cfg.weight_strategy,
+            leaps_config=cfg.leaps_config,
+            vol_model=VolModel.FLAT,
+        ),
+    )
+    pd.testing.assert_series_equal(default.nav_series, explicit_flat.nav_series)
+    pd.testing.assert_series_equal(default.return_series, explicit_flat.return_series)
+
+
+def test_f4_corrupted_future_vol_does_not_lookahead() -> None:
+    """INV-6: ssvi marks use only vol-index values dated <= t.
+
+    Corrupting every strictly-future vol-index value leaves marks up to and
+    including the cutoff date identical; the two runs diverge only afterwards.
+    """
+    cutoff = pd.bdate_range("2018-01-02", periods=_N_DAYS + 1)[_N_DAYS // 2]
+    clean_nav, _ = _ssvi_backtest()
+    corrupt_nav, _ = _ssvi_backtest(corrupt_vix_after=cutoff)
+
+    up_to = clean_nav.loc[:cutoff]
+    up_to_committed = corrupt_nav.loc[:cutoff]
+    assert len(up_to) > 0, "cutoff must fall inside the backtest index"
+    pd.testing.assert_series_equal(up_to, up_to_committed)
+
+    after_clean = clean_nav.loc[clean_nav.index > cutoff]
+    after_corrupt = corrupt_nav.loc[corrupt_nav.index > cutoff]
+    assert len(after_clean) > 0, "cutoff must leave a non-empty future suffix"
+    assert not after_clean.equals(after_corrupt)
+    # The corruption actually moved the future marks (nonzero drift).
+    assert (after_corrupt - after_clean).abs().sum() > 0
+
+
+def test_f4_ssvi_missing_vol_column_fails_loud() -> None:
+    """D4 edge case: ssvi without the underlying vol column raises ValueError."""
+    pd_obj = _make_price_data(with_vti_vol=False)
+    rd = _make_rd(pd_obj)
+    with pytest.raises(ValueError, match=r"vol_model='ssvi'.*vol_prices.*VTI"):
+        run_backtest(rd, pd_obj, _no_gtt_leaps_ssvi_config())

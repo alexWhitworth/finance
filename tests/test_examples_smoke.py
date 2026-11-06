@@ -16,18 +16,19 @@ import pytest
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
-def _run_example(script: str, timeout: int = 600) -> str:
+def _run_example(script: str, *args: str, timeout: int = 600) -> str:
     """Run an example script with the current interpreter and return stdout.
 
     Arguments:
         script: Path to the script relative to the repository root.
+        args: Extra CLI arguments passed after the script path.
         timeout: Maximum wall-clock seconds for the subprocess.
 
     Returns:
         The combined stdout string of the subprocess.
     """
     result = subprocess.run(
-        [sys.executable, str(_REPO_ROOT / script)],
+        [sys.executable, str(_REPO_ROOT / script), *args],
         capture_output=True,
         text=True,
         timeout=timeout,
@@ -44,6 +45,18 @@ def test_manual_leaps_review_exits_clean_and_prints_three_sleeves() -> None:
     assert "VTI_LEAPS" in out
     assert "IWM_LEAPS" in out
     assert "GLD_LEAPS" in out
+
+
+@pytest.mark.slow
+def test_manual_leaps_review_fixtures_prints_surface_columns() -> None:
+    """F-3: --fixtures runs offline and prints per-contract surface fields (INV-7)."""
+    out = _run_example("examples/portfolio_manage/manual_leaps_review.py", "--fixtures")
+    # Per-contract surface output: sigma(k,t), mark, headline delta, level_vega.
+    assert "sigma(k,t)=" in out
+    assert "headline_delta=" in out
+    assert "level_vega=" in out
+    for ticker in ("VTI", "IWM", "GLD"):
+        assert f"{ticker}: sigma(k,t)=" in out
 
 
 @pytest.mark.slow

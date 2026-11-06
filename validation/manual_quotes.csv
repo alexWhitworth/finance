@@ -1,0 +1,13 @@
+ticker,quote_date,expiry,strike,spot,bid,ask,vol_index_level,bill_13w_level,treasury_2y_level,dividend_yield,pinned_rho,pinned_eta,note
+VTI,2026-05-01,2027-01-15,150.0,300.0,151.735,152.035,0.18,0.043,0.040,0.013,-0.72,1.08,synthetic seed — replace with broker quote
+VTI,2026-05-01,2027-01-15,160.0,300.0,142.128,142.428,0.18,0.043,0.040,0.013,,,synthetic seed — replace with broker quote
+VTI,2026-05-01,2026-06-18,148.0,300.0,152.172,152.472,0.16,0.043,0.040,0.013,,,synthetic seed — replace with broker quote
+VTI,2026-05-01,2027-01-15,140.0,300.0,161.514,161.814,0.22,0.043,0.040,0.013,,,synthetic seed — replace with broker quote
+VTI,2026-05-01,2027-01-15,155.0,300.0,146.928,147.228,0.18,0.043,0.040,0.013,,,synthetic seed — replace with broker quote
+IWM,2026-05-01,2027-07-15,110.0,225.0,117.380,117.732,0.22,0.043,0.040,0.013,,,synthetic seed — replace with broker quote
+IWM,2026-05-01,2027-07-15,120.0,225.0,108.097,108.602,0.22,0.043,0.040,0.013,,,synthetic seed — replace with broker quote
+IWM,2026-05-01,2027-01-15,108.0,220.0,113.216,113.516,0.20,0.043,0.040,0.013,,,synthetic seed — replace with broker quote
+GLD,2026-05-01,2027-01-15,120.0,240.0,121.188,121.488,0.16,0.043,0.040,0.013,0.14,0.92,synthetic seed — replace with broker quote
+GLD,2026-05-01,2027-01-15,130.0,240.0,111.485,111.785,0.16,0.043,0.040,0.013,,,synthetic seed — replace with broker quote
+GLD,2026-05-01,2026-06-18,118.0,235.0,117.114,117.414,0.14,0.043,0.040,0.013,,,synthetic seed — replace with broker quote
+GLD,2026-05-01,2027-07-15,135.0,240.0,107.749,108.049,0.18,0.043,0.040,0.013,,,synthetic seed — replace with broker quote
