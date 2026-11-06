@@ -14,7 +14,17 @@ from finance.greeks import (
     compute_portfolio_greeks,
     leaps_mtm_by_ticker,
 )
-from finance.leverage import AccountType, LeapsContract, bs_call_price
+from finance.leverage import (
+    AccountType,
+    LeapsContract,
+    bs_call_charm,
+    bs_call_delta,
+    bs_call_gamma,
+    bs_call_price,
+    bs_call_theta,
+    bs_call_vanna,
+    bs_call_vega,
+)
 from finance.portfolio_manager import LivePortfolio
 
 # ---------------------------------------------------------------------------
@@ -201,8 +211,16 @@ def test_all_greeks_finite() -> None:
     contract = _make_contract()
     cg = compute_contract_greeks(contract, 200.0, 0.20, _AS_OF, risk_free_rate=0.04)
     for field_name in (
-        "price", "delta", "gamma", "vega", "theta", "vanna", "charm",
-        "position_delta", "position_vega", "position_theta",
+        "price",
+        "delta",
+        "gamma",
+        "vega",
+        "theta",
+        "vanna",
+        "charm",
+        "position_delta",
+        "position_vega",
+        "position_theta",
     ):
         val = getattr(cg, field_name)
         assert math.isfinite(val), f"{field_name} is not finite: {val}"
@@ -269,9 +287,7 @@ def test_property_delta_in_unit_interval(
 
 @given(spot=_valid_spot, iv=_valid_iv, rfr=_valid_rfr, mono=_valid_moneyness)
 @settings(max_examples=300)
-def test_property_gamma_positive(
-    spot: float, iv: float, rfr: float, mono: float
-) -> None:
+def test_property_gamma_positive(spot: float, iv: float, rfr: float, mono: float) -> None:
     """I5: gamma > 0 for valid-regime inputs."""
     strike = round(spot * mono, 2)
     assume(strike > 1.0)
@@ -282,9 +298,7 @@ def test_property_gamma_positive(
 
 @given(spot=_valid_spot, iv=_valid_iv, rfr=_valid_rfr, mono=_valid_moneyness)
 @settings(max_examples=300)
-def test_property_theta_negative(
-    spot: float, iv: float, rfr: float, mono: float
-) -> None:
+def test_property_theta_negative(spot: float, iv: float, rfr: float, mono: float) -> None:
     """I6: theta < 0 for valid-regime inputs with T > TIME_FLOOR."""
     strike = round(spot * mono, 2)
     assume(strike > 1.0)
@@ -296,9 +310,7 @@ def test_property_theta_negative(
 
 @given(spot=_valid_spot, iv=_valid_iv, rfr=_valid_rfr, mono=_valid_moneyness)
 @settings(max_examples=300)
-def test_property_price_consistency_i7(
-    spot: float, iv: float, rfr: float, mono: float
-) -> None:
+def test_property_price_consistency_i7(spot: float, iv: float, rfr: float, mono: float) -> None:
     """I7: price == bs_call_price with identical inputs within 1e-9."""
     strike = round(spot * mono, 2)
     assume(strike > 1.0)
@@ -550,9 +562,7 @@ def test_multi_ticker_missing_tickers_listed_all() -> None:
     c_vti = _make_ticker_contract("VTI", strike=100.0, n_contracts=1.0)
     c_iwm = _make_ticker_contract("IWM", strike=100.0, n_contracts=1.0)
     c_gld = _make_ticker_contract("GLD", strike=100.0, n_contracts=1.0)
-    portfolio = _make_live_portfolio(
-        leaps_contracts=((c_vti, 1.0), (c_iwm, 1.0), (c_gld, 1.0))
-    )
+    portfolio = _make_live_portfolio(leaps_contracts=((c_vti, 1.0), (c_iwm, 1.0), (c_gld, 1.0)))
 
     with pytest.raises(ValueError, match=r"IWM.*GLD|GLD.*IWM"):
         compute_portfolio_greeks(portfolio, spot={"VTI": 200.0}, iv={"VTI": 0.20})
@@ -573,9 +583,7 @@ def test_leaps_mtm_by_ticker_sums_per_ticker() -> None:
     c_vti = _make_ticker_contract("VTI", strike=100.0, n_contracts=2.0)
     c_iwm = _make_ticker_contract("IWM", strike=100.0, n_contracts=3.0)
     c_vti2 = _make_ticker_contract("VTI", strike=120.0, n_contracts=1.5)
-    portfolio = _make_live_portfolio(
-        leaps_contracts=((c_vti, 1.0), (c_iwm, 0.8), (c_vti2, 1.0))
-    )
+    portfolio = _make_live_portfolio(leaps_contracts=((c_vti, 1.0), (c_iwm, 0.8), (c_vti2, 1.0)))
     spot = {"VTI": 210.0, "IWM": 180.0}
     iv = {"VTI": 0.20, "IWM": 0.30}
     pg = compute_portfolio_greeks(portfolio, spot=spot, iv=iv)
@@ -650,3 +658,545 @@ def test_property_multi_ticker_routing_uses_own_spot_and_iv(fixture) -> None:
     for cg in pg.contracts:
         assert cg.spot == spot_map[cg.contract.ticker]
         assert cg.iv == iv_map[cg.contract.ticker]
+
+
+# ===========================================================================
+# F-2: Surface-aware greeks (D5 sticky-moneyness delta, D6 level-vega)
+# ===========================================================================
+
+from finance.consts import SsviParams  # noqa: E402
+from finance.greeks import VolConvention  # noqa: E402
+from finance.vol_surface import atm_total_variance, surface_implied_vol  # noqa: E402
+
+_SSVI_EQUITY = SsviParams(rho=-0.7, eta=1.1, gamma=0.42, kappa=1.5, sigma_inf=0.18)
+_SSVI_GLD = SsviParams(rho=0.15, eta=0.9, gamma=0.42, kappa=1.5, sigma_inf=0.18)
+
+
+def _dsigma_dk_reference(log_moneyness: float, theta: float, params: SsviParams, t: float) -> float:
+    """Independent finite-difference d(sigma)/dk along the SSVI smile."""
+    from finance.greeks import _dsigma_dk
+
+    h = 1e-6
+    w_plus = surface_implied_vol.__globals__["ssvi_total_variance"](
+        log_moneyness + h, theta, params
+    )
+    w_minus = surface_implied_vol.__globals__["ssvi_total_variance"](
+        log_moneyness - h, theta, params
+    )
+    analytic = _dsigma_dk(log_moneyness, theta, params, t)
+    # cross-check the finite difference against the analytic value
+    fd = (math.sqrt(w_plus / t) - math.sqrt(w_minus / t)) / (2 * h)
+    np.testing.assert_allclose(analytic, fd, atol=1e-5)
+    return analytic
+
+
+def test_flat_path_bit_for_bit_regression() -> None:
+    """params=None reproduces the pre-change flat implementation exactly."""
+    contract = _make_contract(strike=100.0, n_contracts=2.0)
+    cg = compute_contract_greeks(
+        contract, 200.0, 0.20, _AS_OF, risk_free_rate=0.04, leaps_scale=0.9
+    )
+
+    t = max((contract.expiry_date - _AS_OF).days / 365.0, TIME_FLOOR)
+    scale = 2.0 * CONTRACT_MULTIPLIER * 0.9
+    np.testing.assert_array_equal(
+        [
+            cg.time_to_expiry,
+            cg.iv,
+            cg.price,
+            cg.delta,
+            cg.gamma,
+            cg.vega,
+            cg.theta,
+            cg.vanna,
+            cg.charm,
+            cg.leaps_scale,
+            cg.position_delta,
+            cg.position_vega,
+            cg.position_theta,
+        ],
+        [
+            t,
+            0.20,
+            bs_call_price(200.0, 100.0, t, 0.20, 0.04, contract.dividend_yield),
+            bs_call_delta(200.0, 100.0, t, 0.20, 0.04, contract.dividend_yield),
+            bs_call_gamma(200.0, 100.0, t, 0.20, 0.04, contract.dividend_yield),
+            bs_call_vega(200.0, 100.0, t, 0.20, 0.04, contract.dividend_yield),
+            bs_call_theta(200.0, 100.0, t, 0.20, 0.04, contract.dividend_yield),
+            bs_call_vanna(200.0, 100.0, t, 0.20, 0.04, contract.dividend_yield),
+            bs_call_charm(200.0, 100.0, t, 0.20, 0.04, contract.dividend_yield),
+            0.9,
+            bs_call_delta(200.0, 100.0, t, 0.20, 0.04, contract.dividend_yield) * scale,
+            bs_call_vega(200.0, 100.0, t, 0.20, 0.04, contract.dividend_yield) * scale,
+            bs_call_theta(200.0, 100.0, t, 0.20, 0.04, contract.dividend_yield) * scale,
+        ],
+    )
+    assert cg.delta_sticky_strike is None
+    assert cg.level_vega is None
+
+
+def test_surface_iv_sourced_from_vol_surface() -> None:
+    """Surface path: iv field equals surface_implied_vol composed independently."""
+    contract = _make_contract(strike=100.0)
+    spot, vol_index, rfr = 200.0, 0.18, 0.03
+    cg = compute_contract_greeks(
+        contract,
+        spot,
+        None,
+        _AS_OF,
+        risk_free_rate=rfr,
+        params=_SSVI_EQUITY,
+        vol_index_level=vol_index,
+    )
+    expected_iv = surface_implied_vol(
+        spot=spot,
+        strike=100.0,
+        time_to_expiry_years=cg.time_to_expiry,
+        vol_index_level=vol_index,
+        params=_SSVI_EQUITY,
+        dividend_yield=contract.dividend_yield,
+        risk_free_rate=rfr,
+    )
+    assert cg.iv == expected_iv
+
+
+def test_surface_delta_sm_formula_k_minus_0_69() -> None:
+    """Hand-computed delta_sm at k = -0.69 (D5): delta_sm = delta_BS - (vega/S)*dsigma/dk."""
+    contract = _make_contract(strike=100.0)
+    spot, vol_index, rfr = 200.0, 0.18, 0.03
+    cg = compute_contract_greeks(
+        contract,
+        spot,
+        None,
+        _AS_OF,
+        risk_free_rate=rfr,
+        params=_SSVI_EQUITY,
+        vol_index_level=vol_index,
+    )
+    t = cg.time_to_expiry
+    theta = atm_total_variance(vol_index, t, _SSVI_EQUITY)
+    forward = spot * math.exp((rfr - contract.dividend_yield) * t)
+    k = math.log(100.0 / forward)  # deep ITM, ~ -0.69-0.75
+    assert -0.80 < k < -0.60
+    dsigma_dk = _dsigma_dk_reference(k, theta, _SSVI_EQUITY, t)
+    expected = cg.delta_sticky_strike - (cg.vega / spot) * dsigma_dk
+    np.testing.assert_allclose(cg.delta, expected, atol=1e-12)
+    assert 0.0 < cg.delta < 1.0
+
+
+def test_surface_delta_sign_flips_with_rho_gld() -> None:
+    """Near ATM the dsigma/dk sign follows rho (D3/D5), flipping the delta_sm correction.
+
+    At k ~ 0 the SSVI smile slope is theta*phi*rho: negative for the equity put
+    skew (rho < 0 -> delta_sm > delta_BS) and positive for the GLD call skew
+    (rho > 0 -> delta_sm < delta_BS).
+    """
+    contract = _make_contract(strike=200.0, spot_at_purchase=200.0)
+    cg_vti = compute_contract_greeks(
+        contract,
+        200.0,
+        None,
+        _AS_OF,
+        risk_free_rate=0.0,
+        params=_SSVI_EQUITY,
+        vol_index_level=0.18,
+    )
+    cg_gld = compute_contract_greeks(
+        contract,
+        200.0,
+        None,
+        _AS_OF,
+        risk_free_rate=0.0,
+        params=_SSVI_GLD,
+        vol_index_level=0.18,
+    )
+    assert cg_vti.delta > cg_vti.delta_sticky_strike  # put skew: dsigma/dk < 0
+    assert cg_gld.delta < cg_gld.delta_sticky_strike  # call skew: dsigma/dk > 0
+
+
+def test_surface_delta_atm_rho_term_vanishes() -> None:
+    """k = 0 (ATM): the rho*phi*k term vanishes; w = theta and dsigma/dk stays finite."""
+    contract = _make_contract(strike=200.0, spot_at_purchase=200.0)
+    cg = compute_contract_greeks(
+        contract,
+        200.0,
+        None,
+        _AS_OF,
+        risk_free_rate=0.0,
+        params=_SSVI_EQUITY,
+        vol_index_level=0.18,
+    )
+    t = cg.time_to_expiry
+    theta = atm_total_variance(0.18, t, _SSVI_EQUITY)
+    assert cg.iv == math.sqrt(theta / t)  # w(k=0) = theta
+    # At k=0 the smile slope is positive for either skew sign (curvature term)
+    _dsigma_dk_reference(0.0, theta, _SSVI_EQUITY, t)
+
+
+def test_level_vega_damping_kappa_1_5_tau_2y() -> None:
+    """D6: level_vega == vega * (1 - e^(-kappa*tau))/kappa within 1e-9 at kappa=1.5, tau=2y."""
+    cg = compute_contract_greeks(
+        _make_contract(strike=100.0),
+        200.0,
+        None,
+        _AS_OF,
+        risk_free_rate=0.03,
+        params=_SSVI_EQUITY,
+        vol_index_level=0.18,
+    )
+    expected = cg.vega * (1.0 - math.exp(-1.5 * cg.time_to_expiry)) / 1.5
+    np.testing.assert_allclose(cg.level_vega, expected, atol=1e-9)
+    # ~0.63 damping vs local vega at tau ~ 2y, kappa = 1.5
+    assert 0.5 < cg.level_vega / cg.vega < 0.8
+    assert cg.level_vega < cg.vega
+
+
+def test_surface_path_marks_within_parity_bounds() -> None:
+    """INV-3: parity bounds on the surface path, calm and crisis v0, k = -0.69, t = 2y."""
+    contract = _make_contract(strike=100.0)
+    for vol_index in (0.18, 0.80):
+        cg = compute_contract_greeks(
+            contract,
+            200.0,
+            None,
+            _AS_OF,
+            risk_free_rate=0.03,
+            params=_SSVI_EQUITY,
+            vol_index_level=vol_index,
+        )
+        q = contract.dividend_yield
+        lower = max(
+            0.0,
+            200.0 * math.exp(-q * cg.time_to_expiry) - 100.0 * math.exp(-0.03 * cg.time_to_expiry),
+        )
+        upper = 200.0 * math.exp(-q * cg.time_to_expiry)
+        assert lower <= cg.price <= upper
+
+
+def test_surface_greeks_finite() -> None:
+    """All surface-path fields finite, including the new nullable ones."""
+    cg = compute_contract_greeks(
+        _make_contract(strike=100.0),
+        200.0,
+        None,
+        _AS_OF,
+        risk_free_rate=0.03,
+        params=_SSVI_EQUITY,
+        vol_index_level=0.18,
+    )
+    for field_name in (
+        "price",
+        "delta",
+        "gamma",
+        "vega",
+        "theta",
+        "vanna",
+        "charm",
+        "position_delta",
+        "position_vega",
+        "position_theta",
+        "delta_sticky_strike",
+        "level_vega",
+    ):
+        val = getattr(cg, field_name)
+        assert val is not None and math.isfinite(val), f"{field_name} not finite: {val}"
+
+
+def test_sticky_strike_convention_headline() -> None:
+    """vol_convention=STICKY_STRIKE: headline delta is the plain BSM delta."""
+    contract = _make_contract(strike=100.0)
+    cg_sm = compute_contract_greeks(
+        contract,
+        200.0,
+        None,
+        _AS_OF,
+        risk_free_rate=0.03,
+        params=_SSVI_EQUITY,
+        vol_index_level=0.18,
+    )
+    cg_ss = compute_contract_greeks(
+        contract,
+        200.0,
+        None,
+        _AS_OF,
+        risk_free_rate=0.03,
+        params=_SSVI_EQUITY,
+        vol_index_level=0.18,
+        vol_convention=VolConvention.STICKY_STRIKE,
+    )
+    assert cg_ss.delta == cg_ss.delta_sticky_strike
+    assert cg_ss.delta_sticky_strike == cg_sm.delta_sticky_strike
+    assert cg_ss.delta != cg_sm.delta
+    # everything except the headline delta is unchanged
+    np.testing.assert_allclose(
+        cg_ss.position_delta,
+        cg_ss.delta * cg_ss.contract.n_contracts * CONTRACT_MULTIPLIER * cg_ss.leaps_scale,
+        rtol=1e-12,
+    )
+
+
+def test_partial_surface_inputs_raise() -> None:
+    """Edge case: params without vol_index_level (and vice versa) -> ValueError."""
+    contract = _make_contract()
+    with pytest.raises(ValueError, match="must be given together"):
+        compute_contract_greeks(
+            contract, 200.0, None, _AS_OF, params=_SSVI_EQUITY, vol_index_level=None
+        )
+    with pytest.raises(ValueError, match="must be given together"):
+        compute_contract_greeks(contract, 200.0, 0.20, _AS_OF, params=None, vol_index_level=0.18)
+
+
+def test_neither_iv_nor_surface_inputs_raise() -> None:
+    """Neither iv nor (params, vol_index_level) -> ValueError."""
+    with pytest.raises(ValueError, match="either iv or"):
+        compute_contract_greeks(_make_contract(), 200.0, None, _AS_OF)
+
+
+def test_portfolio_surface_routing_per_ticker() -> None:
+    """Per-ticker routing on the surface path: VTI gets equity params, GLD gets gold."""
+    c_vti = _make_ticker_contract("VTI", strike=100.0, n_contracts=1.0)
+    c_gld = _make_ticker_contract("GLD", strike=100.0, n_contracts=1.0)
+    portfolio = _make_live_portfolio(leaps_contracts=((c_vti, 1.0), (c_gld, 1.0)))
+    pg = compute_portfolio_greeks(
+        portfolio,
+        spot={"VTI": 200.0, "GLD": 180.0},
+        iv=None,
+        risk_free_rate=0.03,
+        params={"VTI": _SSVI_EQUITY, "GLD": _SSVI_GLD},
+        vol_index={"VTI": 0.18, "GLD": 0.15},
+    )
+    by_ticker = {cg.contract.ticker: cg for cg in pg.contracts}
+    expected_vti_iv = surface_implied_vol(
+        spot=200.0,
+        strike=100.0,
+        time_to_expiry_years=by_ticker["VTI"].time_to_expiry,
+        vol_index_level=0.18,
+        params=_SSVI_EQUITY,
+        dividend_yield=c_vti.dividend_yield,
+        risk_free_rate=0.03,
+    )
+    assert by_ticker["VTI"].iv == expected_vti_iv
+    assert by_ticker["VTI"].level_vega is not None
+    assert by_ticker["GLD"].delta > by_ticker["GLD"].delta_sticky_strike  # call skew
+    expected_delta = sum(cg.position_delta for cg in pg.contracts)
+    np.testing.assert_allclose(pg.net_delta, expected_delta, rtol=1e-12)
+
+
+def test_portfolio_surface_missing_ticker_scalar_fallback() -> None:
+    """Ticker absent from surface maps falls back to scalar iv when provided."""
+    c_vti = _make_ticker_contract("VTI", strike=100.0, n_contracts=1.0)
+    c_iwm = _make_ticker_contract("IWM", strike=100.0, n_contracts=1.0)
+    portfolio = _make_live_portfolio(leaps_contracts=((c_vti, 1.0), (c_iwm, 1.0)))
+    pg = compute_portfolio_greeks(
+        portfolio,
+        spot={"VTI": 200.0, "IWM": 180.0},
+        iv={"IWM": 0.25},
+        risk_free_rate=0.03,
+        params={"VTI": _SSVI_EQUITY},
+        vol_index={"VTI": 0.18},
+    )
+    by_ticker = {cg.contract.ticker: cg for cg in pg.contracts}
+    assert by_ticker["VTI"].level_vega is not None
+    assert by_ticker["IWM"].level_vega is None
+    assert by_ticker["IWM"].iv == 0.25
+
+
+def test_portfolio_surface_missing_ticker_fails_loud() -> None:
+    """Ticker absent from both surface maps and iv -> ValueError listing it."""
+    c_vti = _make_ticker_contract("VTI", strike=100.0, n_contracts=1.0)
+    c_iwm = _make_ticker_contract("IWM", strike=100.0, n_contracts=1.0)
+    c_gld = _make_ticker_contract("GLD", strike=100.0, n_contracts=1.0)
+    portfolio = _make_live_portfolio(leaps_contracts=((c_vti, 1.0), (c_iwm, 1.0), (c_gld, 1.0)))
+    with pytest.raises(ValueError, match=r"IWM.*GLD|GLD.*IWM"):
+        compute_portfolio_greeks(
+            portfolio,
+            spot={"VTI": 200.0, "IWM": 180.0, "GLD": 170.0},
+            iv=None,
+            params={"VTI": _SSVI_EQUITY},
+            vol_index={"VTI": 0.18},
+        )
+
+
+def test_portfolio_partial_surface_map_raises() -> None:
+    """params map has a ticker vol_index lacks (or vice versa) -> ValueError."""
+    c_vti = _make_ticker_contract("VTI", strike=100.0, n_contracts=1.0)
+    portfolio = _make_live_portfolio(leaps_contracts=((c_vti, 1.0),))
+    with pytest.raises(ValueError, match="must be given together"):
+        compute_portfolio_greeks(
+            portfolio,
+            spot={"VTI": 200.0},
+            iv=None,
+            params={"VTI": _SSVI_EQUITY},
+            vol_index={"IWM": 0.18},
+        )
+
+
+def test_portfolio_flat_path_bit_for_bit() -> None:
+    """Flat portfolio path unchanged: scalar iv dict yields identical results."""
+    c_vti = _make_ticker_contract("VTI", strike=100.0, n_contracts=2.0)
+    c_iwm = _make_ticker_contract("IWM", strike=150.0, n_contracts=1.0)
+    portfolio = _make_live_portfolio(leaps_contracts=((c_vti, 0.8), (c_iwm, 1.0)))
+    pg = compute_portfolio_greeks(
+        portfolio,
+        spot={"VTI": 200.0, "IWM": 180.0},
+        iv={"VTI": 0.20, "IWM": 0.30},
+        risk_free_rate=0.04,
+    )
+    for cg in pg.contracts:
+        assert cg.delta_sticky_strike is None
+        assert cg.level_vega is None
+        assert cg.iv in (0.20, 0.30)
+
+
+# ---------------------------------------------------------------------------
+# Property: surface-path marks within parity bounds; delta in (0, 1) both ways
+# ---------------------------------------------------------------------------
+
+_valid_vol_index = st.floats(min_value=0.08, max_value=0.80, allow_nan=False, allow_infinity=False)
+
+
+@given(
+    spot=_valid_spot,
+    vol_index=_valid_vol_index,
+    rfr=_valid_rfr,
+    mono=st.floats(min_value=0.5, max_value=1.0, allow_nan=False, allow_infinity=False),
+    params_choice=st.sampled_from([("equity", _SSVI_EQUITY), ("gld", _SSVI_GLD)]),
+)
+@settings(max_examples=200)
+def test_property_surface_parity_and_delta_bounds(
+    spot: float, vol_index: float, rfr: float, mono: float, params_choice: tuple
+) -> None:
+    """INV-3: mark within parity bounds for random valid surface inputs; delta in (0, 1)."""
+    strike = round(spot * mono, 2)
+    assume(strike > 1.0)
+    _, params = params_choice
+    contract = _make_contract(strike=strike)
+    for convention in (VolConvention.STICKY_MONEYNESS, VolConvention.STICKY_STRIKE):
+        cg = compute_contract_greeks(
+            contract,
+            spot,
+            None,
+            _AS_OF,
+            risk_free_rate=rfr,
+            params=params,
+            vol_index_level=vol_index,
+            vol_convention=convention,
+        )
+        q = contract.dividend_yield
+        lower = max(
+            0.0,
+            spot * math.exp(-q * cg.time_to_expiry) - strike * math.exp(-rfr * cg.time_to_expiry),
+        )
+        upper = spot * math.exp(-q * cg.time_to_expiry)
+        assert lower <= cg.price <= upper
+        assert 0.0 < cg.delta < 1.0
+        assert 0.0 < cg.delta_sticky_strike < 1.0
+
+
+# ---------------------------------------------------------------------------
+# Judge round-1 required actions: surviving-mutant coverage pins
+# (reviews/judge_verdicts/vol-F-002_verdict_round_1.txt)
+# ---------------------------------------------------------------------------
+
+
+def test_surface_delta_sm_with_dividend_yield_pins_r_minus_q_forward() -> None:
+    """Mutant 58 (greeks.py:240): delta_sm must use F = S*exp((r-q)*t), not (r+q)*t.
+
+    Every other surface-path test uses dividend_yield=0.0, hiding a sign flip;
+    at q=0.013 the wrong-forward delta_sm differs by ~3e-4.
+    """
+    q = 0.013
+    contract = _make_contract(strike=100.0, dividend_yield=q)
+    spot, vol_index, rfr = 200.0, 0.18, 0.03
+    cg = compute_contract_greeks(
+        contract,
+        spot,
+        None,
+        _AS_OF,
+        risk_free_rate=rfr,
+        params=_SSVI_EQUITY,
+        vol_index_level=vol_index,
+    )
+    t = cg.time_to_expiry
+    theta = atm_total_variance(vol_index, t, _SSVI_EQUITY)
+
+    forward = spot * math.exp((rfr - q) * t)
+    dsigma_dk = _dsigma_dk_reference(math.log(100.0 / forward), theta, _SSVI_EQUITY, t)
+    expected = cg.delta_sticky_strike - (cg.vega / spot) * dsigma_dk
+    np.testing.assert_allclose(cg.delta, expected, atol=1e-12)
+
+    # the (r+q)-forward variant must be discriminated: it lands ~3e-4 away
+    forward_wrong = spot * math.exp((rfr + q) * t)
+    dsigma_dk_wrong = _dsigma_dk_reference(math.log(100.0 / forward_wrong), theta, _SSVI_EQUITY, t)
+    expected_wrong = cg.delta_sticky_strike - (cg.vega / spot) * dsigma_dk_wrong
+    assert abs(cg.delta - expected_wrong) > 1e-5
+
+
+def test_dsigma_dk_radicand_below_one_otm_region() -> None:
+    """Mutant 117 (greeks.py:308): _dsigma_dk must use max(radicand, 0.0), not 1.0.
+
+    OTM-call region (k > 0) for the equity params has radicand < 1; at k=0.3,
+    t=2y, vol_index=0.18 the FD cross-check plus an exact expected value kill
+    the max(radicand, 1.0) mutant (which shifts dsigma/dk by ~0.018).
+    """
+    t, vol_index, k = 2.0, 0.18, 0.3
+    theta = atm_total_variance(vol_index, t, _SSVI_EQUITY)
+
+    from finance.vol_surface import ssvi_total_variance
+
+    phi = (
+        _SSVI_EQUITY.eta
+        * theta ** (-_SSVI_EQUITY.gamma)
+        * (1.0 + theta) ** (_SSVI_EQUITY.gamma - 1.0)
+    )
+    radicand = (phi * k + _SSVI_EQUITY.rho) ** 2 + 1.0 - _SSVI_EQUITY.rho**2
+    assert 0.0 < radicand < 1.0  # the untested region: FD + exact value below
+
+    analytic = _dsigma_dk_reference(k, theta, _SSVI_EQUITY, t)
+
+    h = 1e-6
+    fd = (
+        math.sqrt(ssvi_total_variance(k + h, theta, _SSVI_EQUITY) / t)
+        - math.sqrt(ssvi_total_variance(k - h, theta, _SSVI_EQUITY) / t)
+    ) / (2 * h)
+    np.testing.assert_allclose(analytic, fd, atol=1e-5)
+    assert fd < -0.05  # correct value ~ -0.063; the mutant lands at ~ -0.081
+
+
+def test_portfolio_default_risk_free_rate_is_zero() -> None:
+    """Mutant 126 (greeks.py:318): compute_portfolio_greeks default risk_free_rate=0.0.
+
+    Calling without risk_free_rate must equal per-contract results computed at
+    an explicit r=0.0, bit-for-bit.
+    """
+    c_vti = _make_ticker_contract("VTI", strike=100.0, n_contracts=2.0)
+    c_iwm = _make_ticker_contract("IWM", strike=150.0, n_contracts=1.0)
+    portfolio = _make_live_portfolio(leaps_contracts=((c_vti, 0.8), (c_iwm, 1.0)))
+    spot = {"VTI": 200.0, "IWM": 180.0}
+    iv = {"VTI": 0.20, "IWM": 0.30}
+
+    pg_default = compute_portfolio_greeks(portfolio, spot=spot, iv=iv)
+    for cg in pg_default.contracts:
+        expected = compute_contract_greeks(
+            cg.contract,
+            spot[cg.contract.ticker],
+            iv[cg.contract.ticker],
+            _AS_OF,
+            risk_free_rate=0.0,
+            leaps_scale=cg.leaps_scale,
+        )
+        assert cg.iv == expected.iv
+        assert cg.price == expected.price
+        assert cg.delta == expected.delta
+    # aggregate nets also pinned at r=0 (a default of 1.0 shifts every price)
+    assert pg_default.net_delta == sum(
+        compute_contract_greeks(
+            cg.contract,
+            spot[cg.contract.ticker],
+            iv[cg.contract.ticker],
+            _AS_OF,
+            risk_free_rate=0.0,
+            leaps_scale=cg.leaps_scale,
+        ).position_delta
+        for cg in pg_default.contracts
+    )

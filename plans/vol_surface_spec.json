@@ -805,7 +805,7 @@
       "phase": "2",
       "kind": "build",
       "layer": "python",
-      "status": "planned",
+      "status": "complete",
       "component_ids": [
         "greeks",
         "pricing"
