@@ -906,7 +906,7 @@
       "phase": "3",
       "kind": "build",
       "layer": "python",
-      "status": "pending_judge",
+      "status": "complete",
       "component_ids": [
         "live_path",
         "greeks"
@@ -999,7 +999,7 @@
       "phase": "4",
       "kind": "build",
       "layer": "python",
-      "status": "pending_judge",
+      "status": "complete",
       "component_ids": [
         "backtest",
         "pricing"
@@ -1094,7 +1094,7 @@
       "phase": "5",
       "kind": "validation",
       "layer": "python",
-      "status": "pending_judge",
+      "status": "in_progress",
       "component_ids": [
         "validation"
       ],
