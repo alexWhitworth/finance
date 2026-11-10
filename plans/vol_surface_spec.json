@@ -1094,7 +1094,7 @@
       "phase": "5",
       "kind": "validation",
       "layer": "python",
-      "status": "in_progress",
+      "status": "pending_judge",
       "component_ids": [
         "validation"
       ],
