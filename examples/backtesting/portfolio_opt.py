@@ -1,6 +1,6 @@
 """
-This example demonstrates how to run a backtest for a range of different portfolio weight 
-combinations, and then compare the results.
+This example demonstrates how to run a backtest for a range of different portfolio
+weight combinations, and then compare the results.
 """
 
 from pathlib import Path
@@ -13,7 +13,6 @@ from finance.metrics import build_performance_report
 from finance.portfolio import run_backtest
 from finance.returns import build_return_data
 from finance.volatility import build_volatility_model
-
 
 INITIAL_NAV = 1_000_000.0
 MONTHLY_CONTRIBUTION = 10_000.0
@@ -86,8 +85,8 @@ if __name__ == "__main__":
     print("\n=== Charting ===")
     output_path_nav = Path("outputs/figures/portfolio_opt_nav.png")
     output_path_pareto = Path("outputs/figures/portfolio_opt_pareto.png")
-    
+
     plot_nav_growth(bt_d, output_path=output_path_nav)
-    
+
     extracted = {k: pr.full_period for k, pr in reports_d.items()}
     plot_pareto(extracted, output_path=output_path_pareto)

@@ -90,7 +90,9 @@ skew, and excess-kurtosis over full period and pre-defined crisis windows (GFC, 
 hike)
 - **TEY adjustment:** muni returns scaled to tax-equivalent yield at 40.8% NIIT
 - **LEAPS leverage:** DITM VTI LEAPS (50% strike, Black-Scholes pricing), with tax-aware biannual
-roll with LTCG preservation, and taxable vs. tax-sheltered scenarios
+roll with LTCG preservation, and taxable vs. tax-sheltered scenarios. LEAPS IV can be sourced
+from a flat scalar or an SSVI implied-volatility surface (`vol_model="flat" | "ssvi"`; see
+[Volatility Surface](#volatility-surface-ssvi)).
 - **Rebalancing** — Three options currently supported (extensible to risk parity):
     1. Quarterly: to exact user-specified weights
     2. Monthly DRIFT: rebalances on threshold-drift vs user-specified weights, allowing
@@ -254,6 +256,49 @@ print(format_leaps_dca_signal_table(signal))
 
 See [`examples/portfolio_manage/leaps_dca_signal.py`](examples/portfolio_manage/leaps_dca_signal.py)
 for the full runnable version, including a 12-month signal sweep.
+
+#### Volatility Surface (SSVI)
+
+`finance.vol_surface` prices a strike/expiry on a closed-form SSVI implied-volatility surface
+(Gatheral & Jacquier 2014). The ATM total-variance curve `theta(tau)` follows an OU
+(mean-reverting) variance law anchored to the 30-day vol index; the SSVI smile wraps it in
+log-forward-moneyness space. The pure functions take a vol-index level, spot, strike and time to
+expiry and return `sigma(k, t)` — no I/O, no solver, no stored state.
+
+```python
+from finance.consts import SSVI_PARAMS
+from finance.vol_surface import atm_total_variance, check_surface_arbitrage, surface_implied_vol
+
+params = SSVI_PARAMS["VTI"]           # frozen (rho, eta, gamma, kappa, sigma_inf)
+vol_index_level = 0.18                # decimal annualized (e.g. VIX 18)
+t = 2.0                               # years to expiry
+
+sigma = surface_implied_vol(
+    spot=368.56, strike=165.0, time_to_expiry_years=t,
+    vol_index_level=vol_index_level, params=params,
+    dividend_yield=0.0106, risk_free_rate=0.0456,
+)
+theta = atm_total_variance(vol_index_level, t, params)   # ATM total variance
+report = check_surface_arbitrage(params, max_vol_index_level=0.80)
+```
+
+- **Flat vs. SSVI (`vol_model`):** the LEAPS mark path picks IV by `vol_model`. `"flat"` (the
+default) reproduces the pre-surface scalar-iv logic bit-for-bit (`max(raw_vol, config.iv)` floors
+and a 30-day rolling mean). `"ssvi"` sources per-contract `sigma(k, t)` from the surface using the
+raw vol-index level — mean reversion is already captured by the OU `theta`, so the rolling mean
+and floors are bypassed. Set it on `PortfolioConfig(..., vol_model="ssvi")` for backtests.
+- **Sticky-moneyness vs. sticky-strike (`vol_convention`):** headline delta on the surface path
+is sticky-moneyness (D5) — `delta_sm = delta_bs - (vega/S) * d(sigma)/dk` — because the surface is
+parameterized in `k = ln(K/F)`. The plain BSM (sticky-strike) delta stays available as
+`ContractGreeks.delta_sticky_strike`. Level-vega (D6), `ContractGreeks.level_vega =
+vega * (1 - e^(-kappa*tau))/kappa`, reports sensitivity to the vol-index variance `v0`, not the
+local smile point — so headline vega reflects the mark's actual vol-index exposure.
+- **Pricing/greeks on the surface:** pass per-ticker `params` and `vol_index` maps to
+`compute_portfolio_greeks`; each contract routes through `surface_implied_vol`.
+`compute_contract_greeks` takes `params=` and `vol_index_level=` directly.
+
+See [`plans/vol_surface.md`](plans/vol_surface.md) for the full parameterization, no-arbitrage
+checks (butterfly/Lee caps), and the one-time broker-quote validation.
 
 #### Portfolio Weight Optimization
 

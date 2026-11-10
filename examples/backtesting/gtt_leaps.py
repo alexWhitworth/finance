@@ -61,7 +61,9 @@ if __name__ == "__main__":
 
     print("=== Fetching Price Data ===")
     tickers = [t for t in list(WEIGHTS.keys()) if t != "VTI_LEAPS"]
-    price_data = build_price_data(START, END, tickers=tickers, use_splice=True, fetch_vol_indices=True)
+    price_data = build_price_data(
+        START, END, tickers=tickers, use_splice=True, fetch_vol_indices=True
+    )
 
     print("=== Fetching Risk-Free Rate ===")
     rfr_series = fetch_risk_free_rate(START, END)
@@ -167,7 +169,9 @@ if __name__ == "__main__":
     base_drift_result = run_backtest(return_data, price_data, base_leaps_drift)
     gtt_result = run_backtest(return_data, price_data, gtt_leaps_drift, gtt_signal=gtt_signal)
     base_glide_result = run_backtest(return_data, price_data, base_leaps_glide)
-    # gtt_glide_result = run_backtest(return_data, price_data, gtt_leaps_glide, gtt_signal=gtt_signal)
+    # gtt_glide_result = run_backtest(
+    #     return_data, price_data, gtt_leaps_glide, gtt_signal=gtt_signal
+    # )
 
     print("=== Building Volatility Model ===")
     vol_model = build_volatility_model(return_data)

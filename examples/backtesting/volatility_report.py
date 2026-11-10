@@ -13,7 +13,7 @@ import pandas as pd
 from finance._portfolio_types import PortfolioConfig
 from finance.data import build_price_data, fetch_risk_free_rate
 from finance.figures import plot_vol_contributions
-from finance.leverage import RebalanceRule, WeightStrategy, AccountType, LeapsConfig
+from finance.leverage import AccountType, LeapsConfig, RebalanceRule, WeightStrategy
 from finance.metrics import build_performance_report
 from finance.portfolio import run_backtest
 from finance.returns import build_return_data
