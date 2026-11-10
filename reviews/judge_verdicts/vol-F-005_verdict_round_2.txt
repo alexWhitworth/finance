@@ -1,0 +1,114 @@
+JUDGE VERDICT — Feature F-5 'Validation harness: extrinsic-vs-spread, pinning, sensitivity' (kind: validation)
+Round 2. Repo /home/alexwhitworth/github_projects/finance, revision c2c870e (actor commits 6a072b9, d0b6960, c2c870e).
+
+Files reviewed: validation/validate_marks.py, validation/manual_quotes.csv,
+validation/report.md, plans/vol_surface_spec.json (status change only). Round-1
+verdict: FAIL (P0-1 circular validation, P2-1/P2-2 notes).
+
+All numeric claims below were independently recomputed from the CSV source with
+the library APIs (no Actor-reported values taken on trust).
+
+CRITERION RESULTS
+
+AC-1 (INV-7 report for human review): MET. Script runs end-to-end
+(`UV_FROZEN=1 uv run python validation/validate_marks.py` -> EXIT=0); report
+emission is byte-stable across reruns (git-clean after regeneration). Human
+review sign-off received this session (2026-11-10), closing the round-1
+dev_run outstanding item.
+
+AC-2a (per-quote model ext vs bid/ask ext with half-spread; >=2/3 inside with
+correct r(T)/q): MET. manual_quotes.csv now holds 18 real intraday broker
+quotes (2026-11-10, 2028-12-15 LEAPS expiry; VTI 8, IWM 3, GLD 7) — zero
+synthetic-seed rows remain. Independent recomputation of all 18 rows
+(maturity-matched r(T) per D8 from ^IRX/DGS2 anchors, q from CSV, BS call at
+surface IV) reproduces the report exactly: 13/18 inside the half-spread =
+72% >= 2/3 -> PASS. All 5 outside rows are GLD K=250..410, where quote IV
+exceeds model IV by +4.96..+3.63 pts. New required element satisfied: the
+INV-7 invariant statement requires the residual gap be *attributed* in the
+report; the new 'Residual gap attribution' section (validate_marks.py,
+_emit_residual_attribution) inverts quote-mid BS IVs (bisection, spec's
+'Jaeckel-style IV inversion only if needed for diagnostics') and attributes
+the GLD misses to smile shape (rho/eta), mean +4.15 IV pts, range 1.33 pts,
+gap declining with moneyness — a level/term-structure input would show a
+near-uniform gap instead. Attribution logic verified: uniform-gap threshold
+(<= 0.01) vs moneyness-varying classification is sound.
+
+AC-2b (kappa +/-0.5 + sigma_inf sensitivity on 2y ATM band): MET, no longer
+degenerate. At the real vol-index levels (VTI 0.2015, IWM 0.2231, GLD 0.2493
+!= sigma_inf 0.18) the kappa perturbation now moves the 2y ATM sigma for all
+three tickers (VTI 0.1871/0.1855/0.1896; IWM 0.1947/0.1915/0.1998; GLD
+0.2045/0.1993/0.2127), so U2 is genuinely exercised. Round-1 P2-1 addressed
+twice over: real levels break the identity, and the degeneracy note is
+retained in the report for the record.
+
+AC-2c (pinned (rho,eta) vs priors U1): MET. Pinned values now come from the
+real smile, not seeds: VTI -0.48/1.71 and GLD -0.08/0.72 (vs priors -0.70/1.10
+and +0.15/0.90), source column reads 'manual quote'. Verified the pinned signs
+are consistent with independently inverted quote IVs: VTI put-wing 0.3744 >
+call-wing 0.1809 (put skew, rho<0, matches prior sign); GLD put-wing 0.2766 >
+call-wing 0.2402 — i.e. the observed GLD Dec-2028 smile has a *negative* tilt
+while the frozen prior is +0.15. The harness correctly surfaces this: GLD is
+the only ticker with outside rows, all on the wing the prior mispriced. This
+is precisely the wrong-skew-sign risk U1 warned about, now evidenced by real
+quotes and pinned — the pinning deliverable worked as designed.
+
+AC-3 (MOVE D_eff check, D7/U6): MET. Real observed ^MOVE 92.22 bp with
+observation date recorded (2026-11-10 11:02 PT) — round-1 P2-2 resolved.
+Independent recomputation: VGIT D_eff 5.1 -> IV 0.0470 in [0.03, 0.08]; MUB
+D_eff 5.5 -> IV 0.0507 in [0.02, 0.06]. Both inside; conversion matches
+finance.data.convert_vol_index_level exactly.
+
+AC-edge (rows missing bid or ask excluded and noted): MET (code-level,
+unchanged from round 1). All 18 committed rows carry bid/ask so the exclusion
+path remains unexercised in the committed data — acceptable for a one-time
+human-reviewed report.
+
+dev_run (script runs end-to-end against >=10 quotes across VTI/IWM/GLD
+expiries, emits report.md, human signs off): MET. 18 quotes across VTI/IWM/GLD
+(8/3/7), end-to-end EXIT=0, report emitted, human sign-off received.
+Note: all 18 rows share one expiry (2028-12-15). The criterion's core
+(>=10 quotes across VTI/IWM/GLD, end-to-end, human review) is met; expiry
+diversity would additionally exercise the r(T) interpolation and term-structure
+path, which this cycle does not — advisory only.
+
+Unit/property/mutation: EXEMPT per spec — not evaluated. Component boundary:
+respected — validation script uses only public APIs (finance.consts,
+finance.leverage.bs_call_price, finance.vol_surface.surface_implied_vol /
+atm_total_variance, finance.data.convert_vol_index_level); no library
+internals or test files touched.
+
+QUALITY GATES (re-run this session)
+- ruff check validation/: clean.
+- mypy --strict validation/validate_marks.py: clean.
+- pytest -k 'not slow': 1073 passed, coverage 98.46% (>= 85 required).
+
+FINDINGS
+
+P0-1 (round 1, circular validation): RESOLVED. No synthetic-seed rows remain;
+acceptance is computed from real quotes and independently reproduced (13/18).
+
+P2-1 (kappa degeneracy): RESOLVED (non-degenerate levels + retained note).
+P2-2 (MOVE level provenance): RESOLVED (observed level + date recorded).
+
+A-1 (advisory, no action required for this feature): the observed GLD skew
+sign (pinned rho -0.08 vs frozen prior +0.15) is a genuine data point against
+the D3 literature priors and drives all 5 outside rows. The frozen-prior
+design (D3) remains the committed contract; a Zeliade-style refit is the
+documented later extension and is a design decision for the parent workflow,
+not a defect of this validation feature. The report now pinpoints it.
+A-2 (advisory): single-expiry quote set (see dev_run note).
+A-3 (advisory): IWM vol-index is an intraday ^RVX print (22.31) per row note,
+not a close — contemporaneous with the quotes; acceptable, noted for the record.
+
+REQUIRED ACTIONS (Actor): none.
+
+OUTSTANDING ITEMS
+- None at the Judge stage. Advisory items A-1/A-2 are for the parent workflow
+  (potential D3 refit decision; optional multi-expiry refresh), not gates.
+
+DECISION TRAJECTORY: Round 1 FAIL (circular validation) -> required actions
+executed (honest claims, then real quotes entered by the human, pinning fit
+from real smile, residual attribution added) -> all criteria now genuinely
+evidenced. dev_run human sign-off closed.
+
+VERDICT: PASS -> F-5 complete.

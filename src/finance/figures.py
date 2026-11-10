@@ -21,7 +21,7 @@ import pandas as pd
 import plotnine as p9
 from matplotlib.figure import Figure
 
-from finance.consts import CRISIS_PERIODS, NBER_RECESSION_PERIODS
+from finance.consts import CONTRACT_MULTIPLIER, CRISIS_PERIODS, NBER_RECESSION_PERIODS
 from finance.dca_signal import LeapsDcaSignal
 from finance.greeks import PortfolioGreeks
 from finance.metrics import PerformanceMetrics, PerformanceReport
@@ -561,6 +561,14 @@ def format_contract_greeks_table(greeks: PortfolioGreeks) -> str:
             "vega": f"{cg.vega:.4f}",
             "theta/day": round(cg.theta, 2),
             "position_delta": round(cg.position_delta, 1),
+            "sigma": f"{cg.iv:.2%}",
+            "mark": (
+                f"{cg.price * cg.contract.n_contracts * CONTRACT_MULTIPLIER * cg.leaps_scale:,.2f}"
+            ),
+            "level_vega": "" if cg.level_vega is None else f"{cg.level_vega:.4f}",
+            "sticky_delta": (
+                "" if cg.delta_sticky_strike is None else f"{cg.delta_sticky_strike:.4f}"
+            ),
         }
         for cg in greeks.contracts
     ]

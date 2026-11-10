@@ -42,7 +42,10 @@ from finance.consts import (
     GTT_EQUITY_TICKERS,
     GTT_RISK_FREE_KEY,
     LEAPS_KEY_SUFFIX,
+    SSVI_PARAMS,
     VIX_MTM_WINDOW,
+    SsviParams,
+    VolModel,
 )
 from finance.data import PriceData
 from finance.gtt import GttSignalData
@@ -59,6 +62,7 @@ from finance.leverage import (
 )
 from finance.rebalance import should_rebalance
 from finance.returns import ReturnData
+from finance.vol_surface import surface_implied_vol
 
 
 # ---------------------------------------------------------------------------
@@ -412,12 +416,19 @@ def _build_context(
         underlying_prices = price_data.prices[underlying].reindex(idx, method="ffill")
         rfr_series = return_data.risk_free_rate.reindex(idx, method="ffill").fillna(0.0)
 
-        if (
+        has_vol = (
             not price_data.vol_prices.empty
             and underlying in price_data.vol_prices.columns
-        ):
+        )
+        if config.vol_model is VolModel.SSVI and not has_vol:
+            raise ValueError(
+                f"vol_model='ssvi' requires vol_prices column '{underlying}'; "
+                "missing (or empty vol_prices)"
+            )
+        if has_vol:
             raw_vix = price_data.vol_prices[underlying].reindex(idx, method="ffill")
-            mtm_iv_series = raw_vix.rolling(VIX_MTM_WINDOW).mean().ffill()
+            if config.vol_model is VolModel.FLAT:
+                mtm_iv_series = raw_vix.rolling(VIX_MTM_WINDOW).mean().ffill()
 
         leaps_monthly = config.monthly_contribution * leaps_fraction
 
@@ -462,6 +473,7 @@ def _build_context(
         month_end_dates=month_end_dates,
         long_window_end=long_window_end,
         w=w,
+        vol_model=config.vol_model,
     )
 
 
@@ -508,6 +520,7 @@ def _build_initial_state(ctx: BacktestContext) -> PortfolioState:
             risk_free_series=ctx.return_data.risk_free_rate,
             iv_series=ctx.raw_vix,
             initial_capital=initial_leaps_capital,
+            vol_model=ctx.vol_model,
         )
         all_window_ledgers = (leaps_ledger,)
 
@@ -668,9 +681,7 @@ def _apply_gtt_force_close(
     prev_ts: pd.Timestamp = state.prev_date_ts
     close_spot = float(ctx.underlying_prices.loc[prev_ts])
     close_rfr = float(ctx.rfr_series.loc[prev_ts]) if ctx.rfr_series is not None else 0.0
-    close_iv = ctx.iv
-    if ctx.raw_vix is not None:
-        close_iv = max(float(ctx.raw_vix.loc[prev_ts]), ctx.iv)
+    raw_close = float(ctx.raw_vix.loc[prev_ts]) if ctx.raw_vix is not None else None
 
     new_closes: list[LeapsGttCloseEvent] = []
     pool_delta = 0.0
@@ -678,6 +689,10 @@ def _apply_gtt_force_close(
     for c in get_live_contracts(state.leaps_ledger, prev_ts):
         scale = state.leaps_scale.get(c, 1.0)
         c_eff = replace(c, n_contracts=c.n_contracts * scale) if scale != 1.0 else c
+        close_iv = _contract_iv(
+            ctx, c_eff, close_spot, prev_ts, close_rfr, raw_close,
+            use_mtm_smoothed=False,
+        )
         evt = close_leaps_contract(
             c_eff,
             prev_ts,
@@ -773,8 +788,117 @@ def _apply_defensive_compounding(
 
 
 # ---------------------------------------------------------------------------
-# LEAPS mark-to-market (Bug 1 fix)
+# IV-sourcing helpers (flat vs ssvi) — F-4
 # ---------------------------------------------------------------------------
+
+
+def _ssvi_params_for(contract: LeapsContract) -> SsviParams:
+    """Return the SsviParams for a contract's underlying ticker.
+
+    Raises ValueError for tickers without an SSVI_PARAMS entry (fail loud on
+    the ssvi path rather than silently falling back to flat IV).
+
+    Arguments:
+        contract: The LEAPS contract being marked.
+
+    Returns:
+        SsviParams for contract.ticker.
+
+    Raises:
+        ValueError: If contract.ticker is absent from SSVI_PARAMS.
+    """
+    try:
+        return SSVI_PARAMS[contract.ticker]
+    except KeyError:
+        raise ValueError(
+            f"SSVI params missing for ticker {contract.ticker!r}; "
+            "cannot mark contract on the ssvi path"
+        ) from None
+
+
+def _surface_iv(
+    contract: LeapsContract,
+    spot: float,
+    date: pd.Timestamp,
+    vol_index_level: float,
+    risk_free_rate: float,
+) -> float:
+    """Surface IV for one contract on the ssvi path.
+
+    Computes sigma(k, t) via surface_implied_vol using the per-day theta from
+    the raw vol-index level (no VIX_MTM_WINDOW rolling mean).
+
+    Arguments:
+        contract: The LEAPS contract being marked.
+        spot: Current underlying spot price.
+        date: Valuation date.
+        vol_index_level: Decimal vol-index level for this day.
+        risk_free_rate: Continuously compounded risk-free rate.
+
+    Returns:
+        Decimal annualized implied volatility (no config.iv floor).
+    """
+    t_years = (contract.expiry_date - date).days / 365.0
+    return surface_implied_vol(
+        spot=spot,
+        strike=contract.strike,
+        time_to_expiry_years=t_years,
+        vol_index_level=vol_index_level,
+        params=_ssvi_params_for(contract),
+        dividend_yield=contract.dividend_yield,
+        risk_free_rate=risk_free_rate,
+    )
+
+
+def _contract_iv(
+    ctx: BacktestContext,
+    contract: LeapsContract,
+    spot: float,
+    date: pd.Timestamp,
+    rfr: float,
+    vol_index_level: float | None,
+    mtm_iv_value: float | None = None,
+    use_mtm_smoothed: bool = False,
+) -> float:
+    """Per-contract IV for a single mark on either the flat or ssvi path (D4).
+
+    Flat (default): reproduces the pre-change scalar-iv logic exactly — the
+    ``max(raw_vix, ctx.iv)`` floor for creation/close marks and the
+    ``max(mtm_iv, ctx.iv)`` smoothed-MTM floor for daily marks.
+
+    SSVI: sources ``sigma(k, t)`` from the surface using the raw vol-index
+    level (no VIX_MTM_WINDOW rolling mean and no ``config.iv`` floor); mean
+    reversion is already captured by the OU theta. A missing/NaN raw level
+    during warmup falls back to ``ctx.iv`` so marks never go NaN before the
+    vol series has its first observation.
+
+    Arguments:
+        ctx: Immutable per-backtest configuration and precomputed series.
+        contract: The LEAPS contract being marked.
+        spot: Current underlying spot price.
+        date: Valuation date.
+        rfr: Continuously compounded risk-free rate for this day.
+        vol_index_level: Raw vol-index level for this day (may be None/NaN).
+        mtm_iv_value: Pre-smoothed MTM IV for the day (flat smoothed path only).
+        use_mtm_smoothed: Flat path only — True uses ``mtm_iv_value`` (daily
+            MTM), False uses the raw ``vol_index_level`` floor
+            (creation/force-close). Ignored on the ssvi path.
+
+    Returns:
+        Decimal annualized IV to feed ``price_leaps_contract``.
+    """
+    if ctx.vol_model is VolModel.SSVI:
+        if vol_index_level is None or math.isnan(vol_index_level):
+            return ctx.iv
+        return _surface_iv(contract, spot, date, vol_index_level, rfr)
+
+    # Flat path — bit-for-bit with the pre-change logic.
+    if use_mtm_smoothed:
+        day_iv = ctx.iv
+        if mtm_iv_value is not None and not math.isnan(mtm_iv_value):
+            day_iv = max(mtm_iv_value, ctx.iv)
+        return day_iv
+    return ctx.iv if vol_index_level is None else max(vol_index_level, ctx.iv)
 
 
 def _compute_leaps_mtm(
@@ -810,12 +934,24 @@ def _compute_leaps_mtm(
     spot = inputs.spot
     assert spot is not None  # guaranteed when use_leaps
     rfr = inputs.rfr
-    day_iv = ctx.iv
-    if inputs.mtm_iv_value is not None and pd.notna(inputs.mtm_iv_value):
-        day_iv = max(float(inputs.mtm_iv_value), ctx.iv)
     live = get_live_contracts(state.leaps_ledger, inputs.date_ts)
     leaps_value: float = sum(
-        price_leaps_contract(c, spot, inputs.date_ts, day_iv, rfr)
+        price_leaps_contract(
+            c,
+            spot,
+            inputs.date_ts,
+            _contract_iv(
+                ctx,
+                c,
+                spot,
+                inputs.date_ts,
+                rfr,
+                inputs.raw_vix_value,
+                mtm_iv_value=inputs.mtm_iv_value,
+                use_mtm_smoothed=True,
+            ),
+            rfr,
+        )
         * state.leaps_scale.get(c, 1.0)
         for c in live
     )
@@ -1160,18 +1296,28 @@ def _apply_gtt_reentry(
             risk_free_series=ctx.return_data.risk_free_rate,
             iv_series=ctx.raw_vix,
             initial_capital=leaps_seed,
+            vol_model=ctx.vol_model,
         )
         new_window_ledgers = (*state.all_window_ledgers, new_ledger)
 
         # Bug 2 fix: price at CREATION IV (raw VIX), NOT smoothed MTM IV.
-        creation_iv = (
-            ctx.iv
-            if inputs.raw_vix_value is None
-            else max(inputs.raw_vix_value, ctx.iv)
-        )
         spot = inputs.spot if inputs.spot is not None else 0.0
         new_leaps_value = sum(
-            price_leaps_contract(c, spot, inputs.date_ts, creation_iv, inputs.rfr)
+            price_leaps_contract(
+                c,
+                spot,
+                inputs.date_ts,
+                _contract_iv(
+                    ctx,
+                    c,
+                    spot,
+                    inputs.date_ts,
+                    inputs.rfr,
+                    inputs.raw_vix_value,
+                    use_mtm_smoothed=False,
+                ),
+                inputs.rfr,
+            )
             for c in get_live_contracts(new_ledger, inputs.date_ts)
         )
 

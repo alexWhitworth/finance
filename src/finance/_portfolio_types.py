@@ -17,6 +17,7 @@ from finance.consts import (
     GTT_UNRATE_TRADE_LAG_DAYS,
     GTT_VIX_CONSECUTIVE_DAYS,
     LEAPS_KEY_SUFFIX,
+    VolModel,
 )
 from finance.leverage import (
     LeapsConfig,
@@ -123,6 +124,11 @@ class PortfolioConfig:
             must be DRIFT, 'VTI' must be in target_weights with value 0.0,
             floor < leaps_fraction, half_life_multiple > 0, and
             vti_alpha in [0.0, 1.0].
+        vol_model: IV sourcing mode for LEAPS marks. VolModel.FLAT (default)
+            preserves the existing scalar-iv logic bit-for-bit; VolModel.SSVI
+            sources per-contract IV from the SSVI surface using per-day theta
+            from the raw vol-index series (bypassing the VIX_MTM_WINDOW
+            rolling mean and the max(..., config.iv) floors).
 
     Raises:
         ValueError: If target_weights does not sum to 1.0 within 1e-6.
@@ -144,6 +150,7 @@ class PortfolioConfig:
     leaps_config: LeapsConfig | None = None
     gtt_config: GttConfig | None = None
     glide_path_config: GlidepathConfig | None = None
+    vol_model: VolModel = VolModel.FLAT
 
     def __post_init__(self) -> None:
         total = sum(self.target_weights.values())
@@ -242,6 +249,9 @@ class BacktestContext:
             to slice prices for re-entry LEAPS simulations.
         w: Full target weight Series (including LEAPS keys); used for drift
             check and weight_row assembly.
+        vol_model: IV sourcing mode for LEAPS marks (VolModel.FLAT default;
+            VolModel.SSVI sources per-contract surface IV). Mirrors
+            config.vol_model.
     """
 
     base_assets: tuple[str, ...]
@@ -267,6 +277,7 @@ class BacktestContext:
     month_end_dates: frozenset[pd.Timestamp]
     long_window_end: dict[pd.Timestamp, pd.Timestamp]
     w: pd.Series
+    vol_model: VolModel = VolModel.FLAT
 
 
 @dataclass(frozen=True)

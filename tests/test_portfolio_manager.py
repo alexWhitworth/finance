@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from unittest.mock import MagicMock, patch
 
 import numpy as np
@@ -11,7 +12,9 @@ from hypothesis import assume, given, settings
 from hypothesis import strategies as st
 
 from finance._portfolio_types import PortfolioConfig, PortfolioState
+from finance.consts import SSVI_PARAMS
 from finance.data import PriceData
+from finance.greeks import compute_portfolio_greeks
 from finance.gtt import GttSignalData
 from finance.leverage import (
     AccountType,
@@ -1671,3 +1674,120 @@ def test_gtt_status_price_vs_sma200_below(monkeypatch: pytest.MonkeyPatch) -> No
         equity_prices=equity_prices,
     )
     assert status.price_vs_sma200 == "below"
+
+
+# ---------------------------------------------------------------------------
+# F-3: live-path surface routing (portfolio_manager-level coverage)
+# ---------------------------------------------------------------------------
+
+
+def _ticker_contract(ticker: str, n_contracts: float = 1.0) -> LeapsContract:
+    """Build a minimal LEAPS contract tagged with the given ticker."""
+    return LeapsContract(
+        purchase_date=pd.Timestamp("2024-01-15"),
+        expiry_date=_FUTURE,
+        strike=100.0,
+        spot_at_purchase=200.0,
+        premium_paid=45.0,
+        notional=200.0 * 100,
+        n_contracts=n_contracts,
+        account_type=AccountType.TAXABLE,
+        dividend_yield=0.0,
+        ticker=ticker,
+    )
+
+
+def _surface_portfolio() -> LivePortfolio:
+    """Build a LivePortfolio with VTI and GLD LEAPS contracts."""
+    return LivePortfolio(
+        as_of_date=_AS_OF,
+        holdings={"VTI": 10_000.0},
+        target_weights={"VTI": 1.0},
+        leaps_contracts=(
+            (_ticker_contract("VTI", 1.0), 1.0),
+            (_ticker_contract("GLD", 1.0), 1.0),
+        ),
+        gtt_regime=None,
+    )
+
+
+def test_f3_surface_routing_per_ticker() -> None:
+    """F-3: compute_portfolio_greeks routes per-contract.ticker to surface params."""
+    portfolio = _surface_portfolio()
+    pg = compute_portfolio_greeks(
+        portfolio,
+        spot={"VTI": 200.0, "GLD": 180.0},
+        iv=None,
+        risk_free_rate=0.03,
+        params={"VTI": SSVI_PARAMS["VTI"], "GLD": SSVI_PARAMS["GLD"]},
+        vol_index={"VTI": 0.18, "GLD": 0.15},
+    )
+    by_ticker = {cg.contract.ticker: cg for cg in pg.contracts}
+    assert by_ticker["VTI"].level_vega is not None
+    assert by_ticker["GLD"].level_vega is not None
+    # GLD has opposite (call) skew: sticky-strike delta differs from headline delta.
+    assert by_ticker["GLD"].delta_sticky_strike is not None
+
+
+def test_f3_missing_ticker_lists_all() -> None:
+    """F-3: every ticker with neither surface nor scalar iv is listed in the error."""
+    portfolio = LivePortfolio(
+        as_of_date=_AS_OF,
+        holdings={"VTI": 10_000.0},
+        target_weights={"VTI": 1.0},
+        leaps_contracts=(
+            (_ticker_contract("VTI", 1.0), 1.0),
+            (_ticker_contract("IWM", 1.0), 1.0),
+            (_ticker_contract("GLD", 1.0), 1.0),
+        ),
+        gtt_regime=None,
+    )
+    with pytest.raises(ValueError, match=r"IWM.*GLD|GLD.*IWM"):
+        compute_portfolio_greeks(
+            portfolio,
+            spot={"VTI": 200.0, "IWM": 180.0, "GLD": 170.0},
+            iv=None,
+            params={"VTI": SSVI_PARAMS["VTI"]},
+            vol_index={"VTI": 0.18},
+        )
+
+
+def test_f3_scalar_fallback_for_cold_starts() -> None:
+    """F-3: a ticker absent from surface maps falls back to scalar iv."""
+    portfolio = _surface_portfolio()
+    pg = compute_portfolio_greeks(
+        portfolio,
+        spot={"VTI": 200.0, "GLD": 180.0},
+        iv={"GLD": 0.25},
+        params={"VTI": SSVI_PARAMS["VTI"]},
+        vol_index={"VTI": 0.18},
+    )
+    by_ticker = {cg.contract.ticker: cg for cg in pg.contracts}
+    assert by_ticker["VTI"].level_vega is not None
+    assert by_ticker["GLD"].level_vega is None
+    assert by_ticker["GLD"].iv == 0.25
+
+
+def test_f3_surface_mark_parity_bounded_inv3() -> None:
+    """F-3 (INV-3): surface mark respects parity bounds max(0, S e^-qT - K e^-rT) <= mark."""
+    portfolio = _surface_portfolio()
+    pg = compute_portfolio_greeks(
+        portfolio,
+        spot={"VTI": 200.0, "GLD": 180.0},
+        iv=None,
+        risk_free_rate=0.03,
+        params={"VTI": SSVI_PARAMS["VTI"], "GLD": SSVI_PARAMS["GLD"]},
+        vol_index={"VTI": 0.18, "GLD": 0.15},
+    )
+    for cg in pg.contracts:
+        t = cg.time_to_expiry
+        q = cg.contract.dividend_yield
+        r = cg.risk_free_rate
+        s = cg.spot
+        k = cg.contract.strike
+        lower = max(0.0, s * math.exp(-q * t) - k * math.exp(-r * t))
+        upper = s * math.exp(-q * t)
+        assert lower <= cg.price <= upper
+        # Level-vega is always smaller than local vega on the surface path.
+        assert cg.level_vega is not None
+        assert cg.level_vega < cg.vega

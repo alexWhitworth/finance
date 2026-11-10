@@ -1,0 +1,37 @@
+# JUDGE VERDICT — F-4 Backtest wiring behind vol_model flag — Round 1
+
+**Reviewed revision:** fa888bf (supervisor-verified tree-identical to actor commit 4e2a62a; supervisor: `git diff 4e2a62a..HEAD` empty, tree clean). Judge static review at fa888bf; no file modified.
+
+## Criterion results
+
+**AC1 (INV-5 flat bit-for-bit + INV-6 no-lookahead): MET.**
+- INV-5: flat branches in `_contract_iv` (`src/finance/_backtest_steps.py:896-904`) reproduce the pre-change `max(raw_vix, ctx.iv)` / `max(mtm_iv, ctx.iv)` logic exactly; MTM rolling mean at `_backtest_steps.py:430-431` unchanged (`VIX_MTM_WINDOW=30`, `consts.py:123`); call sites preserve daily-MTM / creation(Bug-2) / force-close semantics (`_backtest_steps.py:943-951`, `:1310-1317`, `:692-694`). Regression pin: `tests/test_backtest_integration.py:1157-1183` (`test_f4_default_flat_regression_exact`) asserts default vs explicit-FLAT `nav_series` + `return_series` exact equality via `assert_series_equal`.
+- INV-6: forward-fill-only series construction (`_backtest_steps.py:428-429`), no backward references anywhere in the mark path; empirically pinned by `tests/test_backtest_integration.py:1185-1206` (`test_f4_corrupted_future_vol_does_not_lookahead`: +0.50 to every strictly-future vol value; nav identical up to and including cutoff, diverges only after, with a non-tautological drift assertion).
+
+**AC2 (default flat → test_backtest_integration + test_gtt_* reproduce pre-change nav bit-for-bit): MET (with P2 advisory).**
+- `tests/test_backtest_integration.py:1157-1183` + pre-existing regression tests, plus the 60 GTT-suite green run (supervisor CMD2). Default flag is `VolModel.FLAT` (`_portfolio_types.py:153`, `consts.py:182`).
+- Advisory: the "pre-change baseline" is default-vs-explicit-FLAT equivalence, not a stored pre-change snapshot, and the test asserts `nav_series` + `return_series` but not `weight_history`/`leaps_value` directly (spec test_requirements name all three). Compensating evidence: supervisor-verified diff that flat branches are untouched, plus 30+60 green suites. See Finding 1.
+
+**AC3 (ssvi bypasses VIX_MTM_WINDOW, per-day theta straight from vol series, D2): MET.**
+- `src/finance/_backtest_steps.py:430-431` — MTM series built only when `VolModel.FLAT`; `_backtest_steps.py:890-893` — ssvi branch uses `_surface_iv` on the raw per-day level with no ctx.iv floor; `src/finance/leverage.py:1188-1189` — ssvi bypasses the `max(iv, config.iv)` floor in roll/purchase pricing; `leverage.py:1175` bypasses it on first contract. Per-day theta from raw vol index: `vol_surface.py:134` (`theta = atm_total_variance(vol_index_level, tau, params)`), OU mean reversion per D2.
+
+**Edge case (ssvi + missing underlying vol column → ValueError at context build): MET.**
+- `src/finance/_backtest_steps.py:423-427` (also guards empty `vol_prices` via `has_vol` at `:419-422`); test `tests/test_backtest_integration.py:1208-1213`.
+
+## Check results (supervisor-run, cited verbatim with attribution; I have no executor tool — static verification only)
+- Supervisor CMD1: `UV_FROZEN=1 uv run pytest tests/test_backtest_integration.py -q --no-cov -p no:cacheprovider` → **30 passed in 21.51s, EXIT=0** (includes the three f4 tests plus pre-existing regression/no-lookahead/fail-loud tests).
+- Supervisor CMD2: `UV_FROZEN=1 uv run pytest tests/test_gtt_backtest.py tests/test_gtt_leaps_close.py -q --no-cov -p no:cacheprovider` → **60 passed in 5.04s, EXIT=0** (flat-default regression pins per AC2).
+- Supervisor, also green: `tests/test_portfolio_manager.py` 93 passed in 2.39s; `tests/test_examples_smoke.py` 3 passed in 110.25s.
+- Revision integrity (supervisor): `git diff 4e2a62a..HEAD` empty, tree clean at fa888bf.
+
+## Findings
+1. **P2 (advisory):** AC2's "pre-change baseline" is implemented as default-vs-explicit-FLAT equivalence (`tests/test_backtest_integration.py:1157-1183`), not a stored pre-change snapshot, and asserts `nav_series` + `return_series` but not `weight_history`/`leaps_value` (spec test_requirements at plans/vol_surface_spec.json ~line 1085 name all three sequences). Combined with the diff-verified untouched flat branches and 30+60 green suites, the bit-for-bit claim is adequately supported for this round; a snapshot-pinned regression would strengthen it. Report-only; not a blocker.
+2. **P2 (advisory):** INV-6 is verified through the `nav_series` downstream product rather than directly comparing day-t `leaps_value` marks; the corruption test's cutoff-index alignment is asserted non-degenerate (`tests/test_backtest_integration.py:1190-1206`). Report-only.
+
+## Required actions
+None blocking. Optional (future round): add a stored pre-change snapshot regression asserting `nav_series`, `weight_history`, `leaps_value` exact equality (Finding 1).
+
+## Outstanding items
+None for F-4. Mutation/property testing exempt per spec. DAG/environment checks: none declared for this feature.
+
+VERDICT: PASS

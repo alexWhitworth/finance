@@ -1,0 +1,43 @@
+Judge Verdict — vol-F-003 (F-3 Live portfolio path on the surface) — Round 1
+
+**Reviewed revision:** fa888bf (tree-identical to actor commit 4e2a62a; supervisor verified `git diff 4e2a62a..HEAD` empty, tree clean; `watchdog_diff` at review time: no working-tree changes vs reviewer-launch HEAD fa888bfcc10c).
+
+**Files reviewed:** examples/portfolio_manage/manual_leaps_review.py; tests/test_portfolio_manager.py (test_f3_surface_routing_per_ticker, test_f3_missing_ticker_lists_all, test_f3_scalar_fallback_for_cold_starts, test_f3_surface_mark_parity_bounded_inv3); tests/test_examples_smoke.py (test_manual_leaps_review_fixtures_prints_surface_columns); plans/vol_surface_spec.json (status bump only, F-3 spec at :903-988); src/finance/greeks.py (compute_portfolio_greeks :315-430, unchanged shared seam).
+
+## Criterion results
+
+**(1) INV-7 dry-run on current quotes — MET (code) / outstanding (human sign-off).**
+The live (non-fixture) path fetches real quotes via `build_price_data(..., fetch_vol_indices=True)` (examples/portfolio_manage/manual_leaps_review.py:196-199) and routes them through the same `compute_portfolio_greeks(... params=params_map, vol_index=vol_index_map)` call (manual_leaps_review.py:237-243). The offline --fixtures dry-run (supervisor-run, EXIT=0, fully offline) exercises the identical report code path end-to-end. Human sign-off on the live-quotes dry-run is a workflow event, recorded as outstanding below, not a code criterion.
+
+**(2) --fixtures prints surface fields offline (D5/D6) — MET.**
+Static: `--fixtures` builds synthetic price/vol data with no network (manual_leaps_review.py:82-114, `_build_fixture_price_data`); per-contract print line includes `sigma(k,t)=`, `mark=`, `headline_delta=`, `level_vega=` (manual_leaps_review.py:249-256). Test test_manual_leaps_review_fixtures_prints_surface_columns (tests/test_examples_smoke.py:51-62) asserts `sigma(k,t)`, `headline_delta=`, `level_vega=` and `{VTI,IWM,GLD}: sigma(k,t)=` in offline output. Supervisor dynamic evidence: `UV_FROZEN=1 uv run python examples/portfolio_manage/manual_leaps_review.py --fixtures` → EXIT=0, fully offline, printing per-contract lines: VTI sigma(k,t)=44.40% mark=$95,340.85 headline_delta=0.9945 level_vega=0.0867; IWM sigma=39.69% mark=$54,921.16 delta=0.9832 level_vega=3.0735; GLD sigma=26.17% mark=$90,120.60 delta=0.9947 level_vega=0.0000; plus net greeks, NAV breakdown, holdings drift, rebalance check. Independent API recompute (supervisor, /tmp/judge_f3_recompute.py) confirmed sigma(k,t)=0.444019==44.40%, parity bounds 190.6713 ≤ 190.6810 ≤ 318.3063 OK, level_vega 0.0867 < local vega 0.2839, and the D6 damping identity ratio 0.305 == (1−exp(−1.5·0.408))/1.5.
+
+**(3) LivePortfolio with no surface config → identical NAV/greeks to scalar path (D3) — MET.**
+Static: with `params=None`, `compute_portfolio_greeks` coerces to `params={}`, `vol_index={}` (src/finance/greeks.py:358-359), `_surface_inputs_for` returns `(None, None)` (greeks.py:361-363 → falls through the both-absent branch at :369 returns `None, None`), and `compute_contract_greeks` receives `params=None, vol_index_level=None` — exactly the pre-F-3 scalar call signature. test_f3_scalar_fallback_for_cold_starts (tests/test_portfolio_manager.py:1755-1770) asserts a mixed portfolio prices the surface ticker on the surface (`level_vega is not None`) and the cold-start ticker on scalar iv (`level_vega is None`, `iv == 0.25`).
+
+**Edge case — ticker missing from surface config → scalar fallback or loud ValueError — MET.**
+Static: `_missing_reason` (src/finance/greeks.py:373-379) falls back to scalar `iv[ticker]` when surface maps lack the ticker; missing collection is a set comprehension over **all** live contracts (greeks.py:380-386) so every missing ticker is reported in one ValueError — parent AC-008 behavior preserved. test_f3_missing_ticker_lists_all (tests/test_portfolio_manager.py:1732-1753) asserts both IWM and GLD appear (`match=r"IWM.*GLD|GLD.*IWM"`). Script preserves the cold-start `iv_map` fallback (manual_leaps_review.py:204-205).
+
+## Check results (supervisor-run, revision 4e2a62a == fa888bf, all green; cited verbatim with attribution)
+
+- Supervisor: `UV_FROZEN=1 uv run pytest tests/test_portfolio_manager.py -q --no-cov -p no:cacheprovider` → **93 passed in 2.39s, EXIT=0**.
+- Supervisor: `UV_FROZEN=1 uv run pytest tests/test_examples_smoke.py -q --no-cov -p no:cacheprovider` → **3 passed in 110.25s, EXIT=0**.
+- Supervisor: `UV_FROZEN=1 uv run python examples/portfolio_manage/manual_leaps_review.py --fixtures` → **EXIT=0, fully offline**, output as recorded in criterion (2).
+- Supervisor: independent API recompute of the VTI fixture contract (/tmp/judge_f3_recompute.py) → all identities confirmed (criterion 2 above); mark delta $0.35 ($95,340.50 recompute vs $95,340.85 script) attributed to rounded purchase-spot input → one-cent strike difference, **not a defect**.
+- Static-verified by supervisor: --fixtures path is fully offline (network only on the non-fixture branch); test_f3_surface_mark_parity_bounded_inv3 bounds are meaningful (per-contract lower/upper from spot/strike/r/q/t), not tautological. Judge independently re-verified both from source (manual_leaps_review.py:82-114, tests/test_portfolio_manager.py:1771-1800).
+
+## Findings
+
+1. **P2 (advisory):** ValueError message "spot/iv maps are missing the following tickers: …" (src/finance/greeks.py:388) does not name the surface maps explicitly; behavior (all missing tickers listed) is correct and tested. No action.
+2. **P2 (advisory):** $0.35 mark discrepancy between supervisor recompute and script output is input-rounding artifacts, not a code defect. No action.
+
+## Required actions
+
+None.
+
+## Outstanding items
+
+- Human sign-off on the INV-7 live-quotes dry-run (workflow event; code path verified statically and via the offline --fixtures run of the same report code).
+- Test exemption honored per spec: mutation testing exempted for portfolio_manager.py orchestration (plans/vol_surface_spec.json F-3 test_exemptions).
+
+VERDICT: PASS
