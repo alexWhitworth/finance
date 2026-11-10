@@ -1185,7 +1185,7 @@
       "phase": "6",
       "kind": "release",
       "layer": "python",
-      "status": "pending_judge",
+      "status": "complete",
       "component_ids": [],
       "depends_on": [
         "F-5"
