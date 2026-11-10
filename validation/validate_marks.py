@@ -60,8 +60,12 @@ _LISTED_BOND_ETF_IV_RANGE: dict[str, tuple[float, float]] = {
 # Observed ^MOVE level (basis points) at validation time, entered manually.
 # The observation date must be recorded alongside the level (judge P2-2); it is
 # None until a real observed level/date are entered with the broker quotes.
-_MOVE_LEVEL_BP: float = 100.0
-_MOVE_OBSERVATION_DATE: str | None = None
+_MOVE_LEVEL_BP: float = 92.22
+_MOVE_OBSERVATION_DATE: str = "2026-11-10 11:02 PT"
+
+
+_DEFAULT_BILL = "0.04115"
+_DEFAULT_2Y = "0.0456"
 
 _EXCLUDED_FIELDS = (
     "quote_date",
@@ -120,10 +124,6 @@ def _parse_quotes(path: Path) -> list[QuoteRow]:
                 )
             )
     return rows
-
-
-_DEFAULT_BILL = "0.042"
-_DEFAULT_2Y = "0.046"
 
 
 def _maybe_float(value: str | None) -> float | None:
@@ -239,6 +239,81 @@ def _compare_extrinsic(out: TextIO, quotes: list[QuoteRow]) -> None:
             + ", ".join(f"{q.ticker} {q.expiry}@{q.strike}" for q in excluded)
             + "\n\n"
         )
+    _emit_residual_attribution(out, quotes)
+
+
+def _emit_residual_attribution(out: TextIO, quotes: list[QuoteRow]) -> None:
+    """Attribute outside-the-spread rows to level, term-structure, or smile (INV-7).
+
+    For each real quote outside its half-spread, compare the quote-implied BS
+    IV against the model surface IV at the same (k, t). A near-uniform IV gap
+    across strikes points at the vol-index level input (or term structure);
+    a gap that varies with moneyness points at the smile (rho/eta) shape.
+    """
+    outside = [q for q in quotes if not _is_synthetic_seed(q)]
+    rows = []
+    for q in outside:
+        if q.bid is None or q.ask is None:
+            continue
+        t = _time_to_expiry_years(q)
+        r = _maturity_matched_r(q, t)
+        params = SSVI_PARAMS[q.ticker]
+        model_px = _model_price(q, params, r)
+        model_ext = model_px - _intrinsic(q.spot, q.strike, t, r, q.dividend_yield)
+        mid = (q.bid + q.ask) / 2.0
+        half = (q.ask - q.bid) / 2.0
+        quote_ext = mid - _intrinsic(q.spot, q.strike, t, r, q.dividend_yield)
+        if abs(model_ext - quote_ext) <= half:
+            continue
+        sigma_model = surface_implied_vol(
+            spot=q.spot,
+            strike=q.strike,
+            time_to_expiry_years=t,
+            vol_index_level=q.vol_index_level,
+            params=params,
+            dividend_yield=q.dividend_yield,
+            risk_free_rate=r,
+        )
+        sigma_quote = _implied_vol(mid, q.spot, q.strike, t, r, q.dividend_yield)
+        rows.append((q, sigma_model, sigma_quote))
+    if not rows:
+        return
+    out.write("### Residual gap attribution (outside rows)\n\n")
+    out.write("| ticker | strike | model IV | quote IV | IV gap (pts) |\n")
+    out.write("|---|---|---|---|---|\n")
+    for q, sig_m, sig_q in rows:
+        out.write(
+            f"| {q.ticker} | {q.strike:.2f} | {sig_m:.4f} | {sig_q:.4f} "
+            f"| {(sig_q - sig_m) * 100:+.2f} |\n"
+        )
+    gaps_by_ticker: dict[str, list[float]] = {}
+    for q, sig_m, sig_q in rows:
+        gaps_by_ticker.setdefault(q.ticker, []).append(sig_q - sig_m)
+    out.write("\n")
+    for ticker, gaps in gaps_by_ticker.items():
+        spread = max(gaps) - min(gaps)
+        mean = sum(gaps) / len(gaps)
+        if spread <= 0.01:
+            cause = "near-uniform IV gap — vol-index level / term structure, not smile shape"
+        else:
+            cause = "IV gap varies with moneyness — smile shape (rho/eta) contributes"
+        out.write(
+            f"- {ticker}: mean IV gap {mean * 100:+.2f} pts, range "
+            f"{spread * 100:.2f} pts — {cause}.\n"
+        )
+    out.write("\n")
+
+
+def _implied_vol(price: float, spot: float, strike: float, t: float, r: float, q: float) -> float:
+    """Quote-mid BS implied vol by bisection (diagnostic, per F-5 spec)."""
+    lo, hi = 1e-4, 3.0
+    for _ in range(200):
+        mid = (lo + hi) / 2.0
+        if bs_call_price(spot, strike, t, mid, r, q) < price:
+            lo = mid
+        else:
+            hi = mid
+    return (lo + hi) / 2.0
 
 
 def _maturity_matched_r(q: QuoteRow, t: float) -> float:
