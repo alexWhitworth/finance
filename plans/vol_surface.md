@@ -88,6 +88,15 @@ data.py ──vol_index_series──▶ vol_surface.py ──σ(k,t)──▶ le
 
 **Decisions (user-approved): D-1 … D-10 as listed; plus:** no chain access — validation via manually entered broker quotes (m00045); European-only (m00045); MOVE fix in scope (m00045); sticky-moneyness headline + sticky-strike exposed (m00049); r(T) via 2y treasury, `fetch_2yr_treasury` (m00052, m00058); flat-flag default (D-4, m00051).
 
+**Decision log (F-6 handoff)**
+
+| Decision | Resolution | Notes |
+| --- | --- | --- |
+| Sticky-moneyness delta as headline | Confirmed (D-5) | `VolConvention.STICKY_MONEYNESS` default; sticky-strike BSM delta exposed as `ContractGreeks.delta_sticky_strike` |
+| European exercise only | Confirmed (D-10) | q = 0 ⇒ American = European (Merton 1973, GLD); ZIRP-era understatement accepted (U-3) |
+| Variance risk premium in marks | Accepted (U-4) | Marks embed VRP (Carr & Wu 2009); backtest vol-drag is risk-neutral vs physical — economic fact, not bug |
+| Frozen (ρ, η, γ) shape priors | Keep frozen (D-3) | F-5 pinned GLD ρ ≈ −0.08 vs prior +0.15 from real quotes — advisory only; Zeliade-style refit remains the documented later extension |
+
 **Unknowns**
 
 | ID | Statement | Sev | Closes | If wrong |
@@ -118,6 +127,6 @@ F-0  Carry wiring + MOVE fix
 | 3. Live portfolio path (priority) | 2 | `portfolio_manager.py` per-ticker surface config; NAV/greeks/rebalance consume it | INV-7 dry-run on current quotes |
 | 4. Backtest wiring (secondary) | 1 | `vol_model` flag; per-day θ_t in `_backtest_steps.py`; updated tests | INV-5, INV-6 |
 | 5. Validation | 3 | Extrinsic-vs-spread harness (`validation/`), manual-quote pinning, κ/σ∞ sensitivity table | INV-7 report, human review |
-| 6. Docs + handoff | 5 | README, decision log, `plan-to-spec` input | Plan accepted by user |
+| 6. Docs + handoff | 5 | README, decision log, `plan-to-spec` input | Plan accepted by user (2026-11-10) |
 
 Later (no phase): Zeliade-style SVI refit if chain access appears; American CRR control-variate wrapper if bond-ETF or low-rate LEAPS trading.

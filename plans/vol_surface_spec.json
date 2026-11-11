@@ -1185,7 +1185,7 @@
       "phase": "6",
       "kind": "release",
       "layer": "python",
-      "status": "planned",
+      "status": "complete",
       "component_ids": [],
       "depends_on": [
         "F-5"

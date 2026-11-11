@@ -43,7 +43,9 @@ if __name__ == "__main__":
 
     print("=== Fetching Price Data ===")
     tickers = [t for t in list(BASE_WEIGHTS.keys()) if t != "VTI_LEAPS"]
-    price_data = build_price_data(START, END, tickers=tickers, use_splice=True, fetch_vol_indices=True)
+    price_data = build_price_data(
+        START, END, tickers=tickers, use_splice=True, fetch_vol_indices=True
+    )
 
     print("=== Fetching Risk-Free Rate ===")
     rfr_series = fetch_risk_free_rate(START, END)
