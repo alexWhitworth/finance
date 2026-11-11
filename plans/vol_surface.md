@@ -127,6 +127,6 @@ F-0  Carry wiring + MOVE fix
 | 3. Live portfolio path (priority) | 2 | `portfolio_manager.py` per-ticker surface config; NAV/greeks/rebalance consume it | INV-7 dry-run on current quotes |
 | 4. Backtest wiring (secondary) | 1 | `vol_model` flag; per-day θ_t in `_backtest_steps.py`; updated tests | INV-5, INV-6 |
 | 5. Validation | 3 | Extrinsic-vs-spread harness (`validation/`), manual-quote pinning, κ/σ∞ sensitivity table | INV-7 report, human review |
-| 6. Docs + handoff | 5 | README, decision log, `plan-to-spec` input | Plan accepted by user |
+| 6. Docs + handoff | 5 | README, decision log, `plan-to-spec` input | Plan accepted by user (2026-11-10) |
 
 Later (no phase): Zeliade-style SVI refit if chain access appears; American CRR control-variate wrapper if bond-ETF or low-rate LEAPS trading.
